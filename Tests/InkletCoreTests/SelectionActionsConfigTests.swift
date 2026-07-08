@@ -9,6 +9,16 @@ final class SelectionActionsConfigTests: XCTestCase {
         XCTAssertEqual(config.translationLanguage, .followInterfaceLanguage)
         XCTAssertEqual(config.pronunciationVoice, .alloy)
         XCTAssertEqual(config.pronunciationSpeed, 1.0)
+        XCTAssertEqual(config.forceSelectionMode, .menuCopyThenShortcut)
+    }
+
+    func testForceSelectionModeCasesMatchEasyDictFallbackOrder() {
+        XCTAssertEqual(SelectionForceSelectionMode.allCases, [
+            .disabled,
+            .menuCopyOnly,
+            .menuCopyThenShortcut,
+            .shortcutThenMenuCopy
+        ])
     }
 
     func testPronunciationSpeedUsesCompactSettingsRange() {
@@ -86,6 +96,16 @@ final class SelectionActionsConfigTests: XCTestCase {
         XCTAssertEqual(config.translationLanguage, .japanese)
         XCTAssertEqual(config.pronunciationVoice, .alloy)
         XCTAssertEqual(config.pronunciationSpeed, 1.0)
+        XCTAssertEqual(config.forceSelectionMode, .menuCopyThenShortcut)
+    }
+
+    func testForceSelectionModeRoundTripsThroughCodable() throws {
+        let config = SelectionActionsConfig(forceSelectionMode: .menuCopyOnly)
+
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(SelectionActionsConfig.self, from: data)
+
+        XCTAssertEqual(decoded.forceSelectionMode, .menuCopyOnly)
     }
 
     func testDecodingClampsPronunciationSpeed() throws {

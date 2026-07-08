@@ -1,0 +1,193 @@
+import AppKit
+import XCTest
+@testable import InkletCore
+
+final class SelectionClipboardReaderTests: XCTestCase {
+    @MainActor
+    func testMenuActionReadsChangedPasteboardAndRestoresOriginalItems() async throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        let customType = NSPasteboard.PasteboardType("com.inklet.test.selection.binary")
+        let customData = Data([0x11, 0x22, 0x33])
+        let originalItem = NSPasteboardItem()
+        XCTAssertTrue(originalItem.setString("Original clipboard", forType: .string))
+        XCTAssertTrue(originalItem.setData(customData, forType: customType))
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.writeObjects([originalItem]))
+
+        var requestedProcessIdentifier: pid_t?
+        var didSendShortcut = false
+        let reader = SelectionClipboardReader(
+            pasteboard: pasteboard,
+            isTrusted: { true },
+            copyMenuActionPerformer: { processIdentifier in
+                requestedProcessIdentifier = processIdentifier
+                pasteboard.clearContents()
+                pasteboard.setString("  copied selection  ", forType: .string)
+                return .performed
+            },
+            copyShortcutSender: { _ in didSendShortcut = true },
+            delayProvider: { _ in },
+            shortcutReadWrapper: { operation in await operation() }
+        )
+
+        let result = await reader.readSelectedText(
+            sourceProcessIdentifier: 42,
+            forceSelectionMode: .menuCopyThenShortcut
+        )
+
+        XCTAssertEqual(result, .success("copied selection"))
+        XCTAssertEqual(requestedProcessIdentifier, 42)
+        XCTAssertFalse(didSendShortcut)
+
+        let restoredItems = try XCTUnwrap(pasteboard.pasteboardItems)
+        XCTAssertEqual(restoredItems.count, 1)
+        XCTAssertEqual(restoredItems[0].string(forType: .string), "Original clipboard")
+        XCTAssertEqual(restoredItems[0].data(forType: customType), customData)
+    }
+
+    @MainActor
+    func testNoCopyMenuItemFallsBackToShortcutCopy() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("Original clipboard", forType: .string)
+
+        var didSendShortcut = false
+        let reader = SelectionClipboardReader(
+            pasteboard: pasteboard,
+            isTrusted: { true },
+            copyMenuActionPerformer: { _ in .noMenuItem },
+            copyShortcutSender: { _ in
+                didSendShortcut = true
+                pasteboard.clearContents()
+                pasteboard.setString("Shortcut selection", forType: .string)
+            },
+            delayProvider: { _ in },
+            shortcutReadWrapper: { operation in await operation() }
+        )
+
+        let result = await reader.readSelectedText(
+            sourceProcessIdentifier: 42,
+            forceSelectionMode: .menuCopyThenShortcut
+        )
+
+        XCTAssertEqual(result, .success("Shortcut selection"))
+        XCTAssertTrue(didSendShortcut)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Original clipboard")
+    }
+
+    @MainActor
+    func testDisabledCopyMenuItemDoesNotSendShortcut() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("Original clipboard", forType: .string)
+
+        var didSendShortcut = false
+        let reader = SelectionClipboardReader(
+            pasteboard: pasteboard,
+            isTrusted: { true },
+            copyMenuActionPerformer: { _ in .disabled },
+            copyShortcutSender: { _ in didSendShortcut = true },
+            delayProvider: { _ in },
+            shortcutReadWrapper: { operation in await operation() }
+        )
+
+        let result = await reader.readSelectedText(
+            sourceProcessIdentifier: 42,
+            forceSelectionMode: .menuCopyThenShortcut
+        )
+
+        XCTAssertEqual(result, .emptySelection)
+        XCTAssertFalse(didSendShortcut)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Original clipboard")
+    }
+
+    @MainActor
+    func testDisabledForceSelectionDoesNotUseMenuOrShortcutCopy() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("Original clipboard", forType: .string)
+
+        var didRequestMenu = false
+        var didSendShortcut = false
+        let reader = SelectionClipboardReader(
+            pasteboard: pasteboard,
+            isTrusted: { true },
+            copyMenuActionPerformer: { _ in
+                didRequestMenu = true
+                return .performed
+            },
+            copyShortcutSender: { _ in didSendShortcut = true },
+            delayProvider: { _ in },
+            shortcutReadWrapper: { operation in await operation() }
+        )
+
+        let result = await reader.readSelectedText(
+            sourceProcessIdentifier: 42,
+            forceSelectionMode: .disabled
+        )
+
+        XCTAssertEqual(result, .unsupported)
+        XCTAssertFalse(didRequestMenu)
+        XCTAssertFalse(didSendShortcut)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Original clipboard")
+    }
+
+    @MainActor
+    func testMenuCopyOnlyDoesNotFallbackToShortcutWhenCopyMenuIsMissing() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("Original clipboard", forType: .string)
+
+        var didSendShortcut = false
+        let reader = SelectionClipboardReader(
+            pasteboard: pasteboard,
+            isTrusted: { true },
+            copyMenuActionPerformer: { _ in .noMenuItem },
+            copyShortcutSender: { _ in didSendShortcut = true },
+            delayProvider: { _ in },
+            shortcutReadWrapper: { operation in await operation() }
+        )
+
+        let result = await reader.readSelectedText(
+            sourceProcessIdentifier: 42,
+            forceSelectionMode: .menuCopyOnly
+        )
+
+        XCTAssertEqual(result, .unsupported)
+        XCTAssertFalse(didSendShortcut)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Original clipboard")
+    }
+
+    @MainActor
+    func testShortcutFirstFallsBackToMenuActionWhenShortcutDoesNotProduceText() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("Original clipboard", forType: .string)
+
+        var didSendShortcut = false
+        var didRequestMenu = false
+        let reader = SelectionClipboardReader(
+            pasteboard: pasteboard,
+            isTrusted: { true },
+            copyMenuActionPerformer: { _ in
+                didRequestMenu = true
+                pasteboard.clearContents()
+                pasteboard.setString("Menu selection", forType: .string)
+                return .performed
+            },
+            copyShortcutSender: { _ in didSendShortcut = true },
+            delayProvider: { _ in },
+            shortcutReadWrapper: { operation in await operation() }
+        )
+
+        let result = await reader.readSelectedText(
+            sourceProcessIdentifier: 42,
+            forceSelectionMode: .shortcutThenMenuCopy
+        )
+
+        XCTAssertEqual(result, .success("Menu selection"))
+        XCTAssertTrue(didSendShortcut)
+        XCTAssertTrue(didRequestMenu)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Original clipboard")
+    }
+}

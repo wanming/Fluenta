@@ -33,6 +33,23 @@ final class VoiceSettingsLocalizationTests: XCTestCase {
         XCTAssertEqual(countDictionaryEntries("settings.quickStart.voice.doubleTap", in: source), 10)
     }
 
+    func testForceSelectionModeCopyExistsInAllLanguageTables() throws {
+        let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let localizationURL = packageRoot.appendingPathComponent("Sources/InkletApp/InkletLocalization.swift")
+        let source = try String(contentsOf: localizationURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains(#""settings.row.forceSelectionMode": "Force Selection""#))
+        XCTAssertTrue(source.contains(#""settings.forceSelection.menuCopyThenShortcut": "Menu Copy, then Cmd+C""#))
+        XCTAssertTrue(source.contains(#""settings.row.forceSelectionMode": "强制取词""#))
+        XCTAssertTrue(source.contains(#""settings.forceSelection.menuCopyThenShortcut": "先菜单复制，再 Cmd+C""#))
+        XCTAssertEqual(countDictionaryEntries("settings.row.forceSelectionMode", in: source), 10)
+        XCTAssertEqual(countDictionaryEntries("settings.help.forceSelectionMode", in: source), 10)
+        XCTAssertEqual(countDictionaryEntries("settings.forceSelection.disabled", in: source), 10)
+        XCTAssertEqual(countDictionaryEntries("settings.forceSelection.menuCopyOnly", in: source), 10)
+        XCTAssertEqual(countDictionaryEntries("settings.forceSelection.menuCopyThenShortcut", in: source), 10)
+        XCTAssertEqual(countDictionaryEntries("settings.forceSelection.shortcutThenMenuCopy", in: source), 10)
+    }
+
     private func countDictionaryEntries(_ key: String, in source: String) -> Int {
         source.components(separatedBy: #""\#(key)":"#).count - 1
     }

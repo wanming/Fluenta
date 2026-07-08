@@ -556,6 +556,17 @@ private extension SelectionTranslationLanguage {
     }
 }
 
+private extension SelectionForceSelectionMode {
+    var localizedDisplayName: String {
+        switch self {
+        case .disabled: L10n.text("settings.forceSelection.disabled")
+        case .menuCopyOnly: L10n.text("settings.forceSelection.menuCopyOnly")
+        case .menuCopyThenShortcut: L10n.text("settings.forceSelection.menuCopyThenShortcut")
+        case .shortcutThenMenuCopy: L10n.text("settings.forceSelection.shortcutThenMenuCopy")
+        }
+    }
+}
+
 enum SettingsSection: String, CaseIterable, Identifiable {
     case general = "General"
     case writeAssistant = "Write Assistant"
@@ -1056,6 +1067,19 @@ struct SettingsView: View {
             ) {
                 Toggle("", isOn: $model.config.selectionActions.isEnabled)
                     .labelsHidden()
+            }
+
+            settingsRow(
+                L10n.text("settings.row.forceSelectionMode"),
+                help: L10n.text("settings.help.forceSelectionMode")
+            ) {
+                Picker("", selection: $model.config.selectionActions.forceSelectionMode) {
+                    ForEach(SelectionForceSelectionMode.allCases) { mode in
+                        Text(mode.localizedDisplayName).tag(mode)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 320, alignment: .leading)
             }
 
             settingsRow(
