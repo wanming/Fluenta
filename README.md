@@ -59,7 +59,7 @@ The default voice shortcut is Right Option with press-and-hold recording. In Set
 
 - Opens from a global macOS hotkey. The default is `Option+Space`.
 - Starts short voice dictation from a modifier-key shortcut. The default is Right Option with press-and-hold recording; tap-to-toggle and double-tap modes are also available.
-- Shows Selection Actions after you select text in another Mac app and pause briefly, with quick translation, a customizable Translate prompt, AI pronunciation, and 7-day local caching for repeated translations.
+- Shows Selection Actions after you select text in another Mac app and pause briefly, with EasyDict-style selection reading, quick translation, a customizable Translate prompt, AI pronunciation, resizable translation results that remember their last size, and 7-day local caching for repeated translations.
 - Ignores selected text longer than 1,500 characters to avoid accidental long-page triggers.
 - Plays selected text directly, and can play both the original text and translated text from the translation result.
 - Transforms text with built-in prompt modes:
@@ -67,8 +67,8 @@ The default voice shortcut is Right Option with press-and-hold recording. In Set
   - To Chinese Summary
   - Voice Cleanup
 - Inserts generated text back into the previously focused app.
-- Restores your clipboard after insertion.
-- Lets you edit prompt modes, OpenAI model, timeout, temperature, writing shortcut, voice shortcut, voice recording mode, microphone, speech preset, speech endpoint, speech model, post-transcription handling, selection translation language, selection Translate prompt, AI pronunciation voice, and AI pronunciation speed.
+- Restores your clipboard after insertion and force-selection reads. Automatic Selection Actions use Accessibility first, browser JavaScript where supported, then the configured Force Selection fallback; pressing `Command+C` twice quickly can explicitly trigger Selection Actions from the copied clipboard text.
+- Lets you edit prompt modes, OpenAI model, timeout, temperature, writing shortcut, voice shortcut, voice recording mode, microphone, speech preset, speech endpoint, speech model, post-transcription handling, selection translation language, selection Translate prompt, Force Selection mode, AI pronunciation voice, and AI pronunciation speed.
 - Shows local History for successful Write, Voice, and Selection results, with consecutive duplicate entries collapsed, selectable source/result text, a result copy control, and a clear-all action.
 - Uses one shared OpenAI API key for writing, voice transcription, selection translation, and pronunciation.
 - Provides English and Chinese app UI localization.
@@ -148,9 +148,9 @@ docs/                           manual QA and privacy policy
 - Your OpenAI API key is stored locally on your Mac.
 - Inklet uses Accessibility permission to return focus to the previous app and paste text.
 - Inklet uses Microphone permission only while recording voice dictation.
-- Inklet temporarily uses the clipboard for insertion and then restores the previous clipboard contents.
+- Inklet temporarily uses the clipboard for insertion and configured Force Selection fallback reads, then restores the previous clipboard contents.
 - Inklet saves successful Write, Voice, and Selection source/result text locally in History until you clear it in Settings, while skipping consecutive duplicate entries.
-- Selection Actions use Accessibility to read the current selection after you select text in another app. Inklet does not use the clipboard as a fallback for Selection Actions and does not save merely selected text unless a successful action is recorded in local History.
+- Selection Actions use Accessibility to read the current selection after you select text in another app. For supported browsers, Inklet can use browser JavaScript to read `window.getSelection()`. If Accessibility and browser reading fail, the configured Force Selection mode can briefly invoke menu Copy and/or `Command+C`, restore the previous clipboard, and use the copied text. You can turn Force Selection off in Settings. Pressing `Command+C` twice quickly after selecting text explicitly reads the copied clipboard text. Inklet does not save merely selected text unless a successful action is recorded in local History.
 - Selection Assistant caches successful translation results locally for 7 days using hashed cache keys to speed repeated translations.
 - Selection Assistant translation sends selected text and your custom Translate instructions to OpenAI when no local cached translation is available; AI pronunciation sends selected text to OpenAI.
 - Inklet fetches the public model catalog from `models.dev` at most once per day. This request does not include your text, audio, API keys, or app settings.
@@ -167,3 +167,4 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting and sensitive data gu
 ## License
 
 Inklet is released under the [MIT License](LICENSE).
+Third-party notices are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

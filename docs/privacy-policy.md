@@ -45,9 +45,9 @@ Inklet may fetch the public model catalog from `models.dev` periodically, curren
 
 ## Selection Actions
 
-When Selection Actions are enabled, Inklet watches for selection-related mouse and keyboard events and then uses macOS Accessibility to read the currently selected text after a short pause. Inklet does not use the clipboard as a fallback for this feature and does not store merely selected text unless a successful action is saved in local History.
+When Selection Actions are enabled, Inklet watches for selection-related mouse and keyboard events and then uses macOS Accessibility to read the currently selected text after a short pause. For supported browsers, Inklet may use browser JavaScript to read `window.getSelection()`. If these methods do not return selected text, the configured Force Selection mode may briefly invoke menu Copy and/or `Command+C`, read the changed clipboard text, and restore the previous clipboard contents. You can turn Force Selection off in Settings. Pressing `Command+C` twice quickly after selecting text explicitly reads the copied clipboard text. Inklet does not store merely selected text unless a successful action is saved in local History.
 
-If you choose Translate, Inklet first checks for a local cached translation. When no cached translation is available, the selected text and your custom Translate instructions are sent to your configured LLM provider. If you choose Pronounce, the selected text is sent to OpenAI text-to-speech using your OpenAI API key. Some apps do not expose selected text through Accessibility; in those apps the floating menu may not appear.
+If you choose Translate, Inklet first checks for a local cached translation. When no cached translation is available, the selected text and your custom Translate instructions are sent to your configured LLM provider. If you choose Pronounce, the selected text is sent to OpenAI text-to-speech using your OpenAI API key. Some apps may still block Accessibility, browser, and Force Selection reads; in those apps the floating menu may not appear automatically.
 
 ## Local Storage
 
@@ -57,13 +57,13 @@ Inklet stores successful Write, Voice, and Selection source/result text locally 
 
 Inklet caches successful Selection translation results locally for 7 days using hashed cache keys, so repeated translations can return faster without another provider call.
 
-Inklet temporarily uses the clipboard to insert text into the active app and then attempts to restore the previous clipboard contents.
+Inklet temporarily uses the clipboard to insert text into the active app and for configured Force Selection fallback reads, then attempts to restore the previous clipboard contents.
 
 ## Permissions
 
 Inklet requests the following macOS permissions:
 
-- Accessibility: used to return focus to the previous app, insert text after you confirm insertion, and read selected text for Selection Actions after you select text.
+- Accessibility: used to return focus to the previous app, insert text after you confirm insertion, inspect focused controls, invoke menu Copy when Force Selection is enabled, and read selected text for Selection Actions after you select text.
 - Microphone: used only while recording voice dictation that you start.
 
 Inklet does not use these permissions to collect text from other apps in the background.

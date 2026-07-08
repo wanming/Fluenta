@@ -106,7 +106,12 @@ struct SelectionActionView: View {
             }
         }
         .padding(panelPadding)
-        .frame(width: preferredWidth, alignment: .leading)
+        .frame(
+            minWidth: preferredWidth,
+            maxWidth: usesFlexiblePanelSize ? .infinity : preferredWidth,
+            alignment: .leading
+        )
+        .frame(maxHeight: usesFlexiblePanelSize ? .infinity : nil, alignment: .topLeading)
         .background(InkletTheme.panelBackground)
     }
 
@@ -116,9 +121,18 @@ struct SelectionActionView: View {
             224
         case .preparingPronunciation, .playingPronunciation, .translating:
             210
+        case .translationResult(let text, _, _):
+            text.count >= 240 ? 420 : 300
         default:
             300
         }
+    }
+
+    private var usesFlexiblePanelSize: Bool {
+        if case .translationResult = state {
+            return true
+        }
+        return false
     }
 
     private var panelPadding: EdgeInsets {
@@ -153,7 +167,7 @@ struct SelectionActionView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
         }
-        .frame(maxHeight: 180)
+        .frame(maxHeight: usesFlexiblePanelSize ? .infinity : 180)
         .background(InkletTheme.controlFill.opacity(0.58), in: RoundedRectangle(cornerRadius: 8))
         .overlay {
             RoundedRectangle(cornerRadius: 8)

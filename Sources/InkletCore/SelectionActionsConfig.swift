@@ -1,5 +1,14 @@
 import Foundation
 
+public enum SelectionForceSelectionMode: String, Codable, CaseIterable, Equatable, Identifiable, Sendable {
+    case disabled
+    case menuCopyOnly
+    case menuCopyThenShortcut
+    case shortcutThenMenuCopy
+
+    public var id: String { rawValue }
+}
+
 public struct SelectionActionsConfig: Codable, Equatable, Sendable {
     public static let minimumPronunciationSpeed = 0.75
     public static let maximumPronunciationSpeed = 1.5
@@ -10,6 +19,7 @@ public struct SelectionActionsConfig: Codable, Equatable, Sendable {
     public var pronunciationVoice: SelectionPronunciationVoice
     public var translationPrompt: String
     public var pronunciationSpeed: Double
+    public var forceSelectionMode: SelectionForceSelectionMode
 
     static let legacyDefaultTranslationPrompt = """
     Translate the user's selected text into {targetLanguage}.
@@ -33,13 +43,15 @@ public struct SelectionActionsConfig: Codable, Equatable, Sendable {
         translationLanguage: SelectionTranslationLanguage = .followInterfaceLanguage,
         pronunciationVoice: SelectionPronunciationVoice = .alloy,
         translationPrompt: String = Self.defaultTranslationPrompt,
-        pronunciationSpeed: Double = Self.defaultPronunciationSpeed
+        pronunciationSpeed: Double = Self.defaultPronunciationSpeed,
+        forceSelectionMode: SelectionForceSelectionMode = .menuCopyThenShortcut
     ) {
         self.isEnabled = isEnabled
         self.translationLanguage = translationLanguage
         self.pronunciationVoice = pronunciationVoice
         self.translationPrompt = translationPrompt
         self.pronunciationSpeed = Self.clampedPronunciationSpeed(pronunciationSpeed)
+        self.forceSelectionMode = forceSelectionMode
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -48,6 +60,7 @@ public struct SelectionActionsConfig: Codable, Equatable, Sendable {
         case pronunciationVoice
         case translationPrompt
         case pronunciationSpeed
+        case forceSelectionMode
     }
 
     public init(from decoder: Decoder) throws {
@@ -70,6 +83,10 @@ public struct SelectionActionsConfig: Codable, Equatable, Sendable {
         pronunciationSpeed = Self.clampedPronunciationSpeed(
             try container.decodeIfPresent(Double.self, forKey: .pronunciationSpeed) ?? defaults.pronunciationSpeed
         )
+        forceSelectionMode = try container.decodeIfPresent(
+            SelectionForceSelectionMode.self,
+            forKey: .forceSelectionMode
+        ) ?? defaults.forceSelectionMode
     }
 
     public static func defaultConfig() -> SelectionActionsConfig {
