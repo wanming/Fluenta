@@ -10,16 +10,38 @@ final class InkletPopoverViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var isTransforming = false
     @Published var isInserting = false
-    @Published var selectedModeID: String
-    @Published var openRevision = 0
-    @Published var modes: [PromptMode]
+    @Published private(set) var modePickerState: WritingModePickerState
+    @Published private(set) var popoverSession: WritingPopoverSessionState
+    @Published private(set) var modeSearchFocusRevision = 0
+    @Published private(set) var modes: [PromptMode]
     @Published var preferredPopoverHeight: CGFloat = 168
     @Published var appearance: AppAppearance
     @Published var voiceShortcutHint: VoiceInputConfig.Shortcut?
 
     var onHidePopover: (() -> Void)?
     var onFocusPopover: (() -> Void)?
+    var onFocusSourceInput: (() -> Void)?
     var onOpenSettings: (() -> Void)?
+
+    var route: WritingPopoverSessionState.Route {
+        popoverSession.route
+    }
+
+    var selectedModeID: String {
+        popoverSession.selectedModeID
+    }
+
+    var isResultStale: Bool {
+        popoverSession.isResultStale && !resultText.isEmpty
+    }
+
+    var resultModeDisplayName: String? {
+        guard let resultModeID = popoverSession.resultModeID else {
+            return nil
+        }
+
+        return modes.first(where: { $0.id == resultModeID })?.localizedName ?? resultModeID
+    }
 
     var currentProviderName: String {
         LLMProviderPreset.preset(id: config.providerID).name
@@ -35,6 +57,7 @@ final class InkletPopoverViewModel: ObservableObject {
     private let insertionService: InsertionService
     private let transformationServiceFactory: (any LLMProvider) -> TransformationService
     private let historyStore: any HistoryStore
+    private let writingModePreferenceStore: WritingModePreferenceStore
     private var config: AppConfig
     private var previousApplication: NSRunningApplication?
     private var transformationTask: Task<Void, Never>?
@@ -48,7 +71,8 @@ final class InkletPopoverViewModel: ObservableObject {
         apiKeyStore: LocalAPIKeyStore = LocalAPIKeyStore(),
         transformationServiceFactory: @escaping (any LLMProvider) -> TransformationService = { TransformationService(provider: $0) },
         insertionService: InsertionService = InsertionService(),
-        historyStore: any HistoryStore = JSONLHistoryStore()
+        historyStore: any HistoryStore = JSONLHistoryStore(),
+        writingModePreferenceStore: WritingModePreferenceStore = WritingModePreferenceStore()
     ) {
         self.stateMachine = stateMachine
         self.configStore = configStore
@@ -56,11 +80,21 @@ final class InkletPopoverViewModel: ObservableObject {
         self.transformationServiceFactory = transformationServiceFactory
         self.insertionService = insertionService
         self.historyStore = historyStore
+        self.writingModePreferenceStore = writingModePreferenceStore
 
         let loadedConfig = (try? configStore.load()) ?? AppConfig.defaultConfig()
+        let visibleModes = Self.resolvedVisibleModes(from: loadedConfig)
+        let selectedModeID = Self.resolvedModeID(
+            preferredModeID: writingModePreferenceStore.loadLastModeID(),
+            visibleModes: visibleModes
+        )
         self.config = loadedConfig
-        self.modes = loadedConfig.visiblePromptModes
-        self.selectedModeID = loadedConfig.defaultVisibleModeID
+        self.modes = visibleModes
+        self.modePickerState = WritingModePickerState(
+            items: Self.modePickerItems(for: visibleModes),
+            preferredModeID: selectedModeID
+        )
+        self.popoverSession = WritingPopoverSessionState(selectedModeID: selectedModeID)
         self.appearance = loadedConfig.appearance
         self.voiceShortcutHint = nil
     }
@@ -73,8 +107,17 @@ final class InkletPopoverViewModel: ObservableObject {
         stateMachine = PopoverStateMachine()
 
         config = (try? configStore.load()) ?? AppConfig.defaultConfig()
-        modes = config.visiblePromptModes
-        selectedModeID = config.defaultVisibleModeID
+        modes = Self.resolvedVisibleModes(from: config)
+        let selectedModeID = Self.resolvedModeID(
+            preferredModeID: writingModePreferenceStore.loadLastModeID(),
+            visibleModes: modes
+        )
+        popoverSession = WritingPopoverSessionState(selectedModeID: selectedModeID)
+        modePickerState = WritingModePickerState(
+            items: Self.modePickerItems(for: modes),
+            preferredModeID: selectedModeID
+        )
+        modeSearchFocusRevision += 1
         appearance = config.appearance
         refreshVoiceShortcutHint()
         sourceText = draftSourceText
@@ -84,7 +127,6 @@ final class InkletPopoverViewModel: ObservableObject {
         isInserting = false
         hasTransformedInSession = false
         preferredPopoverHeight = 168
-        openRevision += 1
 
         handle(actions: stateMachine.send(.open))
         if !sourceText.isEmpty {
@@ -108,6 +150,7 @@ final class InkletPopoverViewModel: ObservableObject {
         sourceText = text
         if !resultText.isEmpty {
             resultText = ""
+            mutatePopoverSession { $0.clearResult() }
         }
 
         _ = stateMachine.send(.sourceChanged(text))
@@ -119,7 +162,65 @@ final class InkletPopoverViewModel: ObservableObject {
         }
 
         resultText = text
+        guard !text.isEmpty else {
+            mutatePopoverSession { $0.clearResult() }
+            stateMachine = PopoverStateMachine(
+                state: .editingSource(source: sourceText, errorMessage: nil)
+            )
+            return
+        }
+
         _ = stateMachine.send(.resultChanged(text))
+    }
+
+    func updateModeSearchQuery(_ query: String) {
+        mutateModePickerState { $0.setQuery(query) }
+    }
+
+    func moveModeHighlight(by offset: Int) {
+        mutateModePickerState { $0.moveHighlight(by: offset) }
+    }
+
+    func highlightMode(modeID: String) {
+        mutateModePickerState { _ = $0.highlight(modeID: modeID) }
+    }
+
+    func commitHighlightedMode() {
+        guard let highlightedModeID = modePickerState.highlightedModeID else {
+            return
+        }
+
+        commitMode(modeID: highlightedModeID)
+    }
+
+    func commitMode(modeID: String) {
+        guard !isTransforming, !isInserting,
+              modes.contains(where: { $0.id == modeID })
+        else {
+            return
+        }
+
+        mutatePopoverSession { $0.enterEditor(modeID: modeID) }
+        writingModePreferenceStore.saveLastModeID(modeID)
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.route == .editor else {
+                return
+            }
+            self.onFocusSourceInput?()
+        }
+    }
+
+    func returnToModePicker() {
+        guard !isTransforming, !isInserting else {
+            return
+        }
+
+        mutatePopoverSession { $0.showModePicker() }
+        modePickerState = WritingModePickerState(
+            items: Self.modePickerItems(for: modes),
+            preferredModeID: selectedModeID
+        )
+        modeSearchFocusRevision += 1
     }
 
     func cyclePromptMode(direction: Int) {
@@ -129,7 +230,7 @@ final class InkletPopoverViewModel: ObservableObject {
 
         let currentIndex = modes.firstIndex { $0.id == selectedModeID } ?? 0
         let nextIndex = (currentIndex + direction + modes.count) % modes.count
-        selectedModeID = modes[nextIndex].id
+        commitMode(modeID: modes[nextIndex].id)
     }
 
     func submit() {
@@ -138,6 +239,13 @@ final class InkletPopoverViewModel: ObservableObject {
         }
 
         errorMessage = nil
+        if !resultText.isEmpty, isResultStale {
+            removeSingleTrailingNewlineFromSource()
+            _ = stateMachine.send(.sourceChanged(sourceText))
+            handle(actions: stateMachine.send(.submit))
+            return
+        }
+
         if !resultText.isEmpty {
             removeSingleTrailingNewlineFromResult()
             let currentResult = resultText
@@ -204,23 +312,32 @@ final class InkletPopoverViewModel: ObservableObject {
     }
 
     func escape() {
-        transformationTask?.cancel()
-        transformationTask = nil
-
-        if !resultText.isEmpty {
-            draftSourceText = ""
-            resultText = ""
-            errorMessage = nil
-            handle(actions: stateMachine.send(.escape))
+        if isTransforming {
+            cancelTransformationAndStayInEditor()
             return
         }
 
-        draftSourceText = hasTransformedInSession ? "" : sourceText
-        var actions = stateMachine.send(.escape)
-        if actions.isEmpty {
-            actions = stateMachine.send(.close)
+        guard !isInserting else {
+            return
         }
-        handle(actions: actions)
+
+        if route == .modePicker {
+            draftSourceText = hasTransformedInSession ? "" : sourceText
+            handle(actions: stateMachine.send(.close))
+            return
+        }
+
+        if !resultText.isEmpty {
+            resultText = ""
+            errorMessage = nil
+            mutatePopoverSession { $0.clearResult() }
+            stateMachine = PopoverStateMachine(
+                state: .editingSource(source: sourceText, errorMessage: nil)
+            )
+            return
+        }
+
+        returnToModePicker()
     }
 
     func openSettings() {
@@ -236,7 +353,9 @@ final class InkletPopoverViewModel: ObservableObject {
             case .hidePopover:
                 onHidePopover?()
             case .focusSourceInput:
-                openRevision += 1
+                if route == .editor {
+                    onFocusSourceInput?()
+                }
             case .startTransformation(let source):
                 startTransformation(source: source)
             case .showResult(let result):
@@ -259,13 +378,23 @@ final class InkletPopoverViewModel: ObservableObject {
 
     private func startTransformation(source: String) {
         transformationTask?.cancel()
-        resultText = ""
+        let preservesExistingResult = isResultStale
+        if !preservesExistingResult {
+            resultText = ""
+            mutatePopoverSession { $0.clearResult() }
+        }
         errorMessage = nil
         isTransforming = true
 
-        selectedModeID = config.visibleModeID(preferredModeID: selectedModeID)
-        let promptModeStore = config.promptModeStore
-        let mode = promptModeStore.resolve(modeID: selectedModeID, sourceText: source)
+        let resolvedModeID = Self.resolvedModeID(
+            preferredModeID: selectedModeID,
+            visibleModes: modes
+        )
+        let mode = PromptModeStore(modes: modes).resolve(
+            modeID: resolvedModeID,
+            sourceText: source
+        )
+        let transformationModeID = mode.id
         let model = config.model
         let temperature = config.temperature
         let timeoutSeconds = config.timeoutSeconds
@@ -304,15 +433,77 @@ final class InkletPopoverViewModel: ObservableObject {
                         "providerID": providerID
                     ]
                 ))
+                transformationTask = nil
                 isTransforming = false
+                mutatePopoverSession { $0.recordResult(modeID: transformationModeID) }
                 handle(actions: stateMachine.send(.transformationSucceeded(result: result.outputText)))
             } catch {
                 guard !Task.isCancelled else { return }
+                transformationTask = nil
                 isTransforming = false
-                resultText = ""
+                if !preservesExistingResult {
+                    resultText = ""
+                    mutatePopoverSession { $0.clearResult() }
+                }
                 handle(actions: stateMachine.send(.transformationFailed(message: error.userFacingMessage)))
+                if preservesExistingResult {
+                    synchronizeStateMachineWithVisibleContent()
+                }
             }
         }
+    }
+
+    private func cancelTransformationAndStayInEditor() {
+        transformationTask?.cancel()
+        transformationTask = nil
+        isTransforming = false
+        errorMessage = nil
+        mutatePopoverSession { $0.enterEditor(modeID: selectedModeID) }
+        synchronizeStateMachineWithVisibleContent()
+    }
+
+    private func synchronizeStateMachineWithVisibleContent() {
+        let visibleState: PopoverStateMachine.State = resultText.isEmpty
+            ? .editingSource(source: sourceText, errorMessage: nil)
+            : .previewingResult(source: sourceText, result: resultText)
+        stateMachine = PopoverStateMachine(state: visibleState)
+    }
+
+    private func mutateModePickerState(_ mutation: (inout WritingModePickerState) -> Void) {
+        var updatedState = modePickerState
+        mutation(&updatedState)
+        modePickerState = updatedState
+    }
+
+    private func mutatePopoverSession(_ mutation: (inout WritingPopoverSessionState) -> Void) {
+        var updatedSession = popoverSession
+        mutation(&updatedSession)
+        popoverSession = updatedSession
+    }
+
+    private static func resolvedVisibleModes(from config: AppConfig) -> [PromptMode] {
+        let visibleModes = config.visiblePromptModes
+        if !visibleModes.isEmpty {
+            return visibleModes
+        }
+
+        return AppConfig.defaultConfig().visiblePromptModes
+    }
+
+    private static func resolvedModeID(
+        preferredModeID: String?,
+        visibleModes: [PromptMode]
+    ) -> String {
+        if let preferredModeID,
+           visibleModes.contains(where: { $0.id == preferredModeID }) {
+            return preferredModeID
+        }
+
+        return visibleModes.first?.id ?? PromptMode.translateToEnglishID
+    }
+
+    private static func modePickerItems(for modes: [PromptMode]) -> [WritingModePickerItem] {
+        modes.map { WritingModePickerItem(id: $0.id, title: $0.localizedName) }
     }
 
     private func localizedStateMachineMessage(_ message: String) -> String {
@@ -347,6 +538,7 @@ final class InkletPopoverViewModel: ObservableObject {
                 draftSourceText = ""
                 sourceText = ""
                 resultText = ""
+                mutatePopoverSession { $0.clearResult() }
                 handle(actions: stateMachine.send(.insertionFinished))
             } catch {
                 guard sessionID == insertionSessionID else {
@@ -537,9 +729,6 @@ struct InkletPopoverView: View {
         .onChange(of: popoverHeight) {
             publishPopoverHeight()
         }
-        .onChange(of: model.openRevision) {
-            focusSourceEditor()
-        }
     }
 
     private var commandInput: some View {
@@ -623,7 +812,7 @@ struct InkletPopoverView: View {
             Menu {
                 ForEach(model.modes) { mode in
                     Button {
-                        model.selectedModeID = mode.id
+                        model.commitMode(modeID: mode.id)
                     } label: {
                         Label(mode.localizedName, systemImage: modeIcon(for: mode.id))
                     }
