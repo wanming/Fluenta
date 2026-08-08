@@ -40,6 +40,15 @@ final class SelectionDragPolicyTests: XCTestCase {
         )
     }
 
+    func testMouseUpActionReturnsCandidateForDoubleClickWithoutMouseDown() {
+        var policy = SelectionDragPolicy(minimumDistance: 6)
+
+        XCTAssertEqual(
+            policy.consumeMouseUpAction(at: SelectionPoint(x: 10, y: 10), clickCount: 2),
+            .candidateSelection
+        )
+    }
+
     func testMouseUpWithoutMouseDownDoesNotTriggerCandidate() {
         var policy = SelectionDragPolicy(minimumDistance: 6)
 
