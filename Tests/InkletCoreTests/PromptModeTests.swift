@@ -20,6 +20,12 @@ final class PromptModeTests: XCTestCase {
         XCTAssertFalse(store.visibleModes.contains { $0.id == PromptMode.autoID })
     }
 
+    func testBuiltInModesDoNotAdvertiseNumericShortcuts() {
+        let modes = PromptModeStore.defaultStore().modes
+
+        XCTAssertTrue(modes.allSatisfy { $0.shortcut == nil })
+    }
+
     func testVoiceCleanupRemovesSpeechNoiseWithoutChangingIntent() throws {
         let mode = try XCTUnwrap(PromptModeStore.defaultStore().mode(id: PromptMode.voiceCleanupID))
 
@@ -130,6 +136,7 @@ final class PromptModeTests: XCTestCase {
         let mode = store.resolve(modeID: "missing", sourceText: "hello")
 
         XCTAssertEqual(mode.id, PromptMode.translateToEnglishID)
+        XCTAssertNil(mode.shortcut)
     }
 
     func testInternalResolveReturnsHiddenVoiceCleanupMode() {

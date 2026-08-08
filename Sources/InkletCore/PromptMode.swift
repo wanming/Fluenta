@@ -88,7 +88,7 @@ public struct PromptModeStore: Equatable, Sendable {
                 Do not add explanations, alternatives, quotes, or markdown.
                 Return only the final rewritten text.
                 """,
-                shortcut: "⌘1",
+                shortcut: nil,
                 participatesInAuto: false,
                 autoRule: .none,
                 sortOrder: 0,
@@ -107,7 +107,7 @@ public struct PromptModeStore: Equatable, Sendable {
                 Do not include explanations about the task.
                 Return only the Chinese summary.
                 """,
-                shortcut: "⌘2",
+                shortcut: nil,
                 participatesInAuto: false,
                 autoRule: .none,
                 sortOrder: 1,
@@ -184,7 +184,7 @@ public struct PromptModeStore: Equatable, Sendable {
             Do not add explanations, alternatives, quotes, or markdown.
             Return only the final rewritten text.
             """,
-            shortcut: "⌘1",
+            shortcut: nil,
             participatesInAuto: false,
             autoRule: .none,
             sortOrder: 0,
