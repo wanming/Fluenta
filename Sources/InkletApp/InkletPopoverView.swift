@@ -126,7 +126,9 @@ final class InkletPopoverViewModel: ObservableObject {
         isTransforming = false
         isInserting = false
         hasTransformedInSession = false
-        preferredPopoverHeight = 168
+        preferredPopoverHeight = WritingModePickerView.preferredHeight(
+            resultCount: modePickerState.filteredItems.count
+        )
 
         handle(actions: stateMachine.send(.open))
         if !sourceText.isEmpty {
@@ -642,6 +644,7 @@ struct InkletPopoverView: View {
     private let actionBarHeight: CGFloat = 36
     private let dividerHeight: CGFloat = 1
     private let statusHeight: CGFloat = 34
+    private let staleResultBannerHeight: CGFloat = 24
     private var isBusy: Bool {
         model.isTransforming || model.isInserting
     }
@@ -651,7 +654,12 @@ struct InkletPopoverView: View {
     }
 
     private var primaryActionTitle: String {
-        model.resultText.isEmpty ? L10n.text("popover.action.transform") : L10n.text("popover.action.insert")
+        if model.isResultStale {
+            return L10n.text("popover.action.regenerate")
+        }
+        return model.resultText.isEmpty
+            ? L10n.text("popover.action.transform")
+            : L10n.text("popover.action.insert")
     }
 
     private var busyTitle: String {
@@ -659,7 +667,7 @@ struct InkletPopoverView: View {
     }
 
     private var modeIconName: String {
-        modeIcon(for: model.selectedModeID)
+        writingModeIconName(for: model.selectedModeID)
     }
 
     private var selectedModeDisplayName: String {
@@ -670,10 +678,21 @@ struct InkletPopoverView: View {
     }
 
     private var popoverHeight: CGFloat {
+        switch model.route {
+        case .modePicker:
+            WritingModePickerView.preferredHeight(
+                resultCount: model.modePickerState.filteredItems.count
+            )
+        case .editor:
+            editorPopoverHeight
+        }
+    }
+
+    private var editorPopoverHeight: CGFloat {
         headerHeight
             + dividerHeight
             + inputHeight
-            + (model.resultText.isEmpty ? 0 : dividerHeight + resultHeight)
+            + (model.resultText.isEmpty ? 0 : dividerHeight + resultPanelHeight)
             + (model.errorMessage == nil ? 0 : dividerHeight + statusHeight)
             + dividerHeight
             + actionBarHeight
@@ -695,15 +714,22 @@ struct InkletPopoverView: View {
         )
     }
 
+    private var resultPanelHeight: CGFloat {
+        resultHeight + (showsStaleResultBanner ? staleResultBannerHeight : 0)
+    }
+
+    private var showsStaleResultBanner: Bool {
+        model.isResultStale && model.resultModeDisplayName != nil
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider().opacity(0.45)
-            commandInput
-            resultPanel
-            statusStrip
-            Divider().opacity(0.45)
-            actionBar
+        Group {
+            switch model.route {
+            case .modePicker:
+                WritingModePickerView(model: model)
+            case .editor:
+                editorContent
+            }
         }
         .background(
             PopoverKeyEventHandler(
@@ -724,10 +750,21 @@ struct InkletPopoverView: View {
         .shadow(color: .white.opacity(0.03), radius: 0, x: 0, y: 1)
         .onAppear {
             publishPopoverHeight()
-            focusSourceEditor()
         }
         .onChange(of: popoverHeight) {
             publishPopoverHeight()
+        }
+    }
+
+    private var editorContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            Divider().opacity(0.45)
+            commandInput
+            resultPanel
+            statusStrip
+            Divider().opacity(0.45)
+            actionBar
         }
     }
 
@@ -761,29 +798,49 @@ struct InkletPopoverView: View {
     private var resultPanel: some View {
         if !model.resultText.isEmpty {
             Divider().opacity(0.45)
-            ZStack(alignment: .topTrailing) {
-                InkletTextView(
-                    text: Binding(
-                        get: { model.resultText },
-                        set: { model.updateResultText($0) }
-                    ),
-                    isEditable: !isBusy,
-                    onSubmit: { model.submit() },
-                    onInsertOriginal: { model.insertOriginal() },
-                    onEscape: { model.escape() }
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .background(InkletTheme.primary.opacity(0.08))
+            VStack(spacing: 0) {
+                if model.isResultStale, let resultModeDisplayName = model.resultModeDisplayName {
+                    HStack(spacing: 6) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 10, weight: .medium))
+                        Text(L10n.format("popover.result.generatedWith", resultModeDisplayName))
+                            .font(.system(size: 10, weight: .medium))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    .foregroundStyle(InkletTheme.textSecondary)
+                    .padding(.horizontal, 14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: staleResultBannerHeight)
+                    .background(InkletTheme.toolbarBackground)
+                    .accessibilityElement(children: .combine)
+                }
+
+                ZStack(alignment: .topTrailing) {
+                    InkletTextView(
+                        text: Binding(
+                            get: { model.resultText },
+                            set: { model.updateResultText($0) }
+                        ),
+                        isEditable: !isBusy,
+                        onSubmit: { model.submit() },
+                        onInsertOriginal: { model.insertOriginal() },
+                        onEscape: { model.escape() }
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .background(InkletTheme.primary.opacity(0.08))
+                }
+                .frame(height: resultHeight)
+                .background {
+                    editorHeightReader(for: model.resultText, key: ResultEditorHeightPreferenceKey.self)
+                }
+                .onPreferenceChange(ResultEditorHeightPreferenceKey.self) { height in
+                    resultMeasuredHeight = height
+                }
             }
-            .frame(height: resultHeight)
-            .background {
-                editorHeightReader(for: model.resultText, key: ResultEditorHeightPreferenceKey.self)
-            }
-            .onPreferenceChange(ResultEditorHeightPreferenceKey.self) { height in
-                resultMeasuredHeight = height
-            }
+            .frame(height: resultPanelHeight)
             .transition(.opacity.combined(with: .move(edge: .bottom)))
             .onAppear {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
@@ -809,16 +866,13 @@ struct InkletPopoverView: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 6) {
-            Menu {
-                ForEach(model.modes) { mode in
-                    Button {
-                        model.commitMode(modeID: mode.id)
-                    } label: {
-                        Label(mode.localizedName, systemImage: modeIcon(for: mode.id))
-                    }
-                }
+            Button {
+                model.returnToModePicker()
             } label: {
                 HStack(spacing: 6) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(InkletTheme.textSecondary.opacity(0.78))
                     Image(systemName: modeIconName)
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(InkletTheme.primary.opacity(0.82))
@@ -827,9 +881,6 @@ struct InkletPopoverView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .layoutPriority(1)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(InkletTheme.textSecondary.opacity(0.78))
                 }
                 .foregroundStyle(InkletTheme.textPrimary.opacity(0.92))
                 .padding(.horizontal, 7)
@@ -837,7 +888,9 @@ struct InkletPopoverView: View {
                 .background(Color.clear, in: RoundedRectangle(cornerRadius: 9))
             }
             .buttonStyle(.plain)
-            .menuIndicator(.hidden)
+            .disabled(isBusy)
+            .help(L10n.text("popover.mode.backToModes"))
+            .accessibilityLabel(L10n.text("popover.mode.backToModes"))
 
             Spacer()
 
@@ -860,6 +913,7 @@ struct InkletPopoverView: View {
             }
             .buttonStyle(.plain)
             .help(L10n.text("app.menu.settings"))
+            .accessibilityLabel(L10n.text("app.menu.settings"))
         }
         .padding(.horizontal, 14)
         .frame(height: headerHeight)
@@ -965,27 +1019,6 @@ struct InkletPopoverView: View {
             isResultFocused = true
         } else {
             model.updateSourceText(model.sourceText + "\n")
-            isSourceFocused = true
-        }
-    }
-
-    private func modeIcon(for modeID: String) -> String {
-        switch modeID {
-        case PromptMode.autoID:
-            "sparkles"
-        case PromptMode.chineseToEnglishID:
-            "globe.asia.australia"
-        case PromptMode.chineseSummaryID:
-            "text.alignleft"
-        case PromptMode.polishEnglishID:
-            "wand.and.stars"
-        default:
-            "arrow.right"
-        }
-    }
-
-    private func focusSourceEditor() {
-        DispatchQueue.main.async {
             isSourceFocused = true
         }
     }
