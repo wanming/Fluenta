@@ -34,7 +34,7 @@ final class SelectionActionMonitor {
         }
 
         SelectionActionDiagnostics.log("starting global monitors")
-        monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp, .rightMouseUp]) { [weak self] event in
+        monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp]) { [weak self] event in
             Task { @MainActor in
                 guard let self else { return }
                 let point = SelectionPoint(x: NSEvent.mouseLocation.x, y: NSEvent.mouseLocation.y)
