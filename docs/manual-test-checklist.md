@@ -2,7 +2,7 @@
 
 ## Preparation
 
-- Launch Inklet from Xcode, `swift run Inklet`, or the installed app bundle.
+- Build, install, and launch `/Applications/Inklet Local.app` with `scripts/run-local-app.sh`.
 - Configure an LLM provider and API key in Settings.
 - Configure Voice settings with a speech API key if testing dictation.
 - Grant Accessibility permission in macOS System Settings.
@@ -12,14 +12,30 @@
 
 ## Core Flow
 
-- TextEdit: focus a text field, press `Option+Space`, enter text, press `Enter` to transform, then press `Enter` again to insert the result.
+- TextEdit: focus a text field, press `Option+Space`, search for a prompt mode, use `Up` / `Down` to highlight it, press `Tab` to commit it, enter text, press `Enter` to transform, then press `Enter` again to insert the result.
 - TextEdit: enter a rough English sentence, improve it, then insert the result.
 - Notes: repeat the transform and insert flow.
 - Safari or Chrome: repeat the flow in a web text field.
-- Selected text: select text in another app, open Inklet, and confirm the selected text appears in the source editor.
+- Selected text: select text in another app, open Inklet, commit a prompt mode from the launcher, and confirm the selected text appears in the source editor.
+- Initial focus: each time the popover opens, confirm the mode search field is focused and the source editor is not focused yet.
+- Filtering: configure English, Chinese, mixed-case, and diacritic-bearing mode names; confirm search is case- and diacritic-insensitive, matches Chinese text, and preserves the visible mode order from Settings.
+- Arrow navigation: press `Up` / `Down` through filtered modes and confirm the highlight clamps at the first and last result instead of wrapping.
+- `Tab` in the launcher: confirm it commits the highlighted mode and focuses the source editor.
+- `Return` in the launcher: outside active IME composition, confirm it is consumed, performs no action, and leaves the launcher open. During Chinese IME composition, confirm it accepts the text or candidate normally without unexpectedly entering the source editor.
+- No matches: enter a query with no matching modes, confirm the empty state appears, and confirm `Tab` does not advance to the editor.
+- Back to modes: after committing a mode from a nonempty query, use the editor's back control and confirm the query clears while the source, any existing result, and the current mode highlight remain.
+- Reopen persistence: commit a non-first visible mode, close and reopen the popover, and confirm that last committed mode is highlighted.
+- Missing saved mode: hide the last committed mode in Settings, then delete it in a separate pass; each time, reopen the popover and confirm the first visible mode in Settings order is highlighted.
+- Change mode with a result: return to the launcher, commit a different mode, and confirm the prior result remains visible with its `Generated with` mode label. Confirm generation waits for a deliberate `Enter`, then regenerates with the newly committed mode.
+- Regeneration recovery: force both a provider failure and an `Escape` cancellation while regenerating with a different mode; confirm the prior result remains visible and `Enter` can retry.
+- Restore Insert behavior: reselect the mode that generated the existing result and confirm the stale-result label clears and `Enter` inserts the result instead of regenerating it.
+- Layered `Escape`: with a result visible, press `Escape` once to return to the source editor, once to return to the mode launcher, and once to close the popover. Confirm each press moves only one level.
+- Generation cancellation: press `Escape` while transforming and confirm generation cancels, remains in the editor, and performs no additional back navigation.
+- Launcher capacity and copy: configure more than six visible modes with long English and Chinese names; at the actual 600-point popover width, confirm scrolling reaches every mode and text, icons, and hints do not overlap.
+- Pointer interaction: confirm a single click highlights without committing, a double-click commits, and hover and pressed states are visible without changing layout.
+- VoiceOver: confirm the search field and every mode have useful labels, the highlighted mode exposes its selected state, and each mode offers a named `Write` action that commits it.
 - `Command+Enter`: insert the original source text without calling the model.
 - `Command+Up` / `Command+Down`: cycle through visible prompt modes.
-- `Escape`: close the popover without inserting text.
 - Missing API key: show an inline error while preserving the source text.
 - Network or provider failure: show an inline error while preserving the source text.
 - Paste failure: keep the generated result visible so the user can copy or retry.

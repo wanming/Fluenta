@@ -14,8 +14,10 @@ Build and run:
 
 ```bash
 swift build
-swift run Inklet
+scripts/run-local-app.sh
 ```
+
+The local runner installs and launches the stable `/Applications/Inklet Local.app` identity so Accessibility and Keychain approvals can be reused across rebuilds.
 
 Run tests:
 
