@@ -84,11 +84,11 @@ final class InkletPopoverViewModel: ObservableObject {
         self.writingModePreferenceStore = writingModePreferenceStore
 
         let loadedConfig = (try? configStore.load()) ?? AppConfig.defaultConfig()
-        let visibleModes = Self.resolvedVisibleModes(from: loadedConfig)
         let selectedModeID = Self.resolvedModeID(
             preferredModeID: writingModePreferenceStore.loadLastModeID(),
-            visibleModes: visibleModes
+            config: loadedConfig
         )
+        let visibleModes = Self.resolvedVisibleModes(from: loadedConfig)
         self.config = loadedConfig
         self.modes = visibleModes
         self.modePickerState = WritingModePickerState(
@@ -109,11 +109,11 @@ final class InkletPopoverViewModel: ObservableObject {
         stateMachine = PopoverStateMachine()
 
         config = (try? configStore.load()) ?? AppConfig.defaultConfig()
-        modes = Self.resolvedVisibleModes(from: config)
         let selectedModeID = Self.resolvedModeID(
             preferredModeID: writingModePreferenceStore.loadLastModeID(),
-            visibleModes: modes
+            config: config
         )
+        modes = Self.resolvedVisibleModes(from: config)
         popoverSession = WritingPopoverSessionState(selectedModeID: selectedModeID)
         modePickerState = WritingModePickerState(
             items: Self.modePickerItems(for: modes),
@@ -494,6 +494,17 @@ final class InkletPopoverViewModel: ObservableObject {
         var updatedSession = popoverSession
         mutation(&updatedSession)
         popoverSession = updatedSession
+    }
+
+    private static func resolvedModeID(
+        preferredModeID: String?,
+        config: AppConfig
+    ) -> String {
+        guard let preferredModeID else {
+            return config.defaultVisibleModeID
+        }
+
+        return config.visibleModeID(preferredModeID: preferredModeID)
     }
 
     private static func resolvedVisibleModes(from config: AppConfig) -> [PromptMode] {
@@ -960,7 +971,7 @@ struct InkletPopoverView: View {
                     voiceHint(shortcut: voiceShortcutHint)
                 }
 
-                shortcutHint(keys: ["esc"], label: model.resultText.isEmpty ? L10n.text("popover.hint.close") : L10n.text("popover.hint.back")) {
+                shortcutHint(keys: ["esc"], label: L10n.text("popover.hint.back")) {
                     model.escape()
                 }
             }

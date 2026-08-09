@@ -16,17 +16,32 @@ final class WritingModePickerStateTests: XCTestCase {
         XCTAssertEqual(state.highlightedModeID, "concise")
     }
 
-    func testSearchTrimsQueryAndMatchesCaseAndDiacritics() {
+    func testSearchPreservesRawQueryDuringIncrementalMultiWordInput() {
         let state = WritingModePickerState(items: [
             WritingModePickerItem(id: "resume", title: "Résumé Review"),
             WritingModePickerItem(id: "reply", title: "Friendly Reply")
         ])
 
         var searchedState = state
-        searchedState.setQuery(" \nRESUME\t")
-
-        XCTAssertEqual(searchedState.query, "RESUME")
+        searchedState.setQuery(" \nRESUME")
+        XCTAssertEqual(searchedState.query, " \nRESUME")
         XCTAssertEqual(searchedState.filteredItems.map(\.id), ["resume"])
+
+        searchedState.setQuery(" \nRESUME REVIEW\t")
+        XCTAssertEqual(searchedState.query, " \nRESUME REVIEW\t")
+        XCTAssertEqual(searchedState.filteredItems.map(\.id), ["resume"])
+    }
+
+    func testWhitespaceOnlySearchPreservesRawQueryAndShowsAllItems() {
+        let items = [
+            WritingModePickerItem(id: "resume", title: "Résumé Review"),
+            WritingModePickerItem(id: "reply", title: "Friendly Reply")
+        ]
+
+        let state = WritingModePickerState(items: items, query: " \n\t ")
+
+        XCTAssertEqual(state.query, " \n\t ")
+        XCTAssertEqual(state.filteredItems, items)
     }
 
     func testSearchMatchesChineseSubstrings() {

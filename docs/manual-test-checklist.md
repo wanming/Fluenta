@@ -16,7 +16,6 @@
 - TextEdit: enter a rough English sentence, improve it, then insert the result.
 - Notes: repeat the transform and insert flow.
 - Safari or Chrome: repeat the flow in a web text field.
-- Selected text: select text in another app, open Inklet, commit a prompt mode from the launcher, and confirm the selected text appears in the source editor.
 - Initial focus: each time the popover opens, confirm the mode search field is focused and the source editor is not focused yet.
 - Filtering: configure English, Chinese, mixed-case, and diacritic-bearing mode names; confirm search is case- and diacritic-insensitive, matches Chinese text, and preserves the visible mode order from Settings.
 - Arrow navigation: press `Up` / `Down` through filtered modes and confirm the highlight clamps at the first and last result instead of wrapping.

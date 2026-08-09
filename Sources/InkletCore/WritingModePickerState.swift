@@ -21,24 +21,25 @@ public struct WritingModePickerState: Equatable, Sendable {
         query: String = ""
     ) {
         self.items = items
-        self.query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.query = query
         highlightedModeID = preferredModeID
         reconcileHighlight()
     }
 
     public var filteredItems: [WritingModePickerItem] {
-        guard !query.isEmpty else {
+        let matchingQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !matchingQuery.isEmpty else {
             return items
         }
 
-        let normalizedQuery = Self.normalizedForSearch(query)
+        let normalizedQuery = Self.normalizedForSearch(matchingQuery)
         return items.filter {
             Self.normalizedForSearch($0.title).contains(normalizedQuery)
         }
     }
 
     public mutating func setQuery(_ query: String) {
-        self.query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.query = query
         reconcileHighlight()
     }
 

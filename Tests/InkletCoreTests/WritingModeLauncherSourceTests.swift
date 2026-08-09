@@ -337,6 +337,21 @@ final class WritingModeLauncherSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("writingModeIconName(for:"))
     }
 
+    func testEditorEscapeHintAlwaysDescribesBackNavigation() throws {
+        let source = try popoverSource()
+        let actionBarStart = try XCTUnwrap(source.range(of: "private var actionBar"))
+        let voiceHintStart = try XCTUnwrap(source.range(
+            of: "private func voiceHint",
+            range: actionBarStart.upperBound..<source.endIndex
+        ))
+        let actionBar = source[actionBarStart.lowerBound..<voiceHintStart.lowerBound]
+
+        XCTAssertTrue(actionBar.contains(
+            "shortcutHint(keys: [\"esc\"], label: L10n.text(\"popover.hint.back\"))"
+        ))
+        XCTAssertFalse(actionBar.contains("popover.hint.close"))
+    }
+
     func testPopoverViewModelOwnsLauncherAndSessionState() throws {
         let source = try popoverSource()
 
@@ -350,6 +365,40 @@ final class WritingModeLauncherSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("writingModePreferenceStore.saveLastModeID"))
         XCTAssertFalse(source.contains("@Published var selectedModeID"))
         XCTAssertFalse(source.contains("@Published var openRevision"))
+    }
+
+    func testViewModelValidatesPersistedModeBeforeFallbackResolution() throws {
+        let source = try popoverSource()
+        let initializerStart = try XCTUnwrap(source.range(of: "\n    init(\n"))
+        let resetStart = try XCTUnwrap(source.range(
+            of: "func resetForOpen",
+            range: initializerStart.upperBound..<source.endIndex
+        ))
+        let refreshStart = try XCTUnwrap(source.range(
+            of: "private func refreshVoiceShortcutHint",
+            range: resetStart.upperBound..<source.endIndex
+        ))
+        let initializerBlock = source[initializerStart.lowerBound..<resetStart.lowerBound]
+        let resetBlock = source[resetStart.lowerBound..<refreshStart.lowerBound]
+        let initializerSelection = try XCTUnwrap(initializerBlock.range(
+            of: "let selectedModeID = Self.resolvedModeID("
+        ))
+        let initializerFallback = try XCTUnwrap(initializerBlock.range(
+            of: "let visibleModes = Self.resolvedVisibleModes(from: loadedConfig)"
+        ))
+        let resetSelection = try XCTUnwrap(resetBlock.range(
+            of: "let selectedModeID = Self.resolvedModeID("
+        ))
+        let resetFallback = try XCTUnwrap(resetBlock.range(
+            of: "modes = Self.resolvedVisibleModes(from: config)"
+        ))
+
+        XCTAssertLessThan(initializerSelection.lowerBound, initializerFallback.lowerBound)
+        XCTAssertTrue(initializerBlock.contains("config: loadedConfig"))
+        XCTAssertLessThan(resetSelection.lowerBound, resetFallback.lowerBound)
+        XCTAssertTrue(resetBlock.contains("config: config"))
+        XCTAssertTrue(source.contains("config.visibleModeID(preferredModeID: preferredModeID)"))
+        XCTAssertTrue(source.contains("config.defaultVisibleModeID"))
     }
 
     func testNoResultsModeCommitStopsAtViewModelBoundary() throws {
