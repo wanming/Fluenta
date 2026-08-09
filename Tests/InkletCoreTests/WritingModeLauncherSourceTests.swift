@@ -29,6 +29,42 @@ final class WritingModeLauncherSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("controlTextDidChange"))
     }
 
+    func testPickerSearchFocusRetriesOnlyCurrentRevisionAndDeactivatesOnDismantle() throws {
+        let source = try pickerSource()
+        let searchFieldStart = try XCTUnwrap(source.range(of: "private struct WritingModeSearchField"))
+        let searchFieldSource = source[searchFieldStart.lowerBound...]
+        let updateStart = try XCTUnwrap(searchFieldSource.range(of: "func updateNSView"))
+        let dismantleStart = try XCTUnwrap(searchFieldSource.range(
+            of: "static func dismantleNSView",
+            range: updateStart.upperBound..<searchFieldSource.endIndex
+        ))
+        let coordinatorStart = try XCTUnwrap(searchFieldSource.range(
+            of: "final class Coordinator",
+            range: dismantleStart.upperBound..<searchFieldSource.endIndex
+        ))
+        let updateBlock = searchFieldSource[updateStart.lowerBound..<dismantleStart.lowerBound]
+        let dismantleBlock = searchFieldSource[dismantleStart.lowerBound..<coordinatorStart.lowerBound]
+        let coordinatorBlock = searchFieldSource[coordinatorStart.lowerBound...]
+        let makeFirstResponder = try XCTUnwrap(coordinatorBlock.range(of: "makeFirstResponder(searchField)"))
+        let markSuccessful = try XCTUnwrap(coordinatorBlock.range(
+            of: "focusedRevision = revision",
+            range: makeFirstResponder.upperBound..<coordinatorBlock.endIndex
+        ))
+
+        XCTAssertTrue(updateBlock.contains("context.coordinator.requestFocus("))
+        XCTAssertTrue(updateBlock.contains("revision: focusRevision"))
+        XCTAssertTrue(dismantleBlock.contains("coordinator.deactivate()"))
+        XCTAssertTrue(coordinatorBlock.contains("requestedFocusRevision"))
+        XCTAssertTrue(coordinatorBlock.contains("pendingFocusRevision"))
+        XCTAssertTrue(coordinatorBlock.contains("isActive"))
+        XCTAssertTrue(coordinatorBlock.contains("requestedFocusRevision == revision"))
+        XCTAssertTrue(coordinatorBlock.contains("pendingFocusRevision == revision"))
+        XCTAssertTrue(coordinatorBlock.contains("remainingRetries"))
+        XCTAssertTrue(coordinatorBlock.contains("DispatchQueue.main.async"))
+        XCTAssertTrue(coordinatorBlock.contains("self.attemptFocus("))
+        XCTAssertLessThan(makeFirstResponder.lowerBound, markSuccessful.lowerBound)
+    }
+
     func testMouseHighlightSkipsOneScrollWithoutDisablingKeyboardScrolling() throws {
         let source = try pickerSource()
         let mouseHighlightStart = try XCTUnwrap(source.range(of: "private func highlightModeFromMouse"))
@@ -80,6 +116,191 @@ final class WritingModeLauncherSourceTests: XCTestCase {
         XCTAssertTrue(source.contains(".accessibilityLabel(L10n.text(\"app.menu.settings\"))"))
     }
 
+    func testPopoverKeyHandlerReceivesRouteAwareModeActionsAndRefreshesCoordinator() throws {
+        let source = try popoverSource()
+        let handlerCallStart = try XCTUnwrap(source.range(of: "PopoverKeyEventHandler("))
+        let handlerCallEnd = try XCTUnwrap(source.range(
+            of: "\n        .frame(",
+            range: handlerCallStart.upperBound..<source.endIndex
+        ))
+        let handlerCall = source[handlerCallStart.lowerBound..<handlerCallEnd.lowerBound]
+        let handlerStart = try XCTUnwrap(source.range(of: "private struct PopoverKeyEventHandler"))
+        let updateStart = try XCTUnwrap(source.range(
+            of: "func updateNSView",
+            range: handlerStart.upperBound..<source.endIndex
+        ))
+        let dismantleStart = try XCTUnwrap(source.range(
+            of: "static func dismantleNSView",
+            range: updateStart.upperBound..<source.endIndex
+        ))
+        let updateBlock = source[updateStart.lowerBound..<dismantleStart.lowerBound]
+
+        XCTAssertTrue(handlerCall.contains("route: model.route"))
+        XCTAssertTrue(handlerCall.contains("onMoveModeHighlight: { model.moveModeHighlight(by: $0) }"))
+        XCTAssertTrue(handlerCall.contains("onCommitMode: { model.commitHighlightedMode() }"))
+        XCTAssertTrue(source[handlerStart.lowerBound...].contains("let route: WritingPopoverSessionState.Route"))
+        XCTAssertTrue(source[handlerStart.lowerBound...].contains("let onMoveModeHighlight: (Int) -> Void"))
+        XCTAssertTrue(source[handlerStart.lowerBound...].contains("let onCommitMode: () -> Void"))
+        XCTAssertTrue(updateBlock.contains("context.coordinator.route = route"))
+        XCTAssertTrue(updateBlock.contains("context.coordinator.onMoveModeHighlight = onMoveModeHighlight"))
+        XCTAssertTrue(updateBlock.contains("context.coordinator.onCommitMode = onCommitMode"))
+    }
+
+    func testPopoverKeyHandlerDelegatesToExecutableKeyboardPolicy() throws {
+        let source = try popoverSource()
+        let handlerStart = try XCTUnwrap(source.range(of: "private struct PopoverKeyEventHandler"))
+        let handleStart = try XCTUnwrap(source.range(
+            of: "private func handle(_ event: NSEvent)",
+            range: handlerStart.upperBound..<source.endIndex
+        ))
+        let composingStart = try XCTUnwrap(source.range(
+            of: "private var isComposingText",
+            range: handleStart.upperBound..<source.endIndex
+        ))
+        let handleBlock = source[handleStart.lowerBound..<composingStart.lowerBound]
+        let modifierHelperStart = try XCTUnwrap(source.range(
+            of: "private func keyboardModifiers",
+            range: composingStart.upperBound..<source.endIndex
+        ))
+        let modifierHelper = source[modifierHelperStart.lowerBound...]
+
+        XCTAssertTrue(handleBlock.contains("WritingPopoverKeyboardPolicy.action("))
+        XCTAssertTrue(handleBlock.contains("route: route"))
+        XCTAssertTrue(handleBlock.contains("keyCode: event.keyCode"))
+        XCTAssertTrue(handleBlock.contains("isComposingText: isComposingText"))
+        XCTAssertTrue(handleBlock.contains("switch action"))
+        XCTAssertTrue(handleBlock.contains("case .passThrough:"))
+        XCTAssertTrue(handleBlock.contains("case .consume:"))
+        XCTAssertTrue(handleBlock.contains("case .escape:"))
+        XCTAssertTrue(handleBlock.contains("case .moveHighlight(let offset):"))
+        XCTAssertTrue(handleBlock.contains("case .commitMode:"))
+        XCTAssertTrue(handleBlock.contains("case .cycleMode(let direction):"))
+        XCTAssertTrue(handleBlock.contains("case .submit:"))
+        XCTAssertTrue(handleBlock.contains("case .insertOriginal:"))
+        for modifier in ["command", "shift", "option", "control"] {
+            XCTAssertTrue(modifierHelper.contains("modifiers.contains(.\(modifier))"))
+        }
+        XCTAssertFalse(handleBlock.contains("event.keyCode =="))
+    }
+
+    func testPopoverPanelLetsIMEOwnEscapeFallbacks() throws {
+        let source = try windowControllerSource()
+        let cancelStart = try XCTUnwrap(source.range(of: "override func cancelOperation"))
+        let keyDownStart = try XCTUnwrap(source.range(
+            of: "override func keyDown(with event: NSEvent)",
+            range: cancelStart.upperBound..<source.endIndex
+        ))
+        let compositionStart = try XCTUnwrap(source.range(
+            of: "private var isComposingText",
+            range: keyDownStart.upperBound..<source.endIndex
+        ))
+        let hostingViewStart = try XCTUnwrap(source.range(
+            of: "private final class ClearHostingView",
+            range: compositionStart.upperBound..<source.endIndex
+        ))
+        let cancelBlock = source[cancelStart.lowerBound..<keyDownStart.lowerBound]
+        let keyDownBlock = source[keyDownStart.lowerBound..<compositionStart.lowerBound]
+        let compositionBlock = source[compositionStart.lowerBound..<hostingViewStart.lowerBound]
+
+        XCTAssertTrue(cancelBlock.contains("guard !isComposingText else"))
+        XCTAssertTrue(cancelBlock.contains("super.cancelOperation(sender)"))
+        XCTAssertTrue(cancelBlock.contains("onEscape?()"))
+        XCTAssertTrue(keyDownBlock.contains("guard !isComposingText else"))
+        XCTAssertTrue(keyDownBlock.contains("super.keyDown(with: event)"))
+        XCTAssertTrue(keyDownBlock.contains("onEscape?()"))
+        XCTAssertTrue(compositionBlock.contains("firstResponder as? NSTextInputClient"))
+        XCTAssertTrue(compositionBlock.contains("hasMarkedText()"))
+    }
+
+    func testViewModelScopesSourceFocusRequestsToCurrentEditorGeneration() throws {
+        let source = try popoverSource()
+        let resetStart = try XCTUnwrap(source.range(of: "func resetForOpen"))
+        let refreshStart = try XCTUnwrap(source.range(
+            of: "private func refreshVoiceShortcutHint",
+            range: resetStart.upperBound..<source.endIndex
+        ))
+        let resetBlock = source[resetStart.lowerBound..<refreshStart.lowerBound]
+        let commitStart = try XCTUnwrap(source.range(of: "func commitMode(modeID:"))
+        let returnStart = try XCTUnwrap(source.range(
+            of: "func returnToModePicker",
+            range: commitStart.upperBound..<source.endIndex
+        ))
+        let cycleStart = try XCTUnwrap(source.range(
+            of: "func cyclePromptMode",
+            range: returnStart.upperBound..<source.endIndex
+        ))
+        let commitBlock = source[commitStart.lowerBound..<returnStart.lowerBound]
+        let returnBlock = source[returnStart.lowerBound..<cycleStart.lowerBound]
+        let focusActionStart = try XCTUnwrap(source.range(of: "case .focusSourceInput:"))
+        let transformationActionStart = try XCTUnwrap(source.range(
+            of: "case .startTransformation",
+            range: focusActionStart.upperBound..<source.endIndex
+        ))
+        let focusActionBlock = source[focusActionStart.lowerBound..<transformationActionStart.lowerBound]
+
+        XCTAssertTrue(source.contains("private var sourceFocusGeneration = FocusRequestGeneration()"))
+        XCTAssertTrue(source.contains("var onFocusSourceInput: ((FocusRequestGeneration.Request) -> Void)?"))
+        XCTAssertTrue(resetBlock.contains("invalidateSourceInputFocusRequests()"))
+        XCTAssertTrue(commitBlock.contains("requestSourceInputFocus()"))
+        XCTAssertFalse(commitBlock.contains("DispatchQueue.main.async"))
+        XCTAssertTrue(returnBlock.contains("invalidateSourceInputFocusRequests()"))
+        XCTAssertTrue(focusActionBlock.contains("requestSourceInputFocus()"))
+        XCTAssertTrue(source.contains("let request = sourceFocusGeneration.issue()"))
+        XCTAssertTrue(source.contains("onFocusSourceInput?(request)"))
+        XCTAssertTrue(source.contains("sourceFocusGeneration.isCurrent(request)"))
+    }
+
+    func testPopoverShowLeavesSearchFocusedUntilModelRequestsSourceInput() throws {
+        let source = try windowControllerSource()
+        let showStart = try XCTUnwrap(source.range(of: "func show(fallbackApplication:"))
+        let hideStart = try XCTUnwrap(source.range(
+            of: "\n    func hide()",
+            range: showStart.upperBound..<source.endIndex
+        ))
+        let showBlock = source[showStart.lowerBound..<hideStart.lowerBound]
+        let focusCallbackStart = try XCTUnwrap(source.range(of: "model.onFocusSourceInput = { [weak self] request in"))
+        let requiredInitStart = try XCTUnwrap(source.range(
+            of: "@available(*, unavailable)",
+            range: focusCallbackStart.upperBound..<source.endIndex
+        ))
+        let focusCallbackBlock = source[focusCallbackStart.lowerBound..<requiredInitStart.lowerBound]
+        let focusMethodStart = try XCTUnwrap(source.range(of: "private func focusSourceTextView("))
+        let resizeStart = try XCTUnwrap(source.range(
+            of: "private func resizePopover",
+            range: focusMethodStart.upperBound..<source.endIndex
+        ))
+        let focusMethodBlock = source[focusMethodStart.lowerBound..<resizeStart.lowerBound]
+        let makeFirstResponder = try XCTUnwrap(focusMethodBlock.range(of: "window.makeFirstResponder(textView)"))
+        let responderFailureStart = try XCTUnwrap(focusMethodBlock.range(
+            of: "guard window.makeFirstResponder(textView) else",
+            range: focusMethodBlock.startIndex..<focusMethodBlock.endIndex
+        ))
+        let responderFailureBlock = focusMethodBlock[responderFailureStart.lowerBound...]
+        let finalRouteCheck = try XCTUnwrap(focusMethodBlock.range(
+            of: "model.route == .editor",
+            options: .backwards,
+            range: focusMethodBlock.startIndex..<makeFirstResponder.lowerBound
+        ))
+        let finalGenerationCheck = try XCTUnwrap(focusMethodBlock.range(
+            of: "model.isCurrentSourceFocusRequest(request)",
+            options: .backwards,
+            range: focusMethodBlock.startIndex..<makeFirstResponder.lowerBound
+        ))
+
+        XCTAssertFalse(showBlock.contains("focusSourceTextView()"))
+        XCTAssertTrue(focusCallbackBlock.contains("self?.focusSourceTextView(for: request)"))
+        XCTAssertTrue(focusMethodBlock.contains("remainingRetries: Int = 2"))
+        XCTAssertTrue(focusMethodBlock.contains("DispatchQueue.main.async"))
+        XCTAssertTrue(focusMethodBlock.contains("remainingRetries - 1"))
+        XCTAssertTrue(focusMethodBlock.contains("focusSourceTextView("))
+        XCTAssertTrue(focusMethodBlock.contains("window.isVisible"))
+        XCTAssertTrue(focusMethodBlock.contains("window.isKeyWindow"))
+        XCTAssertTrue(responderFailureBlock.contains("remainingRetries - 1"))
+        XCTAssertTrue(responderFailureBlock.contains("focusSourceTextView("))
+        XCTAssertLessThan(finalRouteCheck.lowerBound, makeFirstResponder.lowerBound)
+        XCTAssertLessThan(finalGenerationCheck.lowerBound, makeFirstResponder.lowerBound)
+    }
+
     func testPopoverRoutesBetweenPickerAndEditorAtDeterministicHeights() throws {
         let source = try popoverSource()
 
@@ -129,6 +350,22 @@ final class WritingModeLauncherSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("writingModePreferenceStore.saveLastModeID"))
         XCTAssertFalse(source.contains("@Published var selectedModeID"))
         XCTAssertFalse(source.contains("@Published var openRevision"))
+    }
+
+    func testNoResultsModeCommitStopsAtViewModelBoundary() throws {
+        let source = try popoverSource()
+        let highlightedCommitStart = try XCTUnwrap(source.range(of: "func commitHighlightedMode()"))
+        let explicitCommitStart = try XCTUnwrap(source.range(
+            of: "func commitMode(modeID:",
+            range: highlightedCommitStart.upperBound..<source.endIndex
+        ))
+        let highlightedCommitBlock = source[
+            highlightedCommitStart.lowerBound..<explicitCommitStart.lowerBound
+        ]
+
+        XCTAssertTrue(highlightedCommitBlock.contains("guard let highlightedModeID"))
+        XCTAssertTrue(highlightedCommitBlock.contains("else {\n            return\n        }"))
+        XCTAssertTrue(highlightedCommitBlock.contains("commitMode(modeID: highlightedModeID)"))
     }
 
     func testPopoverViewModelTracksAndPreservesStaleResults() throws {
@@ -242,6 +479,14 @@ final class WritingModeLauncherSourceTests: XCTestCase {
     private func pickerSource() throws -> String {
         let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let sourceURL = packageRoot.appendingPathComponent("Sources/InkletApp/WritingModePickerView.swift")
+        return try String(contentsOf: sourceURL, encoding: .utf8)
+    }
+
+    private func windowControllerSource() throws -> String {
+        let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let sourceURL = packageRoot.appendingPathComponent(
+            "Sources/InkletApp/InkletPopoverWindowController.swift"
+        )
         return try String(contentsOf: sourceURL, encoding: .utf8)
     }
 }

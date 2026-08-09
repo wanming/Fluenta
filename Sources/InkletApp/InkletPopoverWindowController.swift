@@ -11,6 +11,11 @@ private final class InkletPopoverPanel: NSPanel {
     override var canBecomeMain: Bool { true }
 
     override func cancelOperation(_ sender: Any?) {
+        guard !isComposingText else {
+            super.cancelOperation(sender)
+            return
+        }
+
         onEscape?()
     }
 
@@ -20,7 +25,20 @@ private final class InkletPopoverPanel: NSPanel {
             return
         }
 
+        guard !isComposingText else {
+            super.keyDown(with: event)
+            return
+        }
+
         onEscape?()
+    }
+
+    private var isComposingText: Bool {
+        guard let textInputClient = firstResponder as? NSTextInputClient else {
+            return false
+        }
+
+        return textInputClient.hasMarkedText()
     }
 }
 
@@ -102,6 +120,9 @@ final class InkletPopoverWindowController: NSWindowController {
         model.onFocusPopover = { [weak self] in
             self?.focusPopover()
         }
+        model.onFocusSourceInput = { [weak self] request in
+            self?.focusSourceTextView(for: request)
+        }
     }
 
     @available(*, unavailable)
@@ -120,11 +141,9 @@ final class InkletPopoverWindowController: NSWindowController {
         window?.appearance = model.appearance.nsAppearance
         resizePopover(to: model.preferredPopoverHeight)
         focusPopover()
-        focusSourceTextView()
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.resizePopover(to: self.model.preferredPopoverHeight)
-            self.focusSourceTextView()
         }
     }
 
@@ -138,14 +157,55 @@ final class InkletPopoverWindowController: NSWindowController {
         window?.makeKeyAndOrderFront(nil)
     }
 
-    private func focusSourceTextView() {
-        guard let window,
-              let textView = window.contentView?.descendantTextViews.first
-        else {
-            return
-        }
+    private func focusSourceTextView(
+        for request: FocusRequestGeneration.Request,
+        remainingRetries: Int = 2
+    ) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  self.model.route == .editor,
+                  self.model.isCurrentSourceFocusRequest(request)
+            else {
+                return
+            }
 
-        window.makeFirstResponder(textView)
+            guard let window = self.window,
+                  window.isVisible,
+                  window.isKeyWindow
+            else {
+                return
+            }
+
+            guard let textView = window.contentView?.descendantTextViews.first else {
+                guard remainingRetries > 0 else {
+                    return
+                }
+                self.focusSourceTextView(
+                    for: request,
+                    remainingRetries: remainingRetries - 1
+                )
+                return
+            }
+
+            guard self.model.route == .editor,
+                  self.model.isCurrentSourceFocusRequest(request),
+                  window.isVisible,
+                  window.isKeyWindow
+            else {
+                return
+            }
+
+            guard window.makeFirstResponder(textView) else {
+                guard remainingRetries > 0 else {
+                    return
+                }
+                self.focusSourceTextView(
+                    for: request,
+                    remainingRetries: remainingRetries - 1
+                )
+                return
+            }
+        }
     }
 
     private func resizePopover(to height: CGFloat) {

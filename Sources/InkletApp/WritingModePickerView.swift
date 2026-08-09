@@ -316,22 +316,23 @@ private struct WritingModeSearchField: NSViewRepresentable {
             searchField.stringValue = text
         }
 
-        guard context.coordinator.focusedRevision != focusRevision else {
-            return
-        }
-        context.coordinator.focusedRevision = focusRevision
-        DispatchQueue.main.async { [weak searchField] in
-            guard let searchField else {
-                return
-            }
-            searchField.window?.makeFirstResponder(searchField)
-        }
+        context.coordinator.requestFocus(
+            searchField,
+            revision: focusRevision
+        )
+    }
+
+    static func dismantleNSView(_ searchField: NSSearchField, coordinator: Coordinator) {
+        coordinator.deactivate()
     }
 
     @MainActor
     final class Coordinator: NSObject, NSSearchFieldDelegate {
         var text: Binding<String>
-        var focusedRevision: Int?
+        private(set) var focusedRevision: Int?
+        private var requestedFocusRevision: Int?
+        private var pendingFocusRevision: Int?
+        private var isActive = true
 
         init(text: Binding<String>) {
             self.text = text
@@ -342,6 +343,98 @@ private struct WritingModeSearchField: NSViewRepresentable {
                 return
             }
             text.wrappedValue = searchField.stringValue
+        }
+
+        func requestFocus(_ searchField: NSSearchField, revision: Int) {
+            guard isActive else {
+                return
+            }
+
+            requestedFocusRevision = revision
+            guard focusedRevision != revision, pendingFocusRevision != revision else {
+                return
+            }
+
+            pendingFocusRevision = revision
+            attemptFocus(
+                searchField,
+                revision: revision,
+                remainingRetries: 2
+            )
+        }
+
+        func deactivate() {
+            isActive = false
+            requestedFocusRevision = nil
+            pendingFocusRevision = nil
+        }
+
+        private func attemptFocus(
+            _ searchField: NSSearchField,
+            revision: Int,
+            remainingRetries: Int
+        ) {
+            DispatchQueue.main.async { [weak self, weak searchField] in
+                guard let self,
+                      self.isActive,
+                      self.requestedFocusRevision == revision,
+                      self.pendingFocusRevision == revision,
+                      self.focusedRevision != revision
+                else {
+                    return
+                }
+
+                guard let searchField else {
+                    self.pendingFocusRevision = nil
+                    return
+                }
+
+                guard let window = searchField.window else {
+                    self.retryFocus(
+                        searchField,
+                        revision: revision,
+                        remainingRetries: remainingRetries
+                    )
+                    return
+                }
+
+                guard window.makeFirstResponder(searchField) else {
+                    self.retryFocus(
+                        searchField,
+                        revision: revision,
+                        remainingRetries: remainingRetries
+                    )
+                    return
+                }
+
+                guard self.isActive,
+                      self.requestedFocusRevision == revision,
+                      self.pendingFocusRevision == revision
+                else {
+                    return
+                }
+                self.focusedRevision = revision
+                self.pendingFocusRevision = nil
+            }
+        }
+
+        private func retryFocus(
+            _ searchField: NSSearchField,
+            revision: Int,
+            remainingRetries: Int
+        ) {
+            guard remainingRetries > 0 else {
+                if pendingFocusRevision == revision {
+                    pendingFocusRevision = nil
+                }
+                return
+            }
+
+            self.attemptFocus(
+                searchField,
+                revision: revision,
+                remainingRetries: remainingRetries - 1
+            )
         }
     }
 }

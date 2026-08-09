@@ -20,7 +20,7 @@ final class InkletPopoverViewModel: ObservableObject {
 
     var onHidePopover: (() -> Void)?
     var onFocusPopover: (() -> Void)?
-    var onFocusSourceInput: (() -> Void)?
+    var onFocusSourceInput: ((FocusRequestGeneration.Request) -> Void)?
     var onOpenSettings: (() -> Void)?
 
     var route: WritingPopoverSessionState.Route {
@@ -64,6 +64,7 @@ final class InkletPopoverViewModel: ObservableObject {
     private var sessionID = 0
     private var draftSourceText = ""
     private var hasTransformedInSession = false
+    private var sourceFocusGeneration = FocusRequestGeneration()
 
     init(
         stateMachine: PopoverStateMachine = PopoverStateMachine(),
@@ -100,6 +101,7 @@ final class InkletPopoverViewModel: ObservableObject {
     }
 
     func resetForOpen(previousApplication: NSRunningApplication?) {
+        invalidateSourceInputFocusRequests()
         transformationTask?.cancel()
         transformationTask = nil
         sessionID += 1
@@ -204,12 +206,7 @@ final class InkletPopoverViewModel: ObservableObject {
 
         mutatePopoverSession { $0.enterEditor(modeID: modeID) }
         writingModePreferenceStore.saveLastModeID(modeID)
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.route == .editor else {
-                return
-            }
-            self.onFocusSourceInput?()
-        }
+        requestSourceInputFocus()
     }
 
     func returnToModePicker() {
@@ -217,6 +214,7 @@ final class InkletPopoverViewModel: ObservableObject {
             return
         }
 
+        invalidateSourceInputFocusRequests()
         mutatePopoverSession { $0.showModePicker() }
         modePickerState = WritingModePickerState(
             items: Self.modePickerItems(for: modes),
@@ -347,6 +345,23 @@ final class InkletPopoverViewModel: ObservableObject {
         onOpenSettings?()
     }
 
+    func isCurrentSourceFocusRequest(_ request: FocusRequestGeneration.Request) -> Bool {
+        sourceFocusGeneration.isCurrent(request)
+    }
+
+    private func requestSourceInputFocus() {
+        guard route == .editor else {
+            return
+        }
+
+        let request = sourceFocusGeneration.issue()
+        onFocusSourceInput?(request)
+    }
+
+    private func invalidateSourceInputFocusRequests() {
+        sourceFocusGeneration.invalidate()
+    }
+
     private func handle(actions: [PopoverStateMachine.Action]) {
         for action in actions {
             switch action {
@@ -355,9 +370,7 @@ final class InkletPopoverViewModel: ObservableObject {
             case .hidePopover:
                 onHidePopover?()
             case .focusSourceInput:
-                if route == .editor {
-                    onFocusSourceInput?()
-                }
+                requestSourceInputFocus()
             case .startTransformation(let source):
                 startTransformation(source: source)
             case .showResult(let result):
@@ -733,10 +746,13 @@ struct InkletPopoverView: View {
         }
         .background(
             PopoverKeyEventHandler(
+                route: model.route,
                 onSubmit: { model.submit() },
                 onInsertOriginal: { model.insertOriginal() },
                 onEscape: { model.escape() },
-                onCycleMode: { model.cyclePromptMode(direction: $0) }
+                onCycleMode: { model.cyclePromptMode(direction: $0) },
+                onMoveModeHighlight: { model.moveModeHighlight(by: $0) },
+                onCommitMode: { model.commitHighlightedMode() }
             )
         )
         .frame(width: 600, height: popoverHeight, alignment: .top)
@@ -1355,10 +1371,13 @@ private extension NSView {
 }
 
 private struct PopoverKeyEventHandler: NSViewRepresentable {
+    let route: WritingPopoverSessionState.Route
     let onSubmit: () -> Void
     let onInsertOriginal: () -> Void
     let onEscape: () -> Void
     let onCycleMode: (Int) -> Void
+    let onMoveModeHighlight: (Int) -> Void
+    let onCommitMode: () -> Void
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
@@ -1367,10 +1386,13 @@ private struct PopoverKeyEventHandler: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.route = route
         context.coordinator.onSubmit = onSubmit
         context.coordinator.onInsertOriginal = onInsertOriginal
         context.coordinator.onEscape = onEscape
         context.coordinator.onCycleMode = onCycleMode
+        context.coordinator.onMoveModeHighlight = onMoveModeHighlight
+        context.coordinator.onCommitMode = onCommitMode
         context.coordinator.attach(to: nsView)
     }
 
@@ -1380,32 +1402,44 @@ private struct PopoverKeyEventHandler: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
+            route: route,
             onSubmit: onSubmit,
             onInsertOriginal: onInsertOriginal,
             onEscape: onEscape,
-            onCycleMode: onCycleMode
+            onCycleMode: onCycleMode,
+            onMoveModeHighlight: onMoveModeHighlight,
+            onCommitMode: onCommitMode
         )
     }
 
     @MainActor
     final class Coordinator {
+        var route: WritingPopoverSessionState.Route
         var onSubmit: () -> Void
         var onInsertOriginal: () -> Void
         var onEscape: () -> Void
         var onCycleMode: (Int) -> Void
+        var onMoveModeHighlight: (Int) -> Void
+        var onCommitMode: () -> Void
         private weak var view: NSView?
         private var monitor: Any?
 
         init(
+            route: WritingPopoverSessionState.Route,
             onSubmit: @escaping () -> Void,
             onInsertOriginal: @escaping () -> Void,
             onEscape: @escaping () -> Void,
-            onCycleMode: @escaping (Int) -> Void
+            onCycleMode: @escaping (Int) -> Void,
+            onMoveModeHighlight: @escaping (Int) -> Void,
+            onCommitMode: @escaping () -> Void
         ) {
+            self.route = route
             self.onSubmit = onSubmit
             self.onInsertOriginal = onInsertOriginal
             self.onEscape = onEscape
             self.onCycleMode = onCycleMode
+            self.onMoveModeHighlight = onMoveModeHighlight
+            self.onCommitMode = onCommitMode
         }
 
         func detach() {
@@ -1432,44 +1466,37 @@ private struct PopoverKeyEventHandler: NSViewRepresentable {
                 return event
             }
 
-            let isReturnKey = event.keyCode == 36 || event.keyCode == 76
-            if isComposingText, isReturnKey || event.keyCode == 53 {
-                return event
-            }
+            let action = WritingPopoverKeyboardPolicy.action(
+                route: route,
+                keyCode: event.keyCode,
+                modifiers: keyboardModifiers(from: event.modifierFlags),
+                isComposingText: isComposingText
+            )
 
-            if event.keyCode == 53 {
+            switch action {
+            case .passThrough:
+                return event
+            case .consume:
+                return nil
+            case .escape:
                 onEscape()
                 return nil
-            }
-
-            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            if modifiers.contains(.command), !modifiers.contains(.shift), !modifiers.contains(.option) {
-                if event.keyCode == 126 {
-                    onCycleMode(-1)
-                    return nil
-                }
-
-                if event.keyCode == 125 {
-                    onCycleMode(1)
-                    return nil
-                }
-            }
-
-            guard isReturnKey else {
-                return event
-            }
-
-            if modifiers.contains(.command) {
+            case .moveHighlight(let offset):
+                onMoveModeHighlight(offset)
+                return nil
+            case .commitMode:
+                onCommitMode()
+                return nil
+            case .cycleMode(let direction):
+                onCycleMode(direction)
+                return nil
+            case .submit:
+                onSubmit()
+                return nil
+            case .insertOriginal:
                 onInsertOriginal()
                 return nil
             }
-
-            if !modifiers.contains(.shift), !modifiers.contains(.option) {
-                onSubmit()
-                return nil
-            }
-
-            return event
         }
 
         private var isComposingText: Bool {
@@ -1478,6 +1505,25 @@ private struct PopoverKeyEventHandler: NSViewRepresentable {
             }
 
             return responder.hasMarkedText()
+        }
+
+        private func keyboardModifiers(
+            from modifiers: NSEvent.ModifierFlags
+        ) -> WritingPopoverKeyboardModifiers {
+            var keyboardModifiers: WritingPopoverKeyboardModifiers = []
+            if modifiers.contains(.command) {
+                keyboardModifiers.insert(.command)
+            }
+            if modifiers.contains(.shift) {
+                keyboardModifiers.insert(.shift)
+            }
+            if modifiers.contains(.option) {
+                keyboardModifiers.insert(.option)
+            }
+            if modifiers.contains(.control) {
+                keyboardModifiers.insert(.control)
+            }
+            return keyboardModifiers
         }
     }
 }
