@@ -66,17 +66,15 @@ enum InterfaceLanguage: String, CaseIterable, Identifiable {
 }
 
 enum InkletLanguageStore {
-    private static let key = "InkletInterfaceLanguage"
-
     static var selectedLanguage: InterfaceLanguage {
         get {
-            guard let rawValue = UserDefaults.standard.string(forKey: key) else {
+            guard let rawValue = UserDefaults.standard.string(forKey: InkletPreferenceKeys.interfaceLanguage) else {
                 return .english
             }
             return InterfaceLanguage(rawValue: rawValue) ?? .english
         }
         set {
-            UserDefaults.standard.set(newValue.rawValue, forKey: key)
+            UserDefaults.standard.set(newValue.rawValue, forKey: InkletPreferenceKeys.interfaceLanguage)
             NotificationCenter.default.post(name: .inkletLanguageDidChange, object: nil)
         }
     }

@@ -98,7 +98,6 @@ private final class RoundedSettingsHostingView<Content: View>: NSHostingView<Con
 
 @MainActor
 final class SettingsWindowController: NSWindowController {
-    private static let didCompleteOnboardingKey = "didCompleteOnboarding"
     private static let systemSettingsBundleIdentifier = "com.apple.systempreferences"
 
     private let configStore: UserDefaultsConfigStore
@@ -261,12 +260,12 @@ final class SettingsWindowController: NSWindowController {
             didOpenAccessibilitySettings: didOpenAccessibilitySettings,
             isAccessibilityTrusted: AccessibilityPermissionService().isTrusted,
             providerAPIKey: providerAPIKey,
-            didCompleteOnboarding: userDefaults.bool(forKey: Self.didCompleteOnboardingKey)
+            didCompleteOnboarding: userDefaults.bool(forKey: InkletPreferenceKeys.didCompleteOnboarding)
         ) else {
             return
         }
 
-        userDefaults.set(true, forKey: Self.didCompleteOnboardingKey)
+        userDefaults.set(true, forKey: InkletPreferenceKeys.didCompleteOnboarding)
         NotificationCenter.default.post(name: .inkletDidCompleteOnboarding, object: nil)
     }
 }
