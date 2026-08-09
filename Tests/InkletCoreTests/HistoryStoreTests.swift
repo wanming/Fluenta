@@ -8,6 +8,16 @@ final class HistoryStoreTests: XCTestCase {
             .appendingPathComponent("history.jsonl")
     }
 
+    func testDefaultFileURLUsesQualifiedStoragePath() {
+        let paths = InkletStoragePaths(
+            bundleIdentifier: "com.tomwan.inklet.local",
+            applicationSupportDirectory: URL(fileURLWithPath: "/Users/test/Library/Application Support"),
+            temporaryDirectory: URL(fileURLWithPath: "/tmp/test")
+        )
+
+        XCTAssertEqual(JSONLHistoryStore.defaultFileURL(storagePaths: paths), paths.historyFileURL)
+    }
+
     func testAppendAndLoadKeepsInsertionOrder() throws {
         let url = temporaryHistoryURL()
         let store = JSONLHistoryStore(fileURL: url)

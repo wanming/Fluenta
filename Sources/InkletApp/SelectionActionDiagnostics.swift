@@ -1,9 +1,10 @@
 import Foundation
+import InkletCore
 
 enum SelectionActionDiagnostics {
     static func log(_ message: String) {
         let line = "\(Date()) \(message)\n"
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("InkletSelectionActions.log")
+        let url = InkletStoragePaths.currentOrLocalDevelopment().selectionDiagnosticsFileURL
         guard let data = line.data(using: .utf8) else {
             return
         }

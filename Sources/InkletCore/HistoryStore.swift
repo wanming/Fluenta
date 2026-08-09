@@ -62,7 +62,12 @@ public final class JSONLHistoryStore: HistoryStore, @unchecked Sendable {
     private let fileURL: URL
     private let lock = NSLock()
 
-    public init(fileURL: URL = JSONLHistoryStore.defaultFileURL()) {
+    public convenience init() {
+        let storagePaths = InkletStoragePaths.currentOrLocalDevelopment()
+        self.init(fileURL: Self.defaultFileURL(storagePaths: storagePaths))
+    }
+
+    public init(fileURL: URL) {
         self.fileURL = fileURL
     }
 
@@ -124,17 +129,8 @@ public final class JSONLHistoryStore: HistoryStore, @unchecked Sendable {
         try FileManager.default.removeItem(at: fileURL)
     }
 
-    public static func defaultFileURL() -> URL {
-        let applicationSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library")
-            .appendingPathComponent("Application Support")
-
-        return applicationSupport
-            .appendingPathComponent("Inklet", isDirectory: true)
-            .appendingPathComponent("history.jsonl")
+    public static func defaultFileURL(storagePaths: InkletStoragePaths) -> URL {
+        storagePaths.historyFileURL
     }
 
     private static func makeEncoder() -> JSONEncoder {
