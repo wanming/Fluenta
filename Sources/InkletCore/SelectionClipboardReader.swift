@@ -215,20 +215,6 @@ public final class SelectionClipboardReader {
         }
     }
 
-    // Compatibility for the current app caller; remove when its source PID is required at the call site.
-    public func readSelectedText(
-        sourceProcessIdentifier: pid_t?,
-        forceSelectionMode: SelectionForceSelectionMode = .menuCopyThenShortcut
-    ) async -> SelectedTextReadResult {
-        guard let sourceProcessIdentifier else {
-            return .emptySelection
-        }
-        return await readSelectedText(
-            sourceProcessIdentifier: sourceProcessIdentifier,
-            forceSelectionMode: forceSelectionMode
-        )
-    }
-
     private func readSelectedTextByMenuAction(
         token: UUID,
         sourceProcessIdentifier: pid_t,

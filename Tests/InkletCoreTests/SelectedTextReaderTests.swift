@@ -116,18 +116,6 @@ final class SelectedTextReaderTests: XCTestCase {
         XCTAssertEqual(requestedProcessIdentifier.value, 42)
     }
 
-    func testFocusedSelectableElementAllowsMissingFocusedElement() {
-        let reader = SelectedTextReader(
-            isTrusted: { true },
-            focusedElementProvider: { nil },
-            applicationAccessibilityEnabler: { _ in },
-            applicationFocusedElementProvider: { _ in nil },
-            elementProcessIdentifierProvider: { _ in 42 }
-        )
-
-        XCTAssertTrue(reader.isFocusedSelectableTextElement(sourceProcessIdentifier: 42))
-    }
-
     func testIgnoresSystemFocusedElementOwnedByAnotherProcess() {
         let reader = SelectedTextReader(
             isTrusted: { true },
@@ -250,51 +238,6 @@ final class SelectedTextReaderTests: XCTestCase {
             .missingFocusedElement
         )
         XCTAssertNil(didReadInvalidElement.value)
-    }
-
-    func testFocusedSelectableElementAllowsTextRoles() {
-        let reader = SelectedTextReader(
-            isTrusted: { true },
-            focusedElementProvider: { SelectedTextElement(rawValue: "field") },
-            focusedElementRoleProvider: { _ in "AXTextArea" }
-        )
-
-        XCTAssertTrue(reader.isFocusedSelectableTextElement())
-    }
-
-    func testFocusedSelectableElementAllowsSelectedTextRange() {
-        let reader = SelectedTextReader(
-            isTrusted: { true },
-            focusedElementProvider: { SelectedTextElement(rawValue: "field") },
-            focusedElementRoleProvider: { _ in "AXButton" },
-            selectedTextRangeProvider: { _ in .success(SelectedTextRange(location: 2, length: 4)) }
-        )
-
-        XCTAssertTrue(reader.isFocusedSelectableTextElement())
-    }
-
-    func testFocusedSelectableElementAllowsNonEmptyValue() {
-        let reader = SelectedTextReader(
-            isTrusted: { true },
-            focusedElementProvider: { SelectedTextElement(rawValue: "field") },
-            focusedElementRoleProvider: { _ in "AXButton" },
-            focusedElementValueProvider: { _ in "visible text" },
-            selectedTextRangeProvider: { _ in .failure(.unsupported) }
-        )
-
-        XCTAssertTrue(reader.isFocusedSelectableTextElement())
-    }
-
-    func testFocusedSelectableElementRejectsNonTextElementWithoutTextSignals() {
-        let reader = SelectedTextReader(
-            isTrusted: { true },
-            focusedElementProvider: { SelectedTextElement(rawValue: "map") },
-            focusedElementRoleProvider: { _ in "AXButton" },
-            focusedElementValueProvider: { _ in "" },
-            selectedTextRangeProvider: { _ in .failure(.unsupported) }
-        )
-
-        XCTAssertFalse(reader.isFocusedSelectableTextElement())
     }
 
     func testFallsBackToElementAtMouseLocationWhenFocusedElementsAreMissing() {

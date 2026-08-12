@@ -51,8 +51,6 @@ public struct SelectedTextReader: Sendable {
     public typealias ElementAtPositionProvider = @Sendable (SelectionPoint) -> SelectedTextElement?
     public typealias ElementProcessIdentifierProvider = @Sendable (SelectedTextElement) -> pid_t?
     public typealias ChildElementsProvider = @Sendable (SelectedTextElement) -> [SelectedTextElement]
-    public typealias FocusedElementRoleProvider = @Sendable (SelectedTextElement) -> String?
-    public typealias FocusedElementValueProvider = @Sendable (SelectedTextElement) -> String?
     public typealias SelectedTextProvider = @Sendable (SelectedTextElement) -> Result<String, SelectedTextReadError>
     public typealias SelectedTextRangeProvider = @Sendable (SelectedTextElement) -> Result<SelectedTextRange, SelectedTextReadError>
     public typealias StringForRangeProvider = @Sendable (SelectedTextElement, SelectedTextRange) -> Result<String, SelectedTextReadError>
@@ -68,8 +66,6 @@ public struct SelectedTextReader: Sendable {
     private let elementAtPositionProvider: ElementAtPositionProvider
     private let elementProcessIdentifierProvider: ElementProcessIdentifierProvider
     private let childElementsProvider: ChildElementsProvider
-    private let focusedElementRoleProvider: FocusedElementRoleProvider
-    private let focusedElementValueProvider: FocusedElementValueProvider
     private let selectedTextProvider: SelectedTextProvider
     private let selectedTextRangeProvider: SelectedTextRangeProvider
     private let stringForRangeProvider: StringForRangeProvider
@@ -92,8 +88,6 @@ public struct SelectedTextReader: Sendable {
             Self.systemProcessIdentifier(for: $0)
         },
         childElementsProvider: @escaping ChildElementsProvider = { Self.systemChildElements(from: $0) },
-        focusedElementRoleProvider: @escaping FocusedElementRoleProvider = { Self.systemRoleValue(from: $0) },
-        focusedElementValueProvider: @escaping FocusedElementValueProvider = { Self.systemValue(from: $0) },
         selectedTextProvider: @escaping SelectedTextProvider = { Self.systemSelectedText(from: $0) },
         selectedTextRangeProvider: @escaping SelectedTextRangeProvider = { Self.systemSelectedTextRange(from: $0) },
         stringForRangeProvider: @escaping StringForRangeProvider = { Self.systemStringForRange(from: $0, range: $1) },
@@ -113,8 +107,6 @@ public struct SelectedTextReader: Sendable {
         self.elementAtPositionProvider = elementAtPositionProvider
         self.elementProcessIdentifierProvider = elementProcessIdentifierProvider
         self.childElementsProvider = childElementsProvider
-        self.focusedElementRoleProvider = focusedElementRoleProvider
-        self.focusedElementValueProvider = focusedElementValueProvider
         self.selectedTextProvider = selectedTextProvider
         self.selectedTextRangeProvider = selectedTextRangeProvider
         self.stringForRangeProvider = stringForRangeProvider
@@ -160,43 +152,6 @@ public struct SelectedTextReader: Sendable {
         }
 
         return fallbackResult
-    }
-
-    public func isFocusedSelectableTextElement(sourceProcessIdentifier: pid_t? = nil) -> Bool {
-        guard isTrusted() else {
-            return false
-        }
-
-        if let sourceProcessIdentifier {
-            applicationAccessibilityEnabler(sourceProcessIdentifier)
-        }
-
-        let focusedElement = sourceProcessIdentifier.flatMap(applicationFocusedElementProvider)
-            ?? focusedElementProvider()
-
-        guard let focusedElement else {
-            return true
-        }
-
-        if let roleValue = focusedElementRoleProvider(focusedElement),
-           Self.selectableTextRoles.contains(roleValue) {
-            return true
-        }
-
-        if case .success = selectedTextRangeProvider(focusedElement) {
-            return true
-        }
-
-        if let value = focusedElementValueProvider(focusedElement),
-           !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return true
-        }
-
-        if case .success = selectedTextMarkerRangeProvider(focusedElement) {
-            return true
-        }
-
-        return false
     }
 
     public static func systemFocusedElement() -> SelectedTextElement? {
@@ -337,42 +292,6 @@ public struct SelectedTextReader: Sendable {
             return .success("")
         }
         return .success(selectedText)
-    }
-
-    public static func systemRoleValue(from element: SelectedTextElement) -> String? {
-        guard let box = element.rawValue.base as? AXElementBox else {
-            return nil
-        }
-
-        var roleObject: CFTypeRef?
-        let status = AXUIElementCopyAttributeValue(
-            box.element,
-            kAXRoleAttribute as CFString,
-            &roleObject
-        )
-        guard status == .success else {
-            return nil
-        }
-
-        return roleObject as? String
-    }
-
-    public static func systemValue(from element: SelectedTextElement) -> String? {
-        guard let box = element.rawValue.base as? AXElementBox else {
-            return nil
-        }
-
-        var valueObject: CFTypeRef?
-        let status = AXUIElementCopyAttributeValue(
-            box.element,
-            kAXValueAttribute as CFString,
-            &valueObject
-        )
-        guard status == .success else {
-            return nil
-        }
-
-        return valueObject as? String
     }
 
     public static func systemChildElements(from element: SelectedTextElement) -> [SelectedTextElement] {
@@ -725,18 +644,6 @@ public struct SelectedTextReader: Sendable {
 
         return .failure(.unsupported)
     }
-
-    private static let selectableTextRoles: Set<String> = [
-        kAXTextFieldRole,
-        kAXTextAreaRole,
-        kAXComboBoxRole,
-        kAXSearchFieldSubrole,
-        kAXPopUpButtonRole,
-        kAXMenuRole,
-        kAXStaticTextRole,
-        kAXGroupRole,
-        "AXWebArea"
-    ]
 
     private static func accessibilityPoint(fromMouseLocation point: SelectionPoint) -> SelectionPoint {
         var displayCount: UInt32 = 0

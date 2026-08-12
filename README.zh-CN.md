@@ -67,7 +67,7 @@ curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install
   - To Chinese Summary
   - Voice Cleanup
 - 把生成结果插回之前聚焦的应用。
-- 插入和强制取词后都会恢复你的剪贴板内容。自动选区动作优先通过 Accessibility 读取，在支持的浏览器里会尝试浏览器选区读取，然后按设置里的强制取词模式 fallback；选中文本后快速按两次 `Command+C`，可以显式用刚复制的剪贴板文本触发选区动作。
+- 插入后会恢复你的剪贴板内容。自动选区动作会把每次读取绑定到捕获的来源 App，优先通过 Accessibility 读取，再按设置使用强制取词复制 fallback。强制取词的剪贴板事务只会在 Inklet 仍持有临时复制内容时恢复原剪贴板，不会覆盖之后发生的外部剪贴板变化。选中文本后快速按两次 `Command+C`，可以显式用刚复制的剪贴板文本触发选区动作。
 - 可以编辑 prompt modes、OpenAI 模型、timeout、temperature、写作快捷键、语音快捷键、语音录音方式、麦克风、speech preset、speech endpoint、speech model、转写后处理方式、选区翻译语言、选区 Translate prompt、AI 发音声音和 AI 发音速度。
 - 在本地 History 中查看成功的写作、语音和选区结果，连续重复项会自动合并，原文/结果文本可选择，可一键复制结果或清空全部历史。
 - 使用一把共享的 OpenAI API key 处理写作、语音转写、选区翻译和发音。
@@ -148,9 +148,9 @@ docs/                    手动测试说明和隐私政策
 - OpenAI API key 存储在你的 Mac 本地。
 - Inklet 使用 Accessibility 权限回到上一个应用并粘贴文本。
 - Inklet 只在录音语音输入时使用 Microphone 权限。
-- Inklet 会临时使用剪贴板完成插入和已配置的强制取词备用读取，然后恢复之前的剪贴板内容。
+- Inklet 会临时使用剪贴板完成插入和已配置的强制取词备用读取。强制取词仅在 Inklet 的临时复制内容仍是当前内容时恢复原剪贴板，不会覆盖之后发生的外部剪贴板变化。
 - Inklet 会把成功的写作、语音和选区原文/结果作为本地 History 保存，直到你在 Settings 中清空；连续重复项会自动跳过。
-- 选区动作会在你选中其他 App 中的文字后，优先通过 Accessibility 读取当前选区；在支持的浏览器中，也会尝试用浏览器 JavaScript 读取 `window.getSelection()`。如果这些方式失败，设置中的强制取词模式可以短暂调用菜单复制和/或 `Command+C`，恢复之前的剪贴板，并使用复制出的文本。你可以在设置中关闭强制取词。选中文本后快速按两次 `Command+C`，会显式读取刚复制的剪贴板文本。Inklet 不会保存仅被选中的文本；只有成功完成的动作会进入本地 History。
+- 选区动作会捕获来源 App 和选区位置，在读取前验证来源，然后通过 Accessibility 读取该 App 的当前选区。如果 Accessibility 没有返回选中文本，设置中的强制取词模式可以短暂调用菜单复制和/或 `Command+C`，并通过上面所述的受保护剪贴板事务读取复制出的文本。你可以在设置中关闭强制取词。此流程不会发送针对浏览器的 Apple Events，也不需要浏览器 Automation 权限。选中文本后快速按两次 `Command+C`，会显式读取刚复制的剪贴板文本。Inklet 不会保存仅被选中的文本；只有成功完成的动作会进入本地 History。
 - Selection Assistant 会把成功的翻译结果用哈希缓存键在本地缓存 7 天，以加速重复翻译。
 - 当本地没有可用缓存时，Selection Assistant 翻译会把选中文本和自定义 Translate 指令发送到 OpenAI；AI 发音会把选中文本发送到 OpenAI。
 - Inklet 最多每天从 `models.dev` 获取一次公开模型目录。该请求不包含你的文本、音频、API keys 或应用设置。

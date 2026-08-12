@@ -33,6 +33,11 @@ private enum SelectionPronunciationReturnState: Equatable {
     case translationResult
 }
 
+private struct PendingSelectionRead {
+    let sourceProcessIdentifier: pid_t
+    let location: SelectionPoint
+}
+
 @MainActor
 final class AppCoordinator: NSObject {
     private static let systemSettingsBundleIdentifier = "com.apple.systempreferences"
@@ -55,9 +60,7 @@ final class AppCoordinator: NSObject {
     private let apiKeyStore: LocalAPIKeyStore
     private let selectionActionMonitor: SelectionActionMonitor
     private let selectionActionWindowController: SelectionActionWindowController
-    private let selectedTextReader: SelectedTextReader
-    private let selectionBrowserTextReader: SelectionBrowserTextReader
-    private let selectionClipboardReader: SelectionClipboardReader
+    private let selectionReadPipeline: SelectionReadPipeline
     private let selectionTranslationCache: JSONSelectionTranslationCache
     private let speechPlaybackService: SpeechPlaybackService
     private let historyStore: JSONLHistoryStore
@@ -84,9 +87,6 @@ final class AppCoordinator: NSObject {
     private var currentSelectionText = ""
     private var currentTranslationText = ""
     private var selectionPronunciationReturnState = SelectionPronunciationReturnState.menu
-    private var pendingSelectionSourceProcessIdentifier: pid_t?
-    private var pendingSelectionSourceBundleIdentifier: String?
-    private var pendingSelectionLocation: SelectionPoint?
     private var panelDismissalPolicy = SelectionPanelDismissalPolicy()
     private lazy var voiceCoordinator = makeVoiceInputCoordinator()
 
@@ -98,6 +98,14 @@ final class AppCoordinator: NSObject {
         SelectionActionDiagnostics.configure(fileURL: storagePaths.selectionDiagnosticsFileURL)
         let historyStore = JSONLHistoryStore(fileURL: storagePaths.historyFileURL)
         let migrationPresentationModel = LegacyMigrationPresentationModel(outcome: migrationOutcome)
+        let selectionSourceValidator = SelectionSourceValidator()
+        let sourceValidator: SelectionReadPipeline.SourceValidator = {
+            selectionSourceValidator.isCurrent($0)
+        }
+        let selectedTextReader = SelectedTextReader()
+        let selectionClipboardReader = SelectionClipboardReader(
+            sourceProcessValidator: sourceValidator
+        )
 
         self.migrationOutcome = migrationOutcome
         self.migrator = migrator
@@ -121,9 +129,21 @@ final class AppCoordinator: NSObject {
         self.apiKeyStore = LocalAPIKeyStore()
         self.selectionActionMonitor = SelectionActionMonitor()
         self.selectionActionWindowController = SelectionActionWindowController()
-        self.selectedTextReader = SelectedTextReader()
-        self.selectionBrowserTextReader = SelectionBrowserTextReader()
-        self.selectionClipboardReader = SelectionClipboardReader()
+        self.selectionReadPipeline = SelectionReadPipeline(
+            sourceValidator: sourceValidator,
+            accessibilityReader: { sourceProcessIdentifier, mouseLocation in
+                selectedTextReader.readSelectedText(
+                    sourceProcessIdentifier: sourceProcessIdentifier,
+                    mouseLocation: mouseLocation
+                )
+            },
+            clipboardReader: { sourceProcessIdentifier, forceSelectionMode in
+                await selectionClipboardReader.readSelectedText(
+                    sourceProcessIdentifier: sourceProcessIdentifier,
+                    forceSelectionMode: forceSelectionMode
+                )
+            }
+        )
         self.selectionTranslationCache = JSONSelectionTranslationCache(
             fileURL: storagePaths.translationCacheFileURL
         )
@@ -704,13 +724,14 @@ final class AppCoordinator: NSObject {
         }
 
         let bundleID = sourceApp.bundleIdentifier ?? "pid-\(sourceApp.processIdentifier)"
-        pendingSelectionSourceProcessIdentifier = sourceApp.processIdentifier
-        pendingSelectionSourceBundleIdentifier = sourceApp.bundleIdentifier
-        pendingSelectionLocation = point
+        let request = PendingSelectionRead(
+            sourceProcessIdentifier: sourceApp.processIdentifier,
+            location: point
+        )
         SelectionActionDiagnostics.log("candidate sourceApp=\(bundleID)")
         handleSelectionActionEffects(selectionActionCoordinator.handle(
             .candidateSelection(sourceAppBundleID: bundleID, mouseLocation: point)
-        ))
+        ), pendingSelectionRead: request)
     }
 
     private func handleSelectionActionCopyTrigger(at point: SelectionPoint) {
@@ -755,10 +776,14 @@ final class AppCoordinator: NSObject {
         refreshMigrationImportEligibility()
     }
 
-    private func handleSelectionActionEffects(_ effects: [SelectionActionEffect]) {
+    private func handleSelectionActionEffects(
+        _ effects: [SelectionActionEffect],
+        pendingSelectionRead: PendingSelectionRead? = nil
+    ) {
         for effect in effects {
             switch effect {
             case .scheduleRead(let delayMilliseconds):
+                guard let pendingSelectionRead else { continue }
                 SelectionActionDiagnostics.log("effect scheduleRead delayMs=\(delayMilliseconds)")
                 selectionReadTask?.cancel()
                 let taskID = UUID()
@@ -778,7 +803,7 @@ final class AppCoordinator: NSObject {
                         return
                     }
                     guard !Task.isCancelled else { return }
-                    await self.completeScheduledSelectionRead()
+                    await self.completeScheduledSelectionRead(pendingSelectionRead)
                 }
                 refreshMigrationImportEligibility()
             case .cancelRead:
@@ -786,9 +811,6 @@ final class AppCoordinator: NSObject {
                 selectionReadTask?.cancel()
                 selectionReadTask = nil
                 selectionReadTaskID = nil
-                pendingSelectionSourceProcessIdentifier = nil
-                pendingSelectionSourceBundleIdentifier = nil
-                pendingSelectionLocation = nil
                 refreshMigrationImportEligibility()
             case .hidePanel:
                 SelectionActionDiagnostics.log("effect hidePanel")
@@ -809,9 +831,6 @@ final class AppCoordinator: NSObject {
                 SelectionActionDiagnostics.log("effect showPanel length=\(text.count)")
                 panelDismissalPolicy.recordPanelShown(at: Date().timeIntervalSinceReferenceDate)
                 selectionActionMonitor.recordPanelShown()
-                pendingSelectionSourceProcessIdentifier = nil
-                pendingSelectionSourceBundleIdentifier = nil
-                pendingSelectionLocation = nil
                 currentSelectionText = text
                 currentTranslationText = ""
                 selectionPronunciationReturnState = .menu
@@ -860,74 +879,31 @@ final class AppCoordinator: NSObject {
         }
     }
 
-    private func completeScheduledSelectionRead() async {
+    private func completeScheduledSelectionRead(_ pendingSelectionRead: PendingSelectionRead) async {
         guard !isMigrationMaintenanceActive else { return }
+        let config = (try? configStore.load()) ?? AppConfig.defaultConfig()
+        let forceSelectionMode = config.selectionActions.forceSelectionMode
+        let readSelectedTextForAutomaticSelection = {
+            await self.readSelectedTextForAutomaticSelection(
+                pendingSelectionRead,
+                forceSelectionMode: forceSelectionMode
+            )
+        }
         let result = await readSelectedTextForAutomaticSelection()
         guard !Task.isCancelled, !isMigrationMaintenanceActive else { return }
         SelectionActionDiagnostics.log("read result \(diagnosticSummary(for: result))")
         handleSelectionActionEffects(selectionActionCoordinator.handle(.readCompleted(result)))
     }
 
-    private func readSelectedTextForAutomaticSelection() async -> SelectedTextReadResult {
-        let sourceProcessIdentifier = pendingSelectionSourceProcessIdentifier
-        guard selectedTextReader.isFocusedSelectableTextElement(
-            sourceProcessIdentifier: sourceProcessIdentifier
-        ) else {
-            SelectionActionDiagnostics.log("focused element is not selectable text")
-            return .emptySelection
-        }
-
-        let accessibilityResult = selectedTextReader.readSelectedText(
-            sourceProcessIdentifier: pendingSelectionSourceProcessIdentifier,
-            mouseLocation: pendingSelectionLocation
+    private func readSelectedTextForAutomaticSelection(
+        _ pendingSelectionRead: PendingSelectionRead,
+        forceSelectionMode: SelectionForceSelectionMode
+    ) async -> SelectedTextReadResult {
+        await selectionReadPipeline.readSelectedText(
+            sourceProcessIdentifier: pendingSelectionRead.sourceProcessIdentifier,
+            mouseLocation: pendingSelectionRead.location,
+            forceSelectionMode: forceSelectionMode
         )
-        if case .success = accessibilityResult {
-            return accessibilityResult
-        }
-        if accessibilityResult == .permissionDenied {
-            return accessibilityResult
-        }
-
-        let browserResult = await selectionBrowserTextReader.readSelectedText(
-            bundleIdentifier: pendingSelectionSourceBundleIdentifier
-        )
-        if case .success = browserResult {
-            SelectionActionDiagnostics.log("browser selection fallback success")
-            return browserResult
-        }
-
-        let config = (try? configStore.load()) ?? AppConfig.defaultConfig()
-        let clipboardResult = await selectionClipboardReader.readSelectedText(
-            sourceProcessIdentifier: sourceProcessIdentifier,
-            forceSelectionMode: config.selectionActions.forceSelectionMode
-        )
-        if case .success = clipboardResult {
-            SelectionActionDiagnostics.log("force selection fallback success")
-            return clipboardResult
-        }
-
-        return preferredSelectionReadResult(
-            accessibilityResult: accessibilityResult,
-            browserResult: browserResult,
-            clipboardResult: clipboardResult
-        )
-    }
-
-    private func preferredSelectionReadResult(
-        accessibilityResult: SelectedTextReadResult,
-        browserResult: SelectedTextReadResult,
-        clipboardResult: SelectedTextReadResult
-    ) -> SelectedTextReadResult {
-        if clipboardResult == .emptySelection || browserResult == .emptySelection {
-            return .emptySelection
-        }
-        if case .failed = clipboardResult {
-            return clipboardResult
-        }
-        if case .failed = browserResult {
-            return browserResult
-        }
-        return accessibilityResult
     }
 
     private func showSelectionUnsupportedNotice() {
