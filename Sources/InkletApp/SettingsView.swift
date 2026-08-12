@@ -1109,7 +1109,7 @@ struct SettingsView: View {
             migrationActionButton(
                 titleKey: migrationPresentationModel.phase == .importing
                     ? "legacyMigration.import.progress"
-                    : "legacyMigration.import.relaunching",
+                    : "legacyMigration.import.relaunchProgress",
                 systemImage: "square.and.arrow.down",
                 showsProgress: true,
                 isEnabled: false,
