@@ -546,4 +546,317 @@ if grep -Eq '(echo|printf).*sign_identity|set -x' "$builder"; then
   fail "build-macos-app-bundle.sh must not print signing identities."
 fi
 
+workflow="${repo_root}/.github/workflows/build-dmg.yml"
+check_workflow_semantics() {
+  local workflow_path="$1"
+
+  /usr/bin/ruby -ryaml - "$workflow_path" <<'RUBY'
+path = ARGV.fetch(0)
+workflow = YAML.safe_load(File.read(path), [], [], true, path)
+steps = workflow.fetch("jobs").fetch("build-dmg").fetch("steps")
+
+def require_contract(condition, message)
+  raise message unless condition
+end
+
+def named_step(steps, name)
+  matches = steps.each_with_index.select { |step, _index| step["name"] == name }
+  require_contract(matches.length == 1, "missing or duplicate step: #{name}")
+  matches.first
+end
+
+def active_run(run)
+  run.lines.reject { |line| line.strip.empty? || line.lstrip.start_with?("#") }.join
+end
+
+identity_step, identity_index = named_step(steps, "Import Developer ID certificate")
+build_step, build_index = named_step(steps, "Build and verify release app")
+final_step, final_index = named_step(steps, "Create and verify final DMG")
+
+expected_identity_env = {
+  "APPLE_DEVELOPER_ID_CERTIFICATE_BASE64" => "${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}",
+  "APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD" => "${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}",
+  "APPLE_TEAM_ID" => "${{ secrets.APPLE_TEAM_ID }}"
+}
+expected_build_env = {
+  "INKLET_APP_NAME" => "Inklet",
+  "INKLET_BUNDLE_ID" => "com.tomwan.inklet",
+  "INKLET_VERSION" => "${{ steps.release.outputs.app_version }}",
+  "INKLET_BUILD_NUMBER" => "${{ steps.release.outputs.build_number }}",
+  "INKLET_OUTPUT_DIR" => "dist/release",
+  "INKLET_REQUIRE_TIMESTAMP" => "1",
+  "APPLE_TEAM_ID" => "${{ secrets.APPLE_TEAM_ID }}"
+}
+expected_final_env = {
+  "APP_STORE_CONNECT_API_KEY_ID" => "${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}",
+  "APP_STORE_CONNECT_API_ISSUER_ID" => "${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}",
+  "APP_STORE_CONNECT_API_PRIVATE_KEY" => "${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}",
+  "APPLE_TEAM_ID" => "${{ secrets.APPLE_TEAM_ID }}"
+}
+
+require_contract(identity_step.fetch("env", {}) == expected_identity_env, "identity environment")
+require_contract(build_step.fetch("env", {}) == expected_build_env, "build environment")
+require_contract(final_step.fetch("env", {}) == expected_final_env, "final environment")
+require_contract(identity_index < build_index && build_index < final_index, "release step order")
+
+identity_run = active_run(identity_step.fetch("run"))
+mask_invocation = 'SIGNING_IDENTITY="$signing_identity" /usr/bin/python3'
+mask_write = 'print(f"::add-mask::{os.environ['"'"'SIGNING_IDENTITY'"'"']}")'
+export_invocation = 'SIGNING_IDENTITY="$signing_identity" GITHUB_ENV_PATH="$GITHUB_ENV" /usr/bin/python3'
+export_open = 'with open(os.environ["GITHUB_ENV_PATH"], "a", encoding="utf-8") as output:'
+export_write = 'output.write(f"APPLE_SIGNING_IDENTITY={os.environ['"'"'SIGNING_IDENTITY'"'"']}\n")'
+identity_markers = [mask_invocation, mask_write, export_invocation, export_open, export_write]
+identity_positions = identity_markers.map { |marker| identity_run.index(marker) }
+require_contract(identity_positions.none?(&:nil?), "identity mask/export markers")
+require_contract(identity_positions.each_cons(2).all? { |left, right| left < right }, "identity mask/export order")
+require_contract(identity_run.scan('SIGNING_IDENTITY="$signing_identity"').length == 2, "identity capture reuse")
+
+build_run = active_run(build_step.fetch("run"))
+builder_command = 'INKLET_SIGN_IDENTITY="$APPLE_SIGNING_IDENTITY" scripts/build-macos-app-bundle.sh'
+app_verify_command = 'scripts/verify-direct-app.sh "dist/release/Inklet.app" "com.tomwan.inklet" --release'
+builder_position = build_run.index(builder_command)
+app_verify_position = build_run.index(app_verify_command)
+require_contract(!builder_position.nil? && !app_verify_position.nil?, "build commands")
+require_contract(builder_position < app_verify_position, "build verification order")
+
+final_run = active_run(final_step.fetch("run"))
+ordered_final_markers = [
+  "hdiutil create",
+  'hdiutil verify "$dmg_path"',
+  '--sign "$APPLE_SIGNING_IDENTITY"',
+  'codesign --verify "$dmg_path"',
+  'xcrun notarytool submit "$dmg_path"',
+  "--wait",
+  'xcrun stapler staple "$dmg_path"',
+  'xcrun stapler validate "$dmg_path"',
+  'spctl --assess --type open --context context:primary-signature "$dmg_path"',
+  'hdiutil attach "$dmg_path" -readonly -nobrowse -mountpoint "$mount_dir" -plist',
+  'attach_succeeded=1',
+  'entities = plistlib.load(attach_file).get("system-entities")',
+  'pending_mount_devices+=("$cleanup_device")',
+  'mount_acceptance="$(<"$mount_acceptance_path")"',
+  'find "$mount_dir" -mindepth 1 -maxdepth 1 -print0',
+  'readlink "$applications_link"',
+  'scripts/verify-direct-app.sh "$mount_dir/Inklet.app" "com.tomwan.inklet" --release',
+  'spctl --assess --type execute "$mount_dir/Inklet.app"'
+]
+final_positions = ordered_final_markers.map { |marker| final_run.index(marker) }
+require_contract(final_positions.none?(&:nil?), "final verification commands")
+require_contract(final_positions.each_cons(2).all? { |left, right| left < right }, "final verification order")
+cleanup_array_position = final_run.index('pending_mount_devices=()')
+cleanup_loop_position = final_run.index('hdiutil detach "${pending_mount_devices[index]}"')
+attach_succeeded_position = final_run.index('attach_succeeded=1')
+safe_device_extraction_position = final_run.index('safe_devices = []')
+cleanup_device_load_position = final_run.index('pending_mount_devices+=("$cleanup_device")')
+acceptance_position = final_run.index('mount_acceptance="$(<"$mount_acceptance_path")"')
+require_contract([cleanup_array_position, cleanup_loop_position, attach_succeeded_position,
+  safe_device_extraction_position, cleanup_device_load_position, acceptance_position].none?(&:nil?),
+  "mount cleanup device retention")
+require_contract(cleanup_array_position < cleanup_loop_position &&
+  attach_succeeded_position < safe_device_extraction_position &&
+  safe_device_extraction_position < cleanup_device_load_position &&
+  cleanup_device_load_position < acceptance_position,
+  "mount cleanup devices retained before acceptance")
+detach_position = final_run.rindex('hdiutil detach "$accepted_mount_device"')
+copy_position = final_run.index('cp "$dmg_path" "dist/Inklet.dmg"')
+checksum_position = final_run.index('shasum -a 256 "$dmg_path"')
+require_contract(!detach_position.nil? && !copy_position.nil? && !checksum_position.nil?, "detach/copy/checksum commands")
+require_contract(final_positions.last < detach_position && detach_position < copy_position && copy_position < checksum_position,
+  "detach/copy/checksum order")
+require_contract(final_run.scan("shasum -a 256").length == 2, "final checksum count")
+require_contract(final_run.include?("trap cleanup EXIT"), "final cleanup trap")
+RUBY
+}
+
+write_workflow_mutation() {
+  local mutation="$1"
+  local destination="$2"
+
+  /usr/bin/ruby -ryaml - "$mutation" "$workflow" "$destination" <<'RUBY'
+mutation, source, destination = ARGV
+data = YAML.safe_load(File.read(source), [], [], true, source)
+steps = data.fetch("jobs").fetch("build-dmg").fetch("steps")
+identity_step = steps.find { |step| step["name"] == "Import Developer ID certificate" }
+build_step = steps.find { |step| step["name"] == "Build and verify release app" }
+
+case mutation
+when "late-mask"
+  mask_block = <<~'BLOCK'.chomp
+    SIGNING_IDENTITY="$signing_identity" /usr/bin/python3 - <<'PY'
+    import os
+
+    print(f"::add-mask::{os.environ['SIGNING_IDENTITY']}")
+    PY
+  BLOCK
+  export_block = <<~'BLOCK'.chomp
+    SIGNING_IDENTITY="$signing_identity" GITHUB_ENV_PATH="$GITHUB_ENV" /usr/bin/python3 - <<'PY'
+    import os
+
+    with open(os.environ["GITHUB_ENV_PATH"], "a", encoding="utf-8") as output:
+        output.write(f"APPLE_SIGNING_IDENTITY={os.environ['SIGNING_IDENTITY']}\n")
+    PY
+  BLOCK
+  run = identity_step.fetch("run")
+  raise "mask mutation source" unless run.include?(mask_block) && run.include?(export_block)
+  identity_step["run"] = run.sub(mask_block, "__MASK_BLOCK__").sub(export_block, mask_block).sub("__MASK_BLOCK__", export_block)
+when "builder-in-wrong-step"
+  command = 'INKLET_SIGN_IDENTITY="$APPLE_SIGNING_IDENTITY" scripts/build-macos-app-bundle.sh'
+  build_step["run"] = build_step.fetch("run").sub(command, 'echo "Builder command moved."')
+  wrong_step = steps.find { |step| step["name"] == "Run tests" }
+  wrong_step["run"] = "#{wrong_step.fetch("run")}\n#{command}\n"
+else
+  raise "unknown workflow mutation"
+end
+
+File.write(destination, YAML.dump(data))
+RUBY
+}
+
+workflow_semantic_log="${temp_dir}/workflow-semantic.log"
+if ! check_workflow_semantics "$workflow" >"$workflow_semantic_log" 2>&1; then
+  fail "DMG CI workflow does not satisfy the structured release contract."
+fi
+if ! grep -Fq 'scripts/build-macos-app-bundle.sh' "$workflow"; then
+  fail "DMG CI must use the shared app-bundle builder."
+fi
+required_workflow_environment=(
+  'INKLET_APP_NAME: Inklet'
+  'INKLET_BUNDLE_ID: com.tomwan.inklet'
+  'INKLET_VERSION: ${{ steps.release.outputs.app_version }}'
+  'INKLET_BUILD_NUMBER: ${{ steps.release.outputs.build_number }}'
+  'INKLET_OUTPUT_DIR: dist/release'
+  'INKLET_REQUIRE_TIMESTAMP: "1"'
+  'APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}'
+)
+for environment_setting in "${required_workflow_environment[@]}"; do
+  if ! grep -Fq -- "$environment_setting" "$workflow"; then
+    fail "DMG CI must pass the production release environment to the shared builder."
+  fi
+done
+if ! grep -Fq 'INKLET_SIGN_IDENTITY="$APPLE_SIGNING_IDENTITY" scripts/build-macos-app-bundle.sh' "$workflow"; then
+  fail "DMG CI must pass the discovered identity to the shared builder without printing it."
+fi
+
+required_workflow_commands=(
+  'scripts/verify-direct-app.sh "dist/release/Inklet.app" "com.tomwan.inklet" --release'
+  'hdiutil verify "$dmg_path"'
+  'codesign --verify "$dmg_path"'
+  'xcrun notarytool submit "$dmg_path"'
+  'xcrun stapler staple "$dmg_path"'
+  'xcrun stapler validate "$dmg_path"'
+  'spctl --assess --type open --context context:primary-signature "$dmg_path"'
+  'hdiutil attach "$dmg_path" -readonly -nobrowse -mountpoint "$mount_dir" -plist'
+  'entities = plistlib.load(attach_file).get("system-entities")'
+  'find "$mount_dir" -mindepth 1 -maxdepth 1 -print0'
+  'readlink "$applications_link"'
+  'scripts/verify-direct-app.sh "$mount_dir/Inklet.app" "com.tomwan.inklet" --release'
+  'spctl --assess --type execute "$mount_dir/Inklet.app"'
+  'hdiutil detach "$accepted_mount_device"'
+)
+for workflow_command in "${required_workflow_commands[@]}"; do
+  if ! grep -Fq -- "$workflow_command" "$workflow"; then
+    fail "DMG CI is missing a required final-artifact verification command."
+  fi
+done
+
+if ! grep -Fq -- '--wait' "$workflow"; then
+  fail "DMG CI notarization must wait for a final result."
+fi
+if ! grep -Fq 'trap cleanup EXIT' "$workflow"; then
+  fail "DMG CI must detach a mounted image from an EXIT trap."
+fi
+if grep -Eq 'security find-identity[[:space:]]+-v|security find-identity.*(>&2|/dev/stderr)' "$workflow"; then
+  fail "DMG CI must not dump signing identities."
+fi
+if ! grep -Fq 'partition-list.log' "$workflow"; then
+  fail "DMG CI must capture key partition diagnostics."
+fi
+if ! grep -Fq '::add-mask::' "$workflow"; then
+  fail "DMG CI must mask the selected signing identity before exporting it."
+fi
+if grep -Eq '(echo|printf).*(signing_identity|APPLE_SIGNING_IDENTITY)|set -x' "$workflow"; then
+  fail "DMG CI must not print the selected signing identity."
+fi
+
+workflow_line() {
+  local needle="$1"
+  local line
+
+  line="$(grep -nF -- "$needle" "$workflow" | head -n 1 | cut -d: -f1)"
+  if [[ -z "$line" ]]; then
+    fail "Could not locate required DMG CI step: ${needle}."
+  fi
+  printf '%s\n' "$line"
+}
+
+workflow_last_line() {
+  local needle="$1"
+  local line
+
+  line="$(grep -nF -- "$needle" "$workflow" | tail -n 1 | cut -d: -f1)"
+  if [[ -z "$line" ]]; then
+    fail "Could not locate required DMG CI step: ${needle}."
+  fi
+  printf '%s\n' "$line"
+}
+
+app_verify_line="$(workflow_line 'scripts/verify-direct-app.sh "dist/release/Inklet.app" "com.tomwan.inklet" --release')"
+create_line="$(workflow_line 'hdiutil create')"
+verify_dmg_line="$(workflow_line 'hdiutil verify "$dmg_path"')"
+sign_dmg_line="$(workflow_line '--sign "$APPLE_SIGNING_IDENTITY"')"
+verify_signature_line="$(workflow_line 'codesign --verify "$dmg_path"')"
+notarize_line="$(workflow_line 'xcrun notarytool submit "$dmg_path"')"
+staple_line="$(workflow_line 'xcrun stapler staple "$dmg_path"')"
+validate_staple_line="$(workflow_line 'xcrun stapler validate "$dmg_path"')"
+assess_dmg_line="$(workflow_line 'spctl --assess --type open --context context:primary-signature "$dmg_path"')"
+mount_line="$(workflow_line 'hdiutil attach "$dmg_path" -readonly -nobrowse -mountpoint "$mount_dir" -plist')"
+mount_parse_line="$(workflow_line 'entities = plistlib.load(attach_file).get("system-entities")')"
+payload_find_line="$(workflow_line 'find "$mount_dir" -mindepth 1 -maxdepth 1 -print0')"
+payload_link_line="$(workflow_line 'readlink "$applications_link"')"
+mounted_verify_line="$(workflow_line 'scripts/verify-direct-app.sh "$mount_dir/Inklet.app" "com.tomwan.inklet" --release')"
+assess_app_line="$(workflow_line 'spctl --assess --type execute "$mount_dir/Inklet.app"')"
+detach_line="$(workflow_last_line 'hdiutil detach "$accepted_mount_device"')"
+checksum_line="$(workflow_line 'shasum -a 256 "$dmg_path"')"
+
+workflow_order=(
+  "$app_verify_line"
+  "$create_line"
+  "$verify_dmg_line"
+  "$sign_dmg_line"
+  "$verify_signature_line"
+  "$notarize_line"
+  "$staple_line"
+  "$validate_staple_line"
+  "$assess_dmg_line"
+  "$mount_line"
+  "$mount_parse_line"
+  "$payload_find_line"
+  "$payload_link_line"
+  "$mounted_verify_line"
+  "$assess_app_line"
+  "$detach_line"
+  "$checksum_line"
+)
+for ((index = 1; index < ${#workflow_order[@]}; index += 1)); do
+  if ((workflow_order[index - 1] >= workflow_order[index])); then
+    fail "DMG CI must mutate, verify, detach, and checksum the final artifact in the required order."
+  fi
+done
+
+if [[ "$(grep -Fc 'shasum -a 256' "$workflow")" != "2" ]]; then
+  fail "DMG CI must generate only the two final release checksums."
+fi
+
+late_mask_workflow="${temp_dir}/workflow-late-mask.yml"
+write_workflow_mutation late-mask "$late_mask_workflow"
+if check_workflow_semantics "$late_mask_workflow" >"${temp_dir}/late-mask-semantic.log" 2>&1; then
+  fail "The structured workflow checker must reject identity export before masking."
+fi
+
+wrong_step_workflow="${temp_dir}/workflow-builder-wrong-step.yml"
+write_workflow_mutation builder-in-wrong-step "$wrong_step_workflow"
+if check_workflow_semantics "$wrong_step_workflow" >"${temp_dir}/wrong-step-semantic.log" 2>&1; then
+  fail "The structured workflow checker must reject the builder command in an unrelated step."
+fi
+
 echo "Direct distribution checks passed."

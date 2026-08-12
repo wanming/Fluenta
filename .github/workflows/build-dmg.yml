@@ -51,11 +51,6 @@ jobs:
             echo "dmg_name=$dmg_name"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build release binary
-        env:
-          INKLET_BUILD_VERSION: ${{ steps.release.outputs.build_number }}
-        run: swift build -c release
-
       - name: Run tests
         env:
           INKLET_BUILD_VERSION: ${{ steps.release.outputs.build_number }}
@@ -73,6 +68,9 @@ jobs:
           certificate_path="$RUNNER_TEMP/developer-id-application.p12"
           keychain_path="$RUNNER_TEMP/app-signing.keychain-db"
           keychain_password="$(uuidgen)"
+          identity_list="$RUNNER_TEMP/codesigning-identities.txt"
+          import_log="$RUNNER_TEMP/certificate-import.log"
+          partition_log="$RUNNER_TEMP/partition-list.log"
 
           printf '%s' "$APPLE_DEVELOPER_ID_CERTIFICATE_BASE64" | base64 --decode > "$certificate_path"
 
@@ -83,131 +81,284 @@ jobs:
             -P "$APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD" \
             -A \
             -k "$keychain_path" \
-            -T /usr/bin/codesign
-          security set-key-partition-list \
+            -T /usr/bin/codesign >"$import_log" 2>&1
+          if ! security set-key-partition-list \
             -S apple-tool:,apple:,codesign: \
             -s \
             -k "$keychain_password" \
-            "$keychain_path"
+            "$keychain_path" >"$partition_log" 2>&1; then
+            echo "Developer ID certificate configuration failed." >&2
+            exit 1
+          fi
           security list-keychains -d user -s "$keychain_path" login.keychain-db
 
-          signing_identity="$(security find-identity -v -p codesigning "$keychain_path" | awk -F '"' '/Developer ID Application/ { print $2; exit }')"
+          if ! security find-identity -p codesigning "$keychain_path" >"$identity_list" 2>&1; then
+            echo "Developer ID Application signing identity discovery failed." >&2
+            exit 1
+          fi
+          if [[ ! "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]]; then
+            echo "Developer ID signing configuration is invalid." >&2
+            exit 1
+          fi
+          signing_identity="$(awk -v team="$APPLE_TEAM_ID" \
+            '$0 ~ /"Developer ID Application:/ && $0 ~ "\\(" team "\\)\"$" { print $2; exit }' \
+            "$identity_list")"
           if [[ -z "$signing_identity" ]]; then
             echo "Developer ID Application signing identity was not found." >&2
-            security find-identity -v -p codesigning "$keychain_path" >&2
             exit 1
           fi
-          if [[ "$signing_identity" != *"($APPLE_TEAM_ID)"* ]]; then
-            echo "Developer ID signing identity does not match APPLE_TEAM_ID." >&2
-            echo "Found: $signing_identity" >&2
-            exit 1
-          fi
+          SIGNING_IDENTITY="$signing_identity" /usr/bin/python3 - <<'PY'
+          import os
 
-          {
-            echo "APPLE_SIGNING_IDENTITY=$signing_identity"
-            echo "APPLE_KEYCHAIN_PATH=$keychain_path"
-          } >> "$GITHUB_ENV"
+          print(f"::add-mask::{os.environ['SIGNING_IDENTITY']}")
+          PY
+          rm -f "$certificate_path" "$identity_list" "$import_log" "$partition_log"
 
-      - name: Package app bundle
+          SIGNING_IDENTITY="$signing_identity" GITHUB_ENV_PATH="$GITHUB_ENV" /usr/bin/python3 - <<'PY'
+          import os
+
+          with open(os.environ["GITHUB_ENV_PATH"], "a", encoding="utf-8") as output:
+              output.write(f"APPLE_SIGNING_IDENTITY={os.environ['SIGNING_IDENTITY']}\n")
+          PY
+
+      - name: Build and verify release app
+        env:
+          INKLET_APP_NAME: Inklet
+          INKLET_BUNDLE_ID: com.tomwan.inklet
+          INKLET_VERSION: ${{ steps.release.outputs.app_version }}
+          INKLET_BUILD_NUMBER: ${{ steps.release.outputs.build_number }}
+          INKLET_OUTPUT_DIR: dist/release
+          INKLET_REQUIRE_TIMESTAMP: "1"
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         shell: bash
         run: |
           set -euo pipefail
 
-          app_name="Inklet"
-          bundle_id="com.tomwan.inklet"
-          bin_path="$(swift build -c release --show-bin-path)"
-          app_path="dist/${app_name}.app"
+          INKLET_SIGN_IDENTITY="$APPLE_SIGNING_IDENTITY" scripts/build-macos-app-bundle.sh
+          scripts/verify-direct-app.sh "dist/release/Inklet.app" "com.tomwan.inklet" --release
 
-          rm -rf dist
-          mkdir -p "$app_path/Contents/MacOS" "$app_path/Contents/Resources"
-
-          cp "$bin_path/$app_name" "$app_path/Contents/MacOS/$app_name"
-          chmod +x "$app_path/Contents/MacOS/$app_name"
-
-          if [[ -d "$bin_path/Inklet_InkletCore.bundle" ]]; then
-            cp -R "$bin_path/Inklet_InkletCore.bundle" "$app_path/Contents/Resources/Inklet_InkletCore.bundle"
-          fi
-          cp "Assets/AppIcon.icns" "$app_path/Contents/Resources/AppIcon.icns"
-          ditto "StoreSupport/InfoPlistStrings" "$app_path/Contents/Resources"
-
-          cp "StoreSupport/Info.plist" "$app_path/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable ${app_name}" "$app_path/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${bundle_id}" "$app_path/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${{ steps.release.outputs.app_version }}" "$app_path/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ steps.release.outputs.build_number }}" "$app_path/Contents/Info.plist"
-          plutil -lint "$app_path/Contents/Info.plist"
-
-      - name: Sign app bundle
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          codesign \
-            --force \
-            --deep \
-            --options runtime \
-            --entitlements "StoreSupport/Inklet.entitlements" \
-            --timestamp \
-            --sign "$APPLE_SIGNING_IDENTITY" \
-            "dist/Inklet.app"
-          codesign --verify --deep --strict --verbose=2 "dist/Inklet.app"
-
-      - name: Create DMG
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          dmg_root="dist/dmg-root"
-          dmg_path="dist/${{ steps.release.outputs.dmg_name }}"
-
-          mkdir -p "$dmg_root"
-          cp -R "dist/Inklet.app" "$dmg_root/Inklet.app"
-          ln -s /Applications "$dmg_root/Applications"
-
-          hdiutil create \
-            -volname "Inklet ${{ steps.release.outputs.app_version }} (${{ steps.release.outputs.build_number }})" \
-            -srcfolder "$dmg_root" \
-            -ov \
-            -format UDZO \
-            "$dmg_path"
-
-          shasum -a 256 "$dmg_path" > "$dmg_path.sha256"
-          cp "$dmg_path" "dist/Inklet.dmg"
-          shasum -a 256 "dist/Inklet.dmg" > "dist/Inklet.dmg.sha256"
-
-      - name: Sign and notarize DMG
+      - name: Create and verify final DMG
         env:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
           APP_STORE_CONNECT_API_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         shell: bash
         run: |
           set -euo pipefail
 
           private_key_path="$RUNNER_TEMP/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
+          release_log_dir="$(mktemp -d "$RUNNER_TEMP/inklet-dmg-release.XXXXXX")"
+          mount_dir="$(mktemp -d "$RUNNER_TEMP/inklet-dmg-mount.XXXXXX")"
+          dmg_root="dist/dmg-root"
           dmg_path="dist/${{ steps.release.outputs.dmg_name }}"
+          attach_succeeded=0
+          pending_mount_devices=()
+
+          cleanup() {
+            if [[ "$attach_succeeded" == "1" ]]; then
+              if ((${#pending_mount_devices[@]} > 0)); then
+                for ((index = ${#pending_mount_devices[@]} - 1; index >= 0; index -= 1)); do
+                  hdiutil detach "${pending_mount_devices[index]}" \
+                    >"$release_log_dir/cleanup-detach-${index}.log" 2>&1 || true
+                done
+              else
+                hdiutil detach "$mount_dir" >"$release_log_dir/cleanup-detach.log" 2>&1 || true
+              fi
+            fi
+            rm -rf "$mount_dir" "$release_log_dir" "$private_key_path"
+          }
+          trap cleanup EXIT
 
           printf '%s' "$APP_STORE_CONNECT_API_PRIVATE_KEY" > "$private_key_path"
           chmod 600 "$private_key_path"
 
-          codesign \
+          rm -rf "$dmg_root"
+          mkdir -p "$dmg_root"
+          ditto "dist/release/Inklet.app" "$dmg_root/Inklet.app"
+          ln -s /Applications "$dmg_root/Applications"
+
+          if ! hdiutil create \
+            -volname "Inklet ${{ steps.release.outputs.app_version }} (${{ steps.release.outputs.build_number }})" \
+            -srcfolder "$dmg_root" \
+            -ov \
+            -format UDZO \
+            "$dmg_path" >"$release_log_dir/create.log" 2>&1; then
+            echo "DMG creation failed." >&2
+            exit 1
+          fi
+          if ! hdiutil verify "$dmg_path" >"$release_log_dir/hdiutil-verify.log" 2>&1; then
+            echo "DMG structure verification failed." >&2
+            exit 1
+          fi
+
+          if ! codesign \
             --force \
             --timestamp \
             --sign "$APPLE_SIGNING_IDENTITY" \
-            "$dmg_path"
-          codesign --verify --verbose=2 "$dmg_path"
+            "$dmg_path" >"$release_log_dir/codesign.log" 2>&1; then
+            echo "DMG signing failed." >&2
+            exit 1
+          fi
+          if ! codesign --verify "$dmg_path" >"$release_log_dir/codesign-verify.log" 2>&1; then
+            echo "DMG signature verification failed." >&2
+            exit 1
+          fi
 
-          xcrun notarytool submit "$dmg_path" \
+          if ! xcrun notarytool submit "$dmg_path" \
             --key "$private_key_path" \
             --key-id "$APP_STORE_CONNECT_API_KEY_ID" \
             --issuer "$APP_STORE_CONNECT_API_ISSUER_ID" \
-            --wait
-          xcrun stapler staple "$dmg_path"
-          xcrun stapler validate "$dmg_path"
-          spctl -a -vvv -t install "$dmg_path"
+            --wait >"$release_log_dir/notarytool.log" 2>&1; then
+            echo "DMG notarization failed." >&2
+            exit 1
+          fi
+          if ! xcrun stapler staple "$dmg_path" >"$release_log_dir/staple.log" 2>&1; then
+            echo "DMG stapling failed." >&2
+            exit 1
+          fi
+          if ! xcrun stapler validate "$dmg_path" >"$release_log_dir/stapler-validate.log" 2>&1; then
+            echo "DMG staple validation failed." >&2
+            exit 1
+          fi
+          if ! spctl --assess --type open --context context:primary-signature "$dmg_path" \
+            >"$release_log_dir/dmg-gatekeeper.log" 2>&1; then
+            echo "DMG Gatekeeper assessment failed." >&2
+            exit 1
+          fi
+          attach_plist="$release_log_dir/attach.plist"
+          if ! hdiutil attach "$dmg_path" -readonly -nobrowse -mountpoint "$mount_dir" -plist \
+            >"$attach_plist" 2>"$release_log_dir/attach.log"; then
+            echo "DMG mount failed." >&2
+            exit 1
+          fi
+          attach_succeeded=1
 
-          shasum -a 256 "$dmg_path" > "$dmg_path.sha256"
+          cleanup_devices_path="$release_log_dir/cleanup-devices.txt"
+          mount_acceptance_path="$release_log_dir/mount-acceptance.txt"
+          mount_metadata_parsed=0
+          if ATTACH_PLIST="$attach_plist" MOUNT_POINT="$mount_dir" \
+            CLEANUP_DEVICES="$cleanup_devices_path" MOUNT_ACCEPTANCE="$mount_acceptance_path" \
+            /usr/bin/python3 - <<'PY' \
+            >"$release_log_dir/attach-parse-output.log" 2>"$release_log_dir/attach-parse.log"; then
+          import os
+          import plistlib
+          import re
+
+          with open(os.environ["ATTACH_PLIST"], "rb") as attach_file:
+              entities = plistlib.load(attach_file).get("system-entities")
+          mounted_entities = []
+          if isinstance(entities, list):
+              mounted_entities = [
+                  entity
+                  for entity in entities
+                  if isinstance(entity, dict) and "mount-point" in entity
+              ]
+          safe_devices = []
+          for entity in mounted_entities:
+              device = entity.get("dev-entry")
+              if (
+                  isinstance(device, str)
+                  and re.fullmatch(r"/dev/disk[0-9]+(?:s[0-9]+)*", device) is not None
+                  and device not in safe_devices
+              ):
+                  safe_devices.append(device)
+          with open(os.environ["CLEANUP_DEVICES"], "w", encoding="utf-8") as cleanup_file:
+              for device in safe_devices:
+                  cleanup_file.write(device + "\n")
+          accepted = (
+              isinstance(entities, list)
+              and len(mounted_entities) == 1
+              and mounted_entities[0].get("mount-point") == os.environ["MOUNT_POINT"]
+              and len(safe_devices) == 1
+              and mounted_entities[0].get("dev-entry") == safe_devices[0]
+          )
+          with open(os.environ["MOUNT_ACCEPTANCE"], "w", encoding="utf-8") as acceptance_file:
+              acceptance_file.write("accepted\n" if accepted else "rejected\n")
+          PY
+            mount_metadata_parsed=1
+          fi
+          pending_mount_devices=()
+          if [[ -f "$cleanup_devices_path" ]]; then
+            while IFS= read -r cleanup_device; do
+              if [[ ! "$cleanup_device" =~ ^/dev/disk[0-9]+(s[0-9]+)*$ ]]; then
+                mount_metadata_parsed=0
+                continue
+              fi
+              pending_mount_devices+=("$cleanup_device")
+            done <"$cleanup_devices_path"
+          fi
+          mount_acceptance=""
+          if [[ -f "$mount_acceptance_path" ]]; then
+            mount_acceptance="$(<"$mount_acceptance_path")"
+          fi
+          if [[ "$mount_metadata_parsed" != "1" || "$mount_acceptance" != "accepted" ||
+            "${#pending_mount_devices[@]}" != "1" ]]; then
+            echo "Mounted device verification failed." >&2
+            exit 1
+          fi
+          accepted_mount_device="${pending_mount_devices[0]}"
+
+          source_app="$mount_dir/Inklet.app"
+          applications_link="$mount_dir/Applications"
+          payload_count=0
+          found_app=0
+          found_applications=0
+          while IFS= read -r -d '' payload_entry; do
+            payload_count=$((payload_count + 1))
+            payload_name="${payload_entry##*/}"
+            if [[ "$payload_name" == *$'\n'* || "$payload_name" == *$'\r'* ]]; then
+              echo "Mounted DMG payload verification failed." >&2
+              exit 1
+            fi
+            case "$payload_name" in
+              Inklet.app)
+                if [[ "$payload_entry" != "$source_app" || ! -d "$payload_entry" || -L "$payload_entry" ]]; then
+                  echo "Mounted DMG payload verification failed." >&2
+                  exit 1
+                fi
+                found_app=1
+                ;;
+              Applications)
+                if [[ "$payload_entry" != "$applications_link" || ! -L "$payload_entry" ]]; then
+                  echo "Mounted DMG payload verification failed." >&2
+                  exit 1
+                fi
+                found_applications=1
+                ;;
+              *)
+                echo "Mounted DMG payload verification failed." >&2
+                exit 1
+                ;;
+            esac
+          done < <(find "$mount_dir" -mindepth 1 -maxdepth 1 -print0)
+
+          applications_target_path="$release_log_dir/applications-target.txt"
+          expected_applications_target_path="$release_log_dir/expected-applications-target.txt"
+          printf '/Applications\n' >"$expected_applications_target_path"
+          if [[ "$payload_count" != "2" || "$found_app" != "1" || "$found_applications" != "1" ]] ||
+            ! readlink "$applications_link" >"$applications_target_path" 2>"$release_log_dir/readlink.log" ||
+            ! cmp -s "$applications_target_path" "$expected_applications_target_path"; then
+            echo "Mounted DMG payload verification failed." >&2
+            exit 1
+          fi
+
+          scripts/verify-direct-app.sh "$mount_dir/Inklet.app" "com.tomwan.inklet" --release
+          if ! spctl --assess --type execute "$mount_dir/Inklet.app" \
+            >"$release_log_dir/app-gatekeeper.log" 2>&1; then
+            echo "Mounted app Gatekeeper assessment failed." >&2
+            exit 1
+          fi
+
+          if ! hdiutil detach "$accepted_mount_device" >"$release_log_dir/detach.log" 2>&1; then
+            echo "DMG detach failed." >&2
+            exit 1
+          fi
+          pending_mount_devices=()
+          attach_succeeded=0
+
           cp "$dmg_path" "dist/Inklet.dmg"
+          shasum -a 256 "$dmg_path" > "$dmg_path.sha256"
           shasum -a 256 "dist/Inklet.dmg" > "dist/Inklet.dmg.sha256"
 
       - name: Publish GitHub release
