@@ -49,6 +49,7 @@ public struct SelectedTextReader: Sendable {
     public typealias ApplicationFocusedElementProvider = @Sendable (pid_t) -> SelectedTextElement?
     public typealias ApplicationFocusedWindowProvider = @Sendable (pid_t) -> SelectedTextElement?
     public typealias ElementAtPositionProvider = @Sendable (SelectionPoint) -> SelectedTextElement?
+    public typealias ElementProcessIdentifierProvider = @Sendable (SelectedTextElement) -> pid_t?
     public typealias ChildElementsProvider = @Sendable (SelectedTextElement) -> [SelectedTextElement]
     public typealias FocusedElementRoleProvider = @Sendable (SelectedTextElement) -> String?
     public typealias FocusedElementValueProvider = @Sendable (SelectedTextElement) -> String?
@@ -65,6 +66,7 @@ public struct SelectedTextReader: Sendable {
     private let applicationFocusedElementProvider: ApplicationFocusedElementProvider
     private let applicationFocusedWindowProvider: ApplicationFocusedWindowProvider
     private let elementAtPositionProvider: ElementAtPositionProvider
+    private let elementProcessIdentifierProvider: ElementProcessIdentifierProvider
     private let childElementsProvider: ChildElementsProvider
     private let focusedElementRoleProvider: FocusedElementRoleProvider
     private let focusedElementValueProvider: FocusedElementValueProvider
@@ -86,6 +88,9 @@ public struct SelectedTextReader: Sendable {
             Self.systemFocusedWindow(forProcessIdentifier: $0)
         },
         elementAtPositionProvider: @escaping ElementAtPositionProvider = { Self.systemElement(at: $0) },
+        elementProcessIdentifierProvider: @escaping ElementProcessIdentifierProvider = {
+            Self.systemProcessIdentifier(for: $0)
+        },
         childElementsProvider: @escaping ChildElementsProvider = { Self.systemChildElements(from: $0) },
         focusedElementRoleProvider: @escaping FocusedElementRoleProvider = { Self.systemRoleValue(from: $0) },
         focusedElementValueProvider: @escaping FocusedElementValueProvider = { Self.systemValue(from: $0) },
@@ -106,6 +111,7 @@ public struct SelectedTextReader: Sendable {
         self.applicationFocusedElementProvider = applicationFocusedElementProvider
         self.applicationFocusedWindowProvider = applicationFocusedWindowProvider
         self.elementAtPositionProvider = elementAtPositionProvider
+        self.elementProcessIdentifierProvider = elementProcessIdentifierProvider
         self.childElementsProvider = childElementsProvider
         self.focusedElementRoleProvider = focusedElementRoleProvider
         self.focusedElementValueProvider = focusedElementValueProvider
@@ -134,7 +140,10 @@ public struct SelectedTextReader: Sendable {
 
         var fallbackResult: SelectedTextReadResult = .emptySelection
         for element in elements {
-            switch readSelectedText(from: element) {
+            switch readSelectedText(
+                from: element,
+                sourceProcessIdentifier: sourceProcessIdentifier
+            ) {
             case .success(let text):
                 return .success(text)
             case .emptySelection:
@@ -281,6 +290,19 @@ public struct SelectedTextReader: Sendable {
         }
 
         return SelectedTextElement(rawValue: AXElementBox(element))
+    }
+
+    public static func systemProcessIdentifier(for element: SelectedTextElement) -> pid_t? {
+        guard let box = element.rawValue.base as? AXElementBox else {
+            return nil
+        }
+
+        var processIdentifier: pid_t = 0
+        guard AXUIElementGetPid(box.element, &processIdentifier) == .success else {
+            return nil
+        }
+
+        return processIdentifier
     }
 
     public static func systemSelectedText(from element: SelectedTextElement) -> Result<String, SelectedTextReadError> {
@@ -533,18 +555,32 @@ public struct SelectedTextReader: Sendable {
             applicationAccessibilityEnabler(sourceProcessIdentifier)
         }
 
-        return [
+        let elements = [
             focusedElementProvider(),
             sourceProcessIdentifier.flatMap(applicationFocusedElementProvider),
             sourceProcessIdentifier.flatMap(applicationFocusedWindowProvider),
             sourceProcessIdentifier.flatMap(applicationElementProvider),
             mouseLocation.flatMap(elementAtPositionProvider)
         ].compactMap { $0 }
+
+        guard let sourceProcessIdentifier else {
+            return elements
+        }
+
+        return elements.filter {
+            elementProcessIdentifierProvider($0) == sourceProcessIdentifier
+        }
     }
 
-    private func readSelectedText(from element: SelectedTextElement) -> SelectedTextReadResult {
+    private func readSelectedText(
+        from element: SelectedTextElement,
+        sourceProcessIdentifier: pid_t?
+    ) -> SelectedTextReadResult {
         var fallbackResult: SelectedTextReadResult = .unsupported
-        for candidate in expandedCandidateElements(from: element) {
+        for candidate in expandedCandidateElements(
+            from: element,
+            sourceProcessIdentifier: sourceProcessIdentifier
+        ) {
             let result = readSelectedTextFromSingleElement(candidate)
             if case .success = result {
                 return result
@@ -582,7 +618,10 @@ public struct SelectedTextReader: Sendable {
         return fallbackReadResult(from: results)
     }
 
-    private func expandedCandidateElements(from element: SelectedTextElement) -> [SelectedTextElement] {
+    private func expandedCandidateElements(
+        from element: SelectedTextElement,
+        sourceProcessIdentifier: pid_t?
+    ) -> [SelectedTextElement] {
         var result: [SelectedTextElement] = [element]
         var queue: [(SelectedTextElement, Int)] = [(element, 0)]
         var visited = Set<SelectedTextElement>()
@@ -596,6 +635,10 @@ public struct SelectedTextReader: Sendable {
 
             for child in childElementsProvider(current).prefix(8) where !visited.contains(child) {
                 visited.insert(child)
+                if let sourceProcessIdentifier,
+                   elementProcessIdentifierProvider(child) != sourceProcessIdentifier {
+                    continue
+                }
                 result.append(child)
                 queue.append((child, depth + 1))
                 if result.count >= 64 {
