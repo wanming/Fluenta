@@ -40,6 +40,7 @@ final class AppCoordinator: NSObject {
     private let migrationOutcome: LegacySandboxMigrationOutcome
     private let migrator: LegacySandboxDataMigrator
     private let storagePaths: InkletStoragePaths
+    private let migrationPresentationModel: LegacyMigrationPresentationModel
     private let statusItem: NSStatusItem
     private let windowController: InkletPopoverWindowController
     private let settingsController: SettingsWindowController
@@ -75,6 +76,11 @@ final class AppCoordinator: NSObject {
     private var selectionTranslationTask: Task<Void, Never>?
     private var selectionTTSTask: Task<Void, Never>?
     private var selectionCopyFeedbackTask: Task<Void, Never>?
+    private var selectionReadTaskID: UUID?
+    private var selectionTranslationTaskID: UUID?
+    private var selectionTTSTaskID: UUID?
+    private var isSelectionSpeechPlaying = false
+    private var isMigrationMaintenanceActive = false
     private var currentSelectionText = ""
     private var currentTranslationText = ""
     private var selectionPronunciationReturnState = SelectionPronunciationReturnState.menu
@@ -91,14 +97,19 @@ final class AppCoordinator: NSObject {
     ) {
         SelectionActionDiagnostics.configure(fileURL: storagePaths.selectionDiagnosticsFileURL)
         let historyStore = JSONLHistoryStore(fileURL: storagePaths.historyFileURL)
+        let migrationPresentationModel = LegacyMigrationPresentationModel(outcome: migrationOutcome)
 
         self.migrationOutcome = migrationOutcome
         self.migrator = migrator
         self.storagePaths = storagePaths
+        self.migrationPresentationModel = migrationPresentationModel
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.historyStore = historyStore
         self.windowController = InkletPopoverWindowController(historyStore: historyStore)
-        self.settingsController = SettingsWindowController(historyStore: historyStore)
+        self.settingsController = SettingsWindowController(
+            historyStore: historyStore,
+            migrationPresentationModel: migrationPresentationModel
+        )
         self.aboutController = AboutWindowController()
         self.hotkeyManager = GlobalHotkeyManager()
         self.configStore = UserDefaultsConfigStore()
@@ -124,6 +135,25 @@ final class AppCoordinator: NSObject {
 
         self.windowController.onOpenSettings = { [weak self] in
             self?.openSettings()
+        }
+        self.windowController.onBusyChange = { [weak self] _ in
+            self?.refreshMigrationImportEligibility()
+        }
+        self.settingsController.onRequestMigrationImport = { [weak self] in
+            Task { @MainActor in
+                await self?.requestAssistedMigrationImport()
+            }
+        }
+        self.settingsController.onRetryMigrationRelaunch = { [weak self] in
+            Task { @MainActor in
+                await self?.retryMigrationRelaunch()
+            }
+        }
+        self.settingsController.onQuitForMigration = {
+            NSApp.terminate(nil)
+        }
+        self.settingsController.onMigrationWorkflowIdleChange = { [weak self] _ in
+            self?.refreshMigrationImportEligibility()
         }
         self.voiceStatusController.onCancel = { [weak self] in
             Task { @MainActor in
@@ -182,7 +212,9 @@ final class AppCoordinator: NSObject {
             self.forceDismissSelectionActions(reason: "selectionPanelEscape")
         }
         self.speechPlaybackService.onFinish = { [weak self] in
+            self?.isSelectionSpeechPlaying = false
             self?.restoreSelectionPronunciationReturnState()
+            self?.refreshMigrationImportEligibility()
         }
     }
 
@@ -266,6 +298,8 @@ final class AppCoordinator: NSObject {
         configureSelectionActions()
         showPermissionSettingsIfNeeded()
         installSettingsShortcutMonitor()
+        refreshMigrationImportEligibility()
+        settingsController.showMigrationNotice()
     }
 
     func stop() {
@@ -377,6 +411,156 @@ final class AppCoordinator: NSObject {
         }
     }
 
+    private var migrationWorkflowsAreIdle: Bool {
+        voiceCoordinator.isIdle
+            && !windowController.isBusy
+            && settingsController.isMigrationWorkflowIdle
+            && selectionReadTask == nil
+            && selectionTranslationTask == nil
+            && selectionTTSTask == nil
+            && !isSelectionSpeechPlaying
+    }
+
+    private var canRequestAssistedMigration: Bool {
+        !isMigrationMaintenanceActive && migrationWorkflowsAreIdle
+    }
+
+    private func refreshMigrationImportEligibility() {
+        migrationPresentationModel.setWorkflowsIdle(
+            canRequestAssistedMigration
+        )
+    }
+
+    private func requestAssistedMigrationImport() async {
+        guard canRequestAssistedMigration,
+              migrationPresentationModel.canRequestImport
+        else {
+            refreshMigrationImportEligibility()
+            return
+        }
+
+        migrationPresentationModel.beginSelecting()
+        let panel = NSOpenPanel()
+        panel.title = L10n.text("legacyMigration.panel.title")
+        panel.message = L10n.text("legacyMigration.panel.message")
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+
+        guard await panel.begin() == .OK, let selectedURL = panel.url else {
+            migrationPresentationModel.cancelSelecting()
+            return
+        }
+
+        let importOutcome: LegacySandboxMigrationOutcome
+        do {
+            let isAccessingSecurityScopedResource = selectedURL.startAccessingSecurityScopedResource()
+            defer {
+                if isAccessingSecurityScopedResource {
+                    selectedURL.stopAccessingSecurityScopedResource()
+                }
+            }
+
+            let validatedDataRoot: URL
+            do {
+                validatedDataRoot = try migrator.validateUserSelectedDataRoot(selectedURL)
+            } catch {
+                migrationPresentationModel.failInvalidSelection()
+                return
+            }
+
+            guard canRequestAssistedMigration else {
+                migrationPresentationModel.failImport()
+                refreshMigrationImportEligibility()
+                return
+            }
+
+            guard settingsController.flushPendingEdits() else {
+                migrationPresentationModel.failImport()
+                refreshMigrationImportEligibility()
+                return
+            }
+            migrationPresentationModel.beginImporting()
+            settingsController.setMigrationMaintenanceActive(true)
+            await enterMigrationMaintenance()
+
+            let migrator = self.migrator
+            importOutcome = await Task.detached(priority: .userInitiated) {
+                migrator.migrateUserSelectedData(at: validatedDataRoot)
+            }.value
+        }
+
+        if importOutcome.changedDestination {
+            migrationPresentationModel.beginRelaunching(with: importOutcome)
+            await relaunchAfterMigration()
+            return
+        }
+
+        migrationPresentationModel.update(with: importOutcome)
+        leaveMigrationMaintenance()
+    }
+
+    private func enterMigrationMaintenance() async {
+        isMigrationMaintenanceActive = true
+        hotkeyManager.unregister()
+        voiceShortcutMonitor.stop()
+        selectionActionMonitor.stop()
+        selectionReadTask?.cancel()
+        selectionReadTask = nil
+        selectionReadTaskID = nil
+        selectionTranslationTask?.cancel()
+        selectionTranslationTask = nil
+        selectionTranslationTaskID = nil
+        selectionTTSTask?.cancel()
+        selectionTTSTask = nil
+        selectionTTSTaskID = nil
+        selectionCopyFeedbackTask?.cancel()
+        selectionCopyFeedbackTask = nil
+        forceDismissSelectionActions(reason: "migrationMaintenance")
+        selectionActionWindowController.hidePanel()
+        windowController.cancelForMigrationMaintenance()
+        speechPlaybackService.stop()
+        isSelectionSpeechPlaying = false
+        await settingsController.waitForMigrationMaintenanceQuiescence()
+        await voiceCoordinator.cancelForMigrationMaintenance()
+        refreshMigrationImportEligibility()
+    }
+
+    private func leaveMigrationMaintenance() {
+        settingsController.setMigrationMaintenanceActive(false)
+        isMigrationMaintenanceActive = false
+        registerConfiguredHotkey()
+        configureVoiceInput()
+        configureSelectionActions()
+        refreshMigrationImportEligibility()
+    }
+
+    private func retryMigrationRelaunch() async {
+        guard migrationPresentationModel.phase == .relaunchFailed else { return }
+        migrationPresentationModel.beginRelaunching(with: migrationPresentationModel.outcome)
+        await relaunchAfterMigration()
+    }
+
+    private func relaunchAfterMigration() async {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        let didOpen = await withCheckedContinuation { continuation in
+            NSWorkspace.shared.openApplication(
+                at: Bundle.main.bundleURL,
+                configuration: configuration
+            ) { application, error in
+                continuation.resume(returning: application != nil && error == nil)
+            }
+        }
+
+        guard didOpen else {
+            migrationPresentationModel.markRelaunchFailed()
+            return
+        }
+        NSApp.terminate(nil)
+    }
+
     private func rememberTargetApplication(_ application: NSRunningApplication?) {
         guard let application,
               application.processIdentifier != NSRunningApplication.current.processIdentifier
@@ -423,7 +607,7 @@ final class AppCoordinator: NSObject {
     }
 
     private func registerConfiguredHotkey() {
-        guard !isRecordingHotkey else {
+        guard !isMigrationMaintenanceActive, !isRecordingHotkey else {
             return
         }
 
@@ -448,6 +632,10 @@ final class AppCoordinator: NSObject {
     }
 
     private func configureVoiceInput() {
+        guard !isMigrationMaintenanceActive else {
+            voiceShortcutMonitor.stop()
+            return
+        }
         guard OnboardingPolicy.shouldConfigureVoiceShortcutMonitoring(
             isAccessibilityTrusted: accessibilityPermissionService.isTrusted
         ) else {
@@ -462,16 +650,19 @@ final class AppCoordinator: NSObject {
                 recordingMode: config.voiceInput.recordingMode,
                 onToggle: { [weak self] in
                     Task { @MainActor in
+                        guard self?.isMigrationMaintenanceActive == false else { return }
                         await self?.voiceCoordinator.toggle()
                     }
                 },
                 onStart: { [weak self] in
                     Task { @MainActor in
+                        guard self?.isMigrationMaintenanceActive == false else { return }
                         await self?.voiceCoordinator.start()
                     }
                 },
                 onStop: { [weak self] in
                     Task { @MainActor in
+                        guard self?.isMigrationMaintenanceActive == false else { return }
                         await self?.voiceCoordinator.stop()
                     }
                 },
@@ -487,6 +678,10 @@ final class AppCoordinator: NSObject {
     }
 
     private func configureSelectionActions() {
+        guard !isMigrationMaintenanceActive else {
+            selectionActionMonitor.stop()
+            return
+        }
         let config = (try? configStore.load()) ?? AppConfig.defaultConfig()
         handleSelectionActionEffects(selectionActionCoordinator.handle(.updateConfig(config.selectionActions)))
         let isAccessibilityTrusted = accessibilityPermissionService.isTrusted
@@ -501,6 +696,7 @@ final class AppCoordinator: NSObject {
     }
 
     private func handleSelectionActionCandidate(at point: SelectionPoint) {
+        guard !isMigrationMaintenanceActive else { return }
         guard let sourceApp = NSWorkspace.shared.frontmostApplication,
               sourceApp.processIdentifier != NSRunningApplication.current.processIdentifier
         else {
@@ -518,30 +714,45 @@ final class AppCoordinator: NSObject {
     }
 
     private func handleSelectionActionCopyTrigger(at point: SelectionPoint) {
+        guard !isMigrationMaintenanceActive else { return }
         guard let sourceApp = NSWorkspace.shared.frontmostApplication,
               sourceApp.processIdentifier != NSRunningApplication.current.processIdentifier
         else {
             return
         }
 
-        Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(120))
-            await MainActor.run {
-                guard let self else { return }
-                let text = NSPasteboard.general.string(forType: .string)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                guard !text.isEmpty else {
-                    SelectionActionDiagnostics.log("copy trigger empty clipboard")
-                    return
+        selectionReadTask?.cancel()
+        let taskID = UUID()
+        selectionReadTaskID = taskID
+        selectionReadTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.selectionReadTaskID == taskID {
+                    self.selectionReadTask = nil
+                    self.selectionReadTaskID = nil
+                    self.refreshMigrationImportEligibility()
                 }
-
-                SelectionActionDiagnostics.log("copy trigger showPanel length=\(text.count)")
-                self.selectionActionMonitor.recordPanelShown()
-                self.currentSelectionText = text
-                self.currentTranslationText = ""
-                self.selectionActionWindowController.showMenu(at: point)
             }
+            do {
+                try await Task.sleep(for: .milliseconds(120))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, !isMigrationMaintenanceActive else { return }
+            let text = NSPasteboard.general.string(forType: .string)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !text.isEmpty else {
+                SelectionActionDiagnostics.log("copy trigger empty clipboard")
+                return
+            }
+
+            SelectionActionDiagnostics.log("copy trigger showPanel length=\(text.count)")
+            selectionActionMonitor.recordPanelShown()
+            currentSelectionText = text
+            currentTranslationText = ""
+            selectionActionWindowController.showMenu(at: point)
         }
+        refreshMigrationImportEligibility()
     }
 
     private func handleSelectionActionEffects(_ effects: [SelectionActionEffect]) {
@@ -550,27 +761,50 @@ final class AppCoordinator: NSObject {
             case .scheduleRead(let delayMilliseconds):
                 SelectionActionDiagnostics.log("effect scheduleRead delayMs=\(delayMilliseconds)")
                 selectionReadTask?.cancel()
+                let taskID = UUID()
+                selectionReadTaskID = taskID
                 selectionReadTask = Task { [weak self] in
-                    try? await Task.sleep(nanoseconds: UInt64(delayMilliseconds) * 1_000_000)
+                    guard let self else { return }
+                    defer {
+                        if self.selectionReadTaskID == taskID {
+                            self.selectionReadTask = nil
+                            self.selectionReadTaskID = nil
+                            self.refreshMigrationImportEligibility()
+                        }
+                    }
+                    do {
+                        try await Task.sleep(nanoseconds: UInt64(delayMilliseconds) * 1_000_000)
+                    } catch {
+                        return
+                    }
                     guard !Task.isCancelled else { return }
-                    await self?.completeScheduledSelectionRead()
+                    await self.completeScheduledSelectionRead()
                 }
+                refreshMigrationImportEligibility()
             case .cancelRead:
                 SelectionActionDiagnostics.log("effect cancelRead")
                 selectionReadTask?.cancel()
                 selectionReadTask = nil
+                selectionReadTaskID = nil
                 pendingSelectionSourceProcessIdentifier = nil
                 pendingSelectionSourceBundleIdentifier = nil
                 pendingSelectionLocation = nil
+                refreshMigrationImportEligibility()
             case .hidePanel:
                 SelectionActionDiagnostics.log("effect hidePanel")
                 selectionActionWindowController.hidePanel()
             case .cancelWork:
                 SelectionActionDiagnostics.log("effect cancelWork")
                 selectionTranslationTask?.cancel()
+                selectionTranslationTask = nil
+                selectionTranslationTaskID = nil
                 selectionTTSTask?.cancel()
+                selectionTTSTask = nil
+                selectionTTSTaskID = nil
                 selectionCopyFeedbackTask?.cancel()
                 speechPlaybackService.stop()
+                isSelectionSpeechPlaying = false
+                refreshMigrationImportEligibility()
             case .showPanel(let text, let location):
                 SelectionActionDiagnostics.log("effect showPanel length=\(text.count)")
                 panelDismissalPolicy.recordPanelShown(at: Date().timeIntervalSinceReferenceDate)
@@ -627,7 +861,9 @@ final class AppCoordinator: NSObject {
     }
 
     private func completeScheduledSelectionRead() async {
+        guard !isMigrationMaintenanceActive else { return }
         let result = await readSelectedTextForAutomaticSelection()
+        guard !Task.isCancelled, !isMigrationMaintenanceActive else { return }
         SelectionActionDiagnostics.log("read result \(diagnosticSummary(for: result))")
         handleSelectionActionEffects(selectionActionCoordinator.handle(.readCompleted(result)))
     }
@@ -702,16 +938,26 @@ final class AppCoordinator: NSObject {
     }
 
     private func translateCurrentSelection() {
+        guard !isMigrationMaintenanceActive else { return }
         let sourceText = currentSelectionText
         guard !sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return
         }
 
         selectionTranslationTask?.cancel()
+        let taskID = UUID()
+        selectionTranslationTaskID = taskID
         selectionActionWindowController.showTranslating()
         selectionTranslationTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.selectionTranslationTaskID == taskID {
+                    self.selectionTranslationTask = nil
+                    self.selectionTranslationTaskID = nil
+                    self.refreshMigrationImportEligibility()
+                }
+            }
             do {
-                guard let self else { return }
                 let config = try self.configStore.load()
                 let providerPreset = config.resolvedProviderPreset
                 let providerID = config.providerID
@@ -743,6 +989,7 @@ final class AppCoordinator: NSObject {
                     temperature: config.temperature,
                     timeoutSeconds: config.timeoutSeconds
                 )
+                guard !Task.isCancelled, !isMigrationMaintenanceActive else { return }
                 try? self.historyStore.append(HistoryItem(
                     source: .selection,
                     inputText: sourceText,
@@ -758,11 +1005,14 @@ final class AppCoordinator: NSObject {
                 }
             } catch is CancellationError {
             } catch {
-                await MainActor.run {
-                    self?.selectionActionWindowController.showTranslationError(L10n.text("selection.action.translationFailed"))
+                if !self.isMigrationMaintenanceActive {
+                    self.selectionActionWindowController.showTranslationError(
+                        L10n.text("selection.action.translationFailed")
+                    )
                 }
             }
         }
+        refreshMigrationImportEligibility()
     }
 
     private func pronounceCurrentSelection() {
@@ -793,19 +1043,29 @@ final class AppCoordinator: NSObject {
         loadingFeedback: SelectionActionFeedback? = nil,
         playingFeedback: SelectionActionFeedback? = nil
     ) {
+        guard !isMigrationMaintenanceActive else { return }
         let sourceText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !sourceText.isEmpty else { return }
 
         selectionPronunciationReturnState = returnState
         selectionTTSTask?.cancel()
+        let taskID = UUID()
+        selectionTTSTaskID = taskID
         if returnState == .translationResult, !currentTranslationText.isEmpty {
             selectionActionWindowController.showTranslation(currentTranslationText, feedback: loadingFeedback)
         } else {
             selectionActionWindowController.showPreparingPronunciation()
         }
         selectionTTSTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.selectionTTSTaskID == taskID {
+                    self.selectionTTSTask = nil
+                    self.selectionTTSTaskID = nil
+                    self.refreshMigrationImportEligibility()
+                }
+            }
             do {
-                guard let self else { return }
                 let provider = OpenAITTSProvider(apiKeyProvider: { [apiKeyStore] in
                     guard let apiKey = apiKeyStore.loadAPIKey(forProviderID: LLMProviderPreset.openAI.id),
                           !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -821,9 +1081,12 @@ final class AppCoordinator: NSObject {
                     speed: config.selectionActions.pronunciationSpeed,
                     timeoutSeconds: config.timeoutSeconds
                 ))
+                guard !Task.isCancelled, !isMigrationMaintenanceActive else { return }
                 await MainActor.run {
                     do {
                         try self.speechPlaybackService.play(audioData: audioData)
+                        self.isSelectionSpeechPlaying = true
+                        self.refreshMigrationImportEligibility()
                         if returnState == .menu {
                             self.selectionActionWindowController.showPlayingPronunciation()
                         } else if !self.currentTranslationText.isEmpty {
@@ -833,19 +1096,22 @@ final class AppCoordinator: NSObject {
                             )
                         }
                     } catch {
+                        self.isSelectionSpeechPlaying = false
                         self.showSelectionPronunciationError(returnState: returnState)
                     }
                 }
             } catch is CancellationError {
             } catch {
-                await MainActor.run {
-                    self?.showSelectionPronunciationError(returnState: returnState)
+                if !self.isMigrationMaintenanceActive {
+                    self.showSelectionPronunciationError(returnState: returnState)
                 }
             }
         }
+        refreshMigrationImportEligibility()
     }
 
     private func restoreSelectionPronunciationReturnState() {
+        guard !isMigrationMaintenanceActive else { return }
         switch selectionPronunciationReturnState {
         case .menu:
             selectionActionWindowController.restoreMenu()
@@ -873,7 +1139,7 @@ final class AppCoordinator: NSObject {
     }
 
     private func copyCurrentTranslation() {
-        guard !currentTranslationText.isEmpty else {
+        guard !isMigrationMaintenanceActive, !currentTranslationText.isEmpty else {
             return
         }
 
@@ -1010,6 +1276,10 @@ final class AppCoordinator: NSObject {
             statusHandler: { [weak self] status in
                 self?.voiceShortcutMonitor.setVoiceInputActive(status.allowsCancellation)
                 self?.voiceStatusController.apply(status)
+                self?.refreshMigrationImportEligibility()
+            },
+            idleStateHandler: { [weak self] _ in
+                self?.refreshMigrationImportEligibility()
             }
         )
     }
@@ -1130,6 +1400,7 @@ final class AppCoordinator: NSObject {
     }
 
     @objc func openPopover() {
+        guard !isMigrationMaintenanceActive else { return }
         forceDismissSelectionActions(reason: "openPopover")
         windowController.show(fallbackApplication: lastTargetApplication)
     }
@@ -1140,6 +1411,7 @@ final class AppCoordinator: NSObject {
     }
 
     @objc func openAbout() {
+        guard !isMigrationMaintenanceActive else { return }
         forceDismissSelectionActions(reason: "openAbout")
         aboutController.show()
     }

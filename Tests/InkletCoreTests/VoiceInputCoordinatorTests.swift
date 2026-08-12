@@ -4,6 +4,122 @@ import XCTest
 
 @MainActor
 final class VoiceInputCoordinatorTests: XCTestCase {
+    func testStopNotifiesIdleOnlyAfterOperationFinishes() async {
+        let harness = VoiceInputHarness()
+
+        await harness.coordinator.start()
+        harness.resetIdleStateObservations()
+        await harness.coordinator.stop()
+
+        XCTAssertEqual(harness.idleStateChanges.last, true)
+        XCTAssertEqual(harness.idleStateSnapshots.last, true)
+    }
+
+    func testCancelNotifiesIdleOnlyAfterOperationFinishes() async {
+        let harness = VoiceInputHarness()
+
+        await harness.coordinator.start()
+        harness.resetIdleStateObservations()
+        await harness.coordinator.cancel()
+
+        XCTAssertEqual(harness.idleStateChanges.last, true)
+        XCTAssertEqual(harness.idleStateSnapshots.last, true)
+    }
+
+    func testErrorNotifiesIdleOnlyAfterOperationFinishes() async {
+        let harness = VoiceInputHarness()
+        harness.transcriptionError = SpeechTranscriptionError.provider("test failure")
+
+        await harness.coordinator.start()
+        harness.resetIdleStateObservations()
+        await harness.coordinator.stop()
+
+        XCTAssertEqual(harness.idleStateChanges.last, true)
+        XCTAssertEqual(harness.idleStateSnapshots.last, true)
+    }
+
+    func testIsIdleTracksStartupListeningAndCancellation() async {
+        let harness = VoiceInputHarness()
+        harness.pauseStartRecording = true
+
+        XCTAssertTrue(harness.coordinator.isIdle)
+
+        let startTask = Task {
+            await harness.coordinator.start()
+        }
+        await Task.yield()
+
+        XCTAssertFalse(harness.coordinator.isIdle)
+
+        let cancellationTask = Task {
+            await harness.coordinator.cancelForMigrationMaintenance()
+        }
+        await Task.yield()
+
+        XCTAssertFalse(harness.coordinator.isIdle)
+
+        harness.resumeStartRecording()
+        await startTask.value
+        await cancellationTask.value
+
+        XCTAssertTrue(harness.coordinator.isIdle)
+        XCTAssertEqual(harness.cancelRecordingCount, 1)
+        XCTAssertEqual(harness.statuses, [.idle])
+    }
+
+    func testMigrationMaintenanceCancellationInvalidatesInFlightTranscription() async {
+        let harness = VoiceInputHarness()
+        harness.pauseTranscription = true
+
+        await harness.coordinator.start()
+        let stopTask = Task {
+            await harness.coordinator.stop()
+        }
+        await Task.yield()
+
+        XCTAssertFalse(harness.coordinator.isIdle)
+
+        let cancellationTask = Task {
+            await harness.coordinator.cancelForMigrationMaintenance()
+        }
+        await Task.yield()
+
+        XCTAssertFalse(harness.coordinator.isIdle)
+
+        harness.resumeTranscription()
+        await stopTask.value
+        await cancellationTask.value
+
+        XCTAssertEqual(harness.insertedTexts, [])
+        XCTAssertTrue(harness.coordinator.isIdle)
+        XCTAssertEqual(harness.statuses, [.listening, .transcribing, .idle])
+    }
+
+    func testMigrationMaintenanceWaitsForAnExistingRecordingCancellation() async {
+        let harness = VoiceInputHarness()
+        harness.pauseCancelRecording = true
+
+        await harness.coordinator.start()
+        let ordinaryCancellationTask = Task {
+            await harness.coordinator.cancel()
+        }
+        await Task.yield()
+
+        let maintenanceCancellationTask = Task {
+            await harness.coordinator.cancelForMigrationMaintenance()
+        }
+        await Task.yield()
+
+        XCTAssertFalse(harness.coordinator.isIdle)
+
+        harness.resumeCancelRecording()
+        await ordinaryCancellationTask.value
+        await maintenanceCancellationTask.value
+
+        XCTAssertTrue(harness.coordinator.isIdle)
+        XCTAssertEqual(harness.cancelRecordingCount, 1)
+    }
+
     func testStartBeginsRecordingAndShowsListening() async {
         let harness = VoiceInputHarness()
 
@@ -331,6 +447,33 @@ final class VoiceInputCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.statuses, [.listening, .transcribing, .polishing, .idle])
     }
 
+    func testMaintenanceInvalidationPreventsOrdinaryCleanupFailureFallbackInsertion() async {
+        let harness = VoiceInputHarness()
+        harness.transcriptionText = "raw transcript"
+        harness.pauseCleanup = true
+        harness.cleanupError = TransformationError.provider("cleanup failed")
+
+        await harness.coordinator.start()
+        let stopTask = Task {
+            await harness.coordinator.stop()
+        }
+        await Task.yield()
+
+        let maintenanceTask = Task {
+            await harness.coordinator.cancelForMigrationMaintenance()
+        }
+        await Task.yield()
+
+        harness.resumeCleanup()
+        await stopTask.value
+        await maintenanceTask.value
+
+        XCTAssertEqual(harness.insertedTexts, [])
+        XCTAssertEqual(harness.recordedHistory, [])
+        XCTAssertTrue(harness.coordinator.isIdle)
+        XCTAssertEqual(harness.statuses, [.listening, .transcribing, .polishing, .idle])
+    }
+
     func testTranscriptionProviderFailureShowsShortError() async {
         let harness = VoiceInputHarness()
         harness.transcriptionError = SpeechTranscriptionError.provider(
@@ -389,13 +532,21 @@ private final class VoiceInputHarness {
     var promptModeSelectionRequests: [VoicePromptModeSelectionRequest] = []
     var recordedHistory: [VoiceInputHistoryEvent] = []
     var statuses: [VoiceInputStatus] = []
+    var idleStateChanges: [Bool] = []
+    var idleStateSnapshots: [Bool] = []
     var transcriptionText = "hello"
     var cleanedText = "Hello."
     var transcriptionError: Error?
     var cleanupError: Error?
     var promptModeSelection = VoicePromptModeSelection.promptMode(PromptMode.voiceCleanupID)
     var pauseStartRecording = false
+    var pauseTranscription = false
+    var pauseCancelRecording = false
+    var pauseCleanup = false
     private var startRecordingContinuation: CheckedContinuation<Void, Never>?
+    private var transcriptionContinuation: CheckedContinuation<Void, Never>?
+    private var cancelRecordingContinuation: CheckedContinuation<Void, Never>?
+    private var cleanupContinuation: CheckedContinuation<Void, Never>?
 
     var coordinator: VoiceInputCoordinator!
 
@@ -424,8 +575,18 @@ private final class VoiceInputHarness {
             },
             cancelRecording: { [weak self] in
                 self?.cancelRecordingCount += 1
+                if self?.pauseCancelRecording == true {
+                    await withCheckedContinuation { continuation in
+                        self?.cancelRecordingContinuation = continuation
+                    }
+                }
             },
             transcribe: { [weak self] _ in
+                if self?.pauseTranscription == true {
+                    await withCheckedContinuation { continuation in
+                        self?.transcriptionContinuation = continuation
+                    }
+                }
                 if let transcriptionError = self?.transcriptionError {
                     throw transcriptionError
                 }
@@ -438,6 +599,11 @@ private final class VoiceInputHarness {
             cleanup: { [weak self] source, modeID in
                 self?.cleanupInputs.append(source)
                 self?.cleanupModeIDs.append(modeID)
+                if self?.pauseCleanup == true {
+                    await withCheckedContinuation { continuation in
+                        self?.cleanupContinuation = continuation
+                    }
+                }
                 if let cleanupError = self?.cleanupError {
                     throw cleanupError
                 }
@@ -451,13 +617,40 @@ private final class VoiceInputHarness {
             },
             statusHandler: { [weak self] status in
                 self?.statuses.append(status)
+            },
+            idleStateHandler: { [weak self] isIdle in
+                self?.idleStateChanges.append(isIdle)
+                self?.idleStateSnapshots.append(self?.coordinator.isIdle ?? false)
             }
         )
+    }
+
+    func resetIdleStateObservations() {
+        idleStateChanges = []
+        idleStateSnapshots = []
     }
 
     func resumeStartRecording() {
         pauseStartRecording = false
         startRecordingContinuation?.resume()
         startRecordingContinuation = nil
+    }
+
+    func resumeTranscription() {
+        pauseTranscription = false
+        transcriptionContinuation?.resume()
+        transcriptionContinuation = nil
+    }
+
+    func resumeCancelRecording() {
+        pauseCancelRecording = false
+        cancelRecordingContinuation?.resume()
+        cancelRecordingContinuation = nil
+    }
+
+    func resumeCleanup() {
+        pauseCleanup = false
+        cleanupContinuation?.resume()
+        cleanupContinuation = nil
     }
 }

@@ -30,6 +30,77 @@ final class LegacyMigrationSourceValidationTests: XCTestCase {
         )
     }
 
+    func testLiveUserSelectedValidationAcceptsOnlyExactCanonicalBundleDataRoot() throws {
+        for bundleIdentifier in [
+            InkletStoragePaths.productionBundleIdentifier,
+            InkletStoragePaths.localBundleIdentifier,
+        ] {
+            let fixture = try makeLiveValidationFixture(bundleIdentifier: bundleIdentifier)
+
+            XCTAssertEqual(
+                try fixture.migrator.validateUserSelectedDataRoot(fixture.legacyRoot),
+                fixture.legacyRoot.standardizedFileURL
+            )
+
+            let otherBundleIdentifier = bundleIdentifier == InkletStoragePaths.productionBundleIdentifier
+                ? InkletStoragePaths.localBundleIdentifier
+                : InkletStoragePaths.productionBundleIdentifier
+            let otherRoot = LegacySandboxDataMigrator.expectedLegacyDataRoot(
+                bundleIdentifier: otherBundleIdentifier,
+                homeDirectoryURL: fixture.homeDirectory
+            )
+            try FileManager.default.createDirectory(at: otherRoot, withIntermediateDirectories: true)
+            try writeEmptyPreferences(root: otherRoot, bundleIdentifier: otherBundleIdentifier)
+
+            XCTAssertThrowsError(try fixture.migrator.validateUserSelectedDataRoot(otherRoot)) {
+                XCTAssertEqual(($0 as? LegacyMigrationFailure)?.kind, .invalidSource)
+            }
+
+            let lookalike = fixture.legacyRoot
+                .deletingLastPathComponent()
+                .appendingPathComponent("Data-copy", isDirectory: true)
+            try FileManager.default.createDirectory(at: lookalike, withIntermediateDirectories: true)
+            try writeEmptyPreferences(root: lookalike, bundleIdentifier: bundleIdentifier)
+            XCTAssertThrowsError(try fixture.migrator.validateUserSelectedDataRoot(lookalike)) {
+                XCTAssertEqual(($0 as? LegacyMigrationFailure)?.kind, .invalidSource)
+            }
+
+            let symlink = fixture.legacyRoot
+                .deletingLastPathComponent()
+                .appendingPathComponent("Data-link", isDirectory: true)
+            try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: fixture.legacyRoot)
+            XCTAssertThrowsError(try fixture.migrator.validateUserSelectedDataRoot(symlink)) {
+                XCTAssertEqual(($0 as? LegacyMigrationFailure)?.kind, .invalidSource)
+            }
+        }
+    }
+
+    func testLiveUserSelectedValidationRequiresExactBundlePreferencesFile() throws {
+        let missingFixture = try makeLiveValidationFixture(
+            bundleIdentifier: InkletStoragePaths.productionBundleIdentifier,
+            createPreferencesFile: false
+        )
+        XCTAssertThrowsError(
+            try missingFixture.migrator.validateUserSelectedDataRoot(missingFixture.legacyRoot)
+        ) {
+            XCTAssertEqual(($0 as? LegacyMigrationFailure)?.kind, .invalidSource)
+        }
+
+        let wrongFixture = try makeLiveValidationFixture(
+            bundleIdentifier: InkletStoragePaths.localBundleIdentifier,
+            createPreferencesFile: false
+        )
+        try writeEmptyPreferences(
+            root: wrongFixture.legacyRoot,
+            bundleIdentifier: InkletStoragePaths.productionBundleIdentifier
+        )
+        XCTAssertThrowsError(
+            try wrongFixture.migrator.validateUserSelectedDataRoot(wrongFixture.legacyRoot)
+        ) {
+            XCTAssertEqual(($0 as? LegacyMigrationFailure)?.kind, .invalidSource)
+        }
+    }
+
     func testOnlyConfirmedPOSIXENOENTMeansTheContainerIsMissing() throws {
         let missingErrors = [
             NSError(domain: NSPOSIXErrorDomain, code: Int(ENOENT)),
@@ -459,6 +530,78 @@ final class LegacyMigrationSourceValidationTests: XCTestCase {
         )
     }
 
+    private func makeLiveValidationFixture(
+        bundleIdentifier: String,
+        createPreferencesFile: Bool = true
+    ) throws -> LiveValidationFixture {
+        let homeDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LegacyLiveValidation-home-\(UUID().uuidString)", isDirectory: true)
+        let destinationRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LegacyLiveValidation-destination-\(UUID().uuidString)", isDirectory: true)
+        let legacyRoot = LegacySandboxDataMigrator.expectedLegacyDataRoot(
+            bundleIdentifier: bundleIdentifier,
+            homeDirectoryURL: homeDirectory
+        )
+        try FileManager.default.createDirectory(at: legacyRoot, withIntermediateDirectories: true)
+        if createPreferencesFile {
+            try writeEmptyPreferences(root: legacyRoot, bundleIdentifier: bundleIdentifier)
+        } else {
+            try FileManager.default.createDirectory(
+                at: legacyRoot
+                    .appendingPathComponent("Library", isDirectory: true)
+                    .appendingPathComponent("Preferences", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+        }
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: homeDirectory)
+            try? FileManager.default.removeItem(at: destinationRoot)
+        }
+
+        let storagePaths = InkletStoragePaths(
+            bundleIdentifier: bundleIdentifier,
+            applicationSupportRootURL: destinationRoot,
+            temporaryDirectory: FileManager.default.temporaryDirectory
+        )
+        let domainName = "\(bundleIdentifier).validation.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: domainName))
+        defaults.removePersistentDomain(forName: domainName)
+        addTeardownBlock {
+            UserDefaults(suiteName: domainName)?.removePersistentDomain(forName: domainName)
+        }
+        let migrator = LegacySandboxDataMigrator(
+            bundleIdentifier: bundleIdentifier,
+            storagePaths: storagePaths,
+            homeDirectoryURL: homeDirectory,
+            defaults: defaults,
+            fileSystem: FileManagerLegacyMigrationFileSystem(),
+            stateStore: InMemoryLegacyMigrationStateStore(),
+            keychainStore: { _ in KeychainStore() },
+            lock: LegacyMigrationLock(fileURL: storagePaths.migrationLockFileURL)
+        )
+        return LiveValidationFixture(
+            migrator: migrator,
+            homeDirectory: homeDirectory,
+            legacyRoot: legacyRoot
+        )
+    }
+
+    private func preferencesURL(root: URL, bundleIdentifier: String) -> URL {
+        root
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Preferences", isDirectory: true)
+            .appendingPathComponent("\(bundleIdentifier).plist")
+    }
+
+    private func writeEmptyPreferences(root: URL, bundleIdentifier: String) throws {
+        let url = preferencesURL(root: root, bundleIdentifier: bundleIdentifier)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data().write(to: url)
+    }
+
     private func assertEveryComponent(
         in outcome: LegacySandboxMigrationOutcome,
         equals expected: LegacyMigrationComponentResult,
@@ -509,6 +652,12 @@ private struct MigrationFixture {
     let legacyRoot: URL
     let preferencesURL: URL
     let historyURL: URL
+}
+
+private struct LiveValidationFixture {
+    let migrator: LegacySandboxDataMigrator
+    let homeDirectory: URL
+    let legacyRoot: URL
 }
 
 private final class FakeLegacyMigrationFileSystem: LegacyMigrationFileSystem, @unchecked Sendable {
