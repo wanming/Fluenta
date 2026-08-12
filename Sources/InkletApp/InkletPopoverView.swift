@@ -1175,6 +1175,16 @@ private final class InkletTextContainerView: NSView {
 
 private final class InkletNativeTextView: NSTextView {
     var onInputStateChange: (() -> Void)?
+    var onEscapeKeyDown: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        guard event.keyCode == 53, !hasMarkedText() else {
+            super.keyDown(with: event)
+            return
+        }
+
+        onEscapeKeyDown?()
+    }
 
     override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
         super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
@@ -1231,6 +1241,9 @@ private struct InkletTextView: NSViewRepresentable {
             }
             coordinator?.syncText(from: textView)
             container?.updatePlaceholderVisibility()
+        }
+        textView.onEscapeKeyDown = { [weak coordinator = context.coordinator] in
+            coordinator?.onEscape?()
         }
         textView.isEditable = isEditable
         textView.isSelectable = true

@@ -67,12 +67,13 @@ public enum WritingPopoverKeyboardPolicy {
             }
 
         case .editor:
-            if isComposingText, isReturnKey || keyCode == 53 {
+            // The focused editor owns Escape so one event cannot advance both navigation layers.
+            if keyCode == 53 {
                 return .passThrough
             }
 
-            if keyCode == 53 {
-                return .escape
+            if isComposingText, isReturnKey {
+                return .passThrough
             }
 
             if modifiers.contains(.command),

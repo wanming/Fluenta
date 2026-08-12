@@ -81,9 +81,12 @@ final class WritingPopoverKeyboardPolicyTests: XCTestCase {
         }
     }
 
+    func testEditorEscapePassesThroughToFocusedResponderForSingleOwnership() {
+        XCTAssertEqual(action(route: .editor, keyCode: 53), .passThrough)
+    }
+
     func testEditorShortcutsPreserveExistingActions() {
         let cases: [(UInt16, WritingPopoverKeyboardModifiers, WritingPopoverKeyboardAction)] = [
-            (53, [], .escape),
             (126, [.command], .cycleMode(-1)),
             (125, [.command], .cycleMode(1)),
             (36, [.command], .insertOriginal),

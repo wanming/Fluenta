@@ -29,6 +29,36 @@ final class WritingModeLauncherSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("controlTextDidChange"))
     }
 
+    func testNativeEditorRoutesEscapeFromFirstResponderWithoutStealingIME() throws {
+        let source = try popoverSource()
+        let nativeTextViewStart = try XCTUnwrap(source.range(
+            of: "private final class InkletNativeTextView"
+        ))
+        let representableStart = try XCTUnwrap(source.range(
+            of: "private struct InkletTextView",
+            range: nativeTextViewStart.upperBound..<source.endIndex
+        ))
+        let nativeTextViewBlock = source[nativeTextViewStart.lowerBound..<representableStart.lowerBound]
+        let makeNSViewStart = try XCTUnwrap(source.range(
+            of: "func makeNSView(context: Context) -> InkletTextContainerView",
+            range: representableStart.upperBound..<source.endIndex
+        ))
+        let updateNSViewStart = try XCTUnwrap(source.range(
+            of: "func updateNSView",
+            range: makeNSViewStart.upperBound..<source.endIndex
+        ))
+        let makeNSViewBlock = source[makeNSViewStart.lowerBound..<updateNSViewStart.lowerBound]
+
+        XCTAssertTrue(nativeTextViewBlock.contains("var onEscapeKeyDown: (() -> Void)?"))
+        XCTAssertTrue(nativeTextViewBlock.contains("override func keyDown(with event: NSEvent)"))
+        XCTAssertTrue(nativeTextViewBlock.contains("event.keyCode == 53"))
+        XCTAssertTrue(nativeTextViewBlock.contains("!hasMarkedText()"))
+        XCTAssertTrue(nativeTextViewBlock.contains("onEscapeKeyDown?()"))
+        XCTAssertTrue(nativeTextViewBlock.contains("super.keyDown(with: event)"))
+        XCTAssertTrue(makeNSViewBlock.contains("textView.onEscapeKeyDown ="))
+        XCTAssertTrue(makeNSViewBlock.contains("coordinator?.onEscape?()"))
+    }
+
     func testPickerSearchFieldAlignsNativeTextEditingWithPlaceholder() throws {
         let source = try pickerSource()
         let cellStart = try XCTUnwrap(source.range(
