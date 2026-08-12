@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import InkletCore
 
@@ -175,5 +176,78 @@ final class HistoryStoreTests: XCTestCase {
         let store = JSONLHistoryStore(fileURL: url)
 
         XCTAssertEqual(try store.load(), [valid])
+    }
+
+    func testHistoryJSONLCodecDecodesISO8601AndSkipsMalformedAndEmptyLines() throws {
+        let first = historyItem(idSuffix: 41, timestamp: 10, input: "first")
+        let second = historyItem(idSuffix: 42, timestamp: 20, input: "second")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = Data(
+            (
+                "\n"
+                    + String(decoding: try encoder.encode(first), as: UTF8.self)
+                    + "\nnot-json\n   \n"
+                    + String(decoding: try encoder.encode(second), as: UTF8.self)
+                    + "\n"
+            ).utf8
+        )
+
+        XCTAssertEqual(HistoryJSONLCodec.decodeValidItems(from: data), [first, second])
+    }
+
+    func testHistoryJSONLCodecEncodeIsDeterministicAndNewlineDelimited() throws {
+        let items = [
+            historyItem(idSuffix: 51, timestamp: 10, input: "first"),
+            historyItem(idSuffix: 52, timestamp: 20, input: "second"),
+        ]
+
+        let firstEncoding = try HistoryJSONLCodec.encode(items)
+        let secondEncoding = try HistoryJSONLCodec.encode(items)
+
+        XCTAssertEqual(firstEncoding, secondEncoding)
+        XCTAssertEqual(firstEncoding.last, 0x0A)
+        let lines = String(decoding: firstEncoding, as: UTF8.self).split(separator: "\n")
+        XCTAssertEqual(lines.count, 2)
+        XCTAssertTrue(lines.allSatisfy { $0.first == "{" && $0.last == "}" })
+        XCTAssertEqual(HistoryJSONLCodec.decodeValidItems(from: firstEncoding), items)
+
+        let firstLine = String(lines[0])
+        let keyPositions = [
+            "\"createdAt\"",
+            "\"id\"",
+            "\"inputText\"",
+            "\"metadata\"",
+            "\"outputText\"",
+            "\"source\"",
+        ].compactMap { firstLine.range(of: $0)?.lowerBound }
+        XCTAssertEqual(keyPositions.count, 6)
+        XCTAssertEqual(keyPositions, keyPositions.sorted())
+    }
+
+    func testHistoryJSONLCodecEncodesEmptyCollectionAsEmptyData() throws {
+        XCTAssertEqual(try HistoryJSONLCodec.encode([]), Data())
+    }
+
+    private func historyItem(
+        idSuffix: Int,
+        timestamp: TimeInterval,
+        input: String
+    ) -> HistoryItem {
+        HistoryItem(
+            id: UUID(
+                uuidString: String(
+                    format: "00000000-0000-0000-0000-%012d",
+                    idSuffix
+                )
+            )!,
+            createdAt: Date(timeIntervalSince1970: timestamp),
+            source: .write,
+            inputText: input,
+            outputText: "output-\(input)",
+            modeName: "Polish",
+            model: "test-model",
+            metadata: ["z": "last", "a": "first"]
+        )
     }
 }

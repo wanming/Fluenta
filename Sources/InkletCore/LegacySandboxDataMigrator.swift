@@ -67,17 +67,20 @@ public enum LegacyMigrationComponentResult: Equatable, Sendable {
 public struct LegacySandboxMigrationOutcome: Equatable, Sendable {
     public let results: [LegacyMigrationComponent: LegacyMigrationComponentResult]
     private let mode: LegacyMigrationMode
+    private let changedDestinationOverride: Bool
 
     public init(results: [LegacyMigrationComponent: LegacyMigrationComponentResult]) {
-        self.init(results: results, mode: .automatic)
+        self.init(results: results, mode: .automatic, changedDestinationOverride: false)
     }
 
     init(
         results: [LegacyMigrationComponent: LegacyMigrationComponentResult],
-        mode: LegacyMigrationMode
+        mode: LegacyMigrationMode,
+        changedDestinationOverride: Bool = false
     ) {
         self.results = results
         self.mode = mode
+        self.changedDestinationOverride = changedDestinationOverride
     }
 
     public var hasIncompleteComponents: Bool {
@@ -91,7 +94,7 @@ public struct LegacySandboxMigrationOutcome: Equatable, Sendable {
     }
 
     public var changedDestination: Bool {
-        results.values.contains { result in
+        changedDestinationOverride || results.values.contains { result in
             guard case let .completed(changedDestination) = result else { return false }
             return changedDestination
         }
@@ -122,33 +125,96 @@ public enum LegacyMigrationStateStoreError: Error, Equatable {
     case writeVerificationFailed
 }
 
+struct LegacyMigrationExactDomainDefaultsResolver: @unchecked Sendable {
+    private final class UserDefaultsReference: @unchecked Sendable {
+        let value: UserDefaults
+
+        init(_ value: UserDefaults) {
+            self.value = value
+        }
+    }
+
+    private let currentBundleIdentifier: String?
+    private let currentDomainWriterFactory: @Sendable () -> UserDefaults
+    private let freshCurrentDomainFactory: @Sendable () -> UserDefaults
+    private let suiteFactory: @Sendable (String) -> UserDefaults?
+
+    init(
+        currentBundleIdentifier: String?,
+        currentDomainWriterFactory: @escaping @Sendable () -> UserDefaults,
+        freshCurrentDomainFactory: @escaping @Sendable () -> UserDefaults,
+        suiteFactory: @escaping @Sendable (String) -> UserDefaults?
+    ) {
+        self.currentBundleIdentifier = currentBundleIdentifier
+        self.currentDomainWriterFactory = currentDomainWriterFactory
+        self.freshCurrentDomainFactory = freshCurrentDomainFactory
+        self.suiteFactory = suiteFactory
+    }
+
+    static func live(
+        currentDomainWriter: UserDefaults = .standard,
+        suiteFactory: @escaping @Sendable (String) -> UserDefaults? = {
+            UserDefaults(suiteName: $0)
+        }
+    ) -> LegacyMigrationExactDomainDefaultsResolver {
+        let currentDomainWriterReference = UserDefaultsReference(currentDomainWriter)
+        return LegacyMigrationExactDomainDefaultsResolver(
+            currentBundleIdentifier: Bundle.main.bundleIdentifier,
+            currentDomainWriterFactory: { currentDomainWriterReference.value },
+            freshCurrentDomainFactory: { UserDefaults() },
+            suiteFactory: suiteFactory
+        )
+    }
+
+    func writerDefaults(for domainName: String) -> UserDefaults? {
+        if domainName == currentBundleIdentifier {
+            return currentDomainWriterFactory()
+        }
+        return suiteFactory(domainName)
+    }
+
+    func freshDefaults(for domainName: String) -> UserDefaults? {
+        if domainName == currentBundleIdentifier {
+            return freshCurrentDomainFactory()
+        }
+        return suiteFactory(domainName)
+    }
+}
+
 public final class UserDefaultsLegacyMigrationStateStore: LegacyMigrationStateStore, @unchecked Sendable {
     static let preferenceBaselineKey = "Inklet.LegacySandboxMigration.preferenceBaseline.v1"
 
-    private let writerDefaults: UserDefaults
+    private let writerDefaults: UserDefaults?
     private let persistentDomainName: String
-    private let exactDomainDefaultsFactory: @Sendable (String) -> UserDefaults?
+    private let exactDomainResolver: LegacyMigrationExactDomainDefaultsResolver
 
     public convenience init(
         persistentDomainName: String
     ) {
         self.init(
             persistentDomainName: persistentDomainName,
-            exactDomainDefaultsFactory: { UserDefaults(suiteName: $0) }
+            exactDomainResolver: .live()
+        )
+    }
+
+    convenience init(
+        persistentDomainName: String,
+        exactDomainDefaultsFactory: @escaping @Sendable (String) -> UserDefaults?
+    ) {
+        self.init(
+            persistentDomainName: persistentDomainName,
+            exactDomainResolver: .live(suiteFactory: exactDomainDefaultsFactory)
         )
     }
 
     init(
         persistentDomainName: String,
-        exactDomainDefaultsFactory: @escaping @Sendable (String) -> UserDefaults?
+        exactDomainResolver: LegacyMigrationExactDomainDefaultsResolver
     ) {
         precondition(!persistentDomainName.isEmpty, "A persistent defaults domain is required.")
-        guard let writerDefaults = exactDomainDefaultsFactory(persistentDomainName) else {
-            preconditionFailure("The persistent defaults domain could not be opened.")
-        }
-        self.writerDefaults = writerDefaults
+        self.writerDefaults = exactDomainResolver.writerDefaults(for: persistentDomainName)
         self.persistentDomainName = persistentDomainName
-        self.exactDomainDefaultsFactory = exactDomainDefaultsFactory
+        self.exactDomainResolver = exactDomainResolver
     }
 
     public func reload() throws {
@@ -163,6 +229,9 @@ public final class UserDefaultsLegacyMigrationStateStore: LegacyMigrationStateSt
         _ version: Int,
         for component: LegacyMigrationComponent
     ) throws {
+        guard let writerDefaults else {
+            throw LegacyMigrationStateStoreError.synchronizationFailed
+        }
         let key = Self.completedVersionKey(for: component)
         let previousValue = try freshlySynchronizedDomain()[key]
         writerDefaults.set(version, forKey: key)
@@ -214,6 +283,9 @@ public final class UserDefaultsLegacyMigrationStateStore: LegacyMigrationStateSt
     public func setPreferenceBaseline(
         _ baseline: [String: PreferenceFingerprint]
     ) throws {
+        guard let writerDefaults else {
+            throw LegacyMigrationStateStoreError.synchronizationFailed
+        }
         guard Self.containsOnlyValidDigests(baseline) else {
             throw LegacyMigrationStateStoreError.invalidStoredValue
         }
@@ -285,7 +357,7 @@ public final class UserDefaultsLegacyMigrationStateStore: LegacyMigrationStateSt
     }
 
     private func freshlySynchronizedDomain() throws -> [String: Any] {
-        guard let refreshedDefaults = exactDomainDefaultsFactory(persistentDomainName),
+        guard let refreshedDefaults = exactDomainResolver.freshDefaults(for: persistentDomainName),
               refreshedDefaults.synchronize() else {
             throw LegacyMigrationStateStoreError.synchronizationFailed
         }
@@ -293,6 +365,9 @@ public final class UserDefaultsLegacyMigrationStateStore: LegacyMigrationStateSt
     }
 
     private func restore(_ previousValue: Any?, forKey key: String) throws {
+        guard let writerDefaults else {
+            throw LegacyMigrationStateStoreError.synchronizationFailed
+        }
         if let previousValue {
             writerDefaults.set(previousValue, forKey: key)
         } else {
@@ -421,17 +496,46 @@ public final class LegacySandboxDataMigrator: @unchecked Sendable {
     private let bundleIdentifier: String
     private let storagePaths: InkletStoragePaths
     private let homeDirectoryURL: URL
-    private let defaults: UserDefaults
+    private let preferenceDefaults: UserDefaults?
+    private let exactDomainResolver: LegacyMigrationExactDomainDefaultsResolver
     private let fileSystem: any LegacyMigrationFileSystem
     private let stateStore: any LegacyMigrationStateStore
     private let keychainStore: @Sendable (String) -> KeychainStore
     private let lock: LegacyMigrationLock
 
-    public init(
+    public convenience init(
         bundleIdentifier: String,
         storagePaths: InkletStoragePaths,
         homeDirectoryURL: URL,
         defaults: UserDefaults,
+        exactDomainDefaultsFactory: @escaping @Sendable (String) -> UserDefaults? = {
+            UserDefaults(suiteName: $0)
+        },
+        fileSystem: any LegacyMigrationFileSystem,
+        stateStore: any LegacyMigrationStateStore,
+        keychainStore: @escaping @Sendable (String) -> KeychainStore,
+        lock: LegacyMigrationLock
+    ) {
+        self.init(
+            bundleIdentifier: bundleIdentifier,
+            storagePaths: storagePaths,
+            homeDirectoryURL: homeDirectoryURL,
+            exactDomainResolver: .live(
+                currentDomainWriter: defaults,
+                suiteFactory: exactDomainDefaultsFactory
+            ),
+            fileSystem: fileSystem,
+            stateStore: stateStore,
+            keychainStore: keychainStore,
+            lock: lock
+        )
+    }
+
+    init(
+        bundleIdentifier: String,
+        storagePaths: InkletStoragePaths,
+        homeDirectoryURL: URL,
+        exactDomainResolver: LegacyMigrationExactDomainDefaultsResolver,
         fileSystem: any LegacyMigrationFileSystem,
         stateStore: any LegacyMigrationStateStore,
         keychainStore: @escaping @Sendable (String) -> KeychainStore,
@@ -440,7 +544,8 @@ public final class LegacySandboxDataMigrator: @unchecked Sendable {
         self.bundleIdentifier = bundleIdentifier
         self.storagePaths = storagePaths
         self.homeDirectoryURL = homeDirectoryURL
-        self.defaults = defaults
+        self.preferenceDefaults = exactDomainResolver.writerDefaults(for: bundleIdentifier)
+        self.exactDomainResolver = exactDomainResolver
         self.fileSystem = fileSystem
         self.stateStore = stateStore
         self.keychainStore = keychainStore
@@ -455,14 +560,18 @@ public final class LegacySandboxDataMigrator: @unchecked Sendable {
         let keychainService = LocalAPIKeyStore.resolvedKeychainService(
             bundleIdentifier: storagePaths.bundleIdentifier
         )
+        let exactDomainResolver = LegacyMigrationExactDomainDefaultsResolver.live(
+            currentDomainWriter: defaults
+        )
         return LegacySandboxDataMigrator(
             bundleIdentifier: storagePaths.bundleIdentifier,
             storagePaths: storagePaths,
             homeDirectoryURL: fileManager.homeDirectoryForCurrentUser,
-            defaults: defaults,
+            exactDomainResolver: exactDomainResolver,
             fileSystem: FileManagerLegacyMigrationFileSystem(fileManager: fileManager),
             stateStore: UserDefaultsLegacyMigrationStateStore(
-                persistentDomainName: storagePaths.bundleIdentifier
+                persistentDomainName: storagePaths.bundleIdentifier,
+                exactDomainResolver: exactDomainResolver
             ),
             keychainStore: { providerID in
                 KeychainStore(service: keychainService, account: providerID)
@@ -551,11 +660,36 @@ public final class LegacySandboxDataMigrator: @unchecked Sendable {
             return try lock.withLock {
                 try stateStore.reload()
                 var results = try completedResults()
-                let incompleteComponents = LegacyMigrationComponent.allCases.filter {
+                let initiallyIncompleteComponents = LegacyMigrationComponent.allCases.filter {
                     results[$0] == nil
                 }
-                guard !incompleteComponents.isEmpty else {
+                guard !initiallyIncompleteComponents.isEmpty else {
                     return LegacySandboxMigrationOutcome(results: results, mode: mode)
+                }
+
+                var changedDestination = false
+                var preferenceBaseline: [String: PreferenceFingerprint]?
+                if initiallyIncompleteComponents.contains(.preferences) {
+                    do {
+                        preferenceBaseline = try ensurePreferenceBaseline(mode: mode)
+                    } catch let failure as LegacyMigrationFailure {
+                        results[.preferences] = .incomplete(failure)
+                    } catch {
+                        results[.preferences] = .incomplete(
+                            baselineFailure()
+                        )
+                    }
+                }
+
+                let pendingComponents = initiallyIncompleteComponents.filter {
+                    results[$0] == nil
+                }
+                guard !pendingComponents.isEmpty else {
+                    return LegacySandboxMigrationOutcome(
+                        results: results,
+                        mode: mode,
+                        changedDestinationOverride: changedDestination
+                    )
                 }
 
                 do {
@@ -568,19 +702,25 @@ public final class LegacySandboxDataMigrator: @unchecked Sendable {
 
                     try migrateSources(
                         at: validatedRootURL,
-                        incompleteComponents: incompleteComponents,
-                        results: &results
+                        incompleteComponents: pendingComponents,
+                        preferenceBaseline: preferenceBaseline,
+                        results: &results,
+                        changedDestination: &changedDestination
                     )
                 } catch let failure as LegacyMigrationFailure {
                     setFailures(
-                        for: incompleteComponents,
+                        for: pendingComponents,
                         kind: failure.kind,
                         sourceLabel: failure.sourceLabel,
                         results: &results,
                         description: failure.nonSensitiveDescription
                     )
                 }
-                return LegacySandboxMigrationOutcome(results: results, mode: mode)
+                return LegacySandboxMigrationOutcome(
+                    results: results,
+                    mode: mode,
+                    changedDestinationOverride: changedDestination
+                )
             }
         } catch LegacyMigrationLockError.timedOut {
             return lockTimeoutOutcome(mode: mode)
@@ -607,7 +747,9 @@ public final class LegacySandboxDataMigrator: @unchecked Sendable {
     private func migrateSources(
         at rootURL: URL,
         incompleteComponents: [LegacyMigrationComponent],
-        results: inout [LegacyMigrationComponent: LegacyMigrationComponentResult]
+        preferenceBaseline: [String: PreferenceFingerprint]?,
+        results: inout [LegacyMigrationComponent: LegacyMigrationComponentResult],
+        changedDestination: inout Bool
     ) throws {
         switch try inspectedSource(at: rootURL, expectedKind: .directory) {
         case .missing:
@@ -630,57 +772,735 @@ public final class LegacySandboxDataMigrator: @unchecked Sendable {
             .credentials,
         ].filter { incompleteComponents.contains($0) }
         if !preferenceComponents.isEmpty {
-            processDiscoveredSource(
+            processLegacyPreferencesFile(
                 at: legacyPreferencesURL(rootURL: rootURL),
-                sourceLabel: preferencesSourceLabel,
                 components: preferenceComponents,
-                results: &results
+                preferenceBaseline: preferenceBaseline,
+                results: &results,
+                changedDestination: &changedDestination
             )
         }
 
         if incompleteComponents.contains(.history) {
-            processDiscoveredSource(
+            processLegacyHistoryFile(
                 at: legacyHistoryURL(rootURL: rootURL),
-                sourceLabel: Self.historySourceLabel,
-                components: [.history],
-                results: &results
+                results: &results,
+                changedDestination: &changedDestination
             )
         }
     }
 
-    private func processDiscoveredSource(
+    private func processLegacyPreferencesFile(
         at sourceURL: URL,
-        sourceLabel: String,
         components: [LegacyMigrationComponent],
-        results: inout [LegacyMigrationComponent: LegacyMigrationComponentResult]
+        preferenceBaseline: [String: PreferenceFingerprint]?,
+        results: inout [LegacyMigrationComponent: LegacyMigrationComponentResult],
+        changedDestination: inout Bool
     ) {
         do {
             switch try inspectedSource(at: sourceURL, expectedKind: .regularFile) {
             case .missing:
                 completeNoLegacyData(components, results: &results)
+                return
             case let .failure(kind):
                 setFailures(
                     for: components,
                     kind: kind,
-                    sourceLabel: sourceLabel,
+                    sourceLabel: preferencesSourceLabel,
                     results: &results
                 )
+                return
             case .present:
+                break
+            }
+
+            let sourceData: Data
+            do {
+                sourceData = try fileSystem.readData(at: sourceURL)
+            } catch {
+                let kind = sourceReadFailureKind(error)
                 setFailures(
                     for: components,
-                    kind: .readFailed,
-                    sourceLabel: sourceLabel,
+                    kind: kind,
+                    sourceLabel: preferencesSourceLabel,
+                    results: &results
+                )
+                return
+            }
+
+            let propertyList: [String: Any]
+            do {
+                guard let decoded = try PropertyListSerialization.propertyList(
+                    from: sourceData,
+                    options: [],
+                    format: nil
+                ) as? [String: Any] else {
+                    throw LegacyPreferenceValidationError.invalidValue
+                }
+                propertyList = decoded
+            } catch {
+                setFailures(
+                    for: components,
+                    kind: .decodeFailed,
+                    sourceLabel: preferencesSourceLabel,
+                    results: &results
+                )
+                return
+            }
+
+            if components.contains(.preferences) {
+                if let preferenceBaseline {
+                    processPreferences(
+                        propertyList,
+                        baseline: preferenceBaseline,
+                        results: &results,
+                        changedDestination: &changedDestination
+                    )
+                } else {
+                    results[.preferences] = .incomplete(baselineFailure())
+                }
+            }
+            if components.contains(.credentials) {
+                processCredentials(
+                    propertyList,
                     results: &results,
-                    description: "The legacy source is present and awaits migration."
+                    changedDestination: &changedDestination
                 )
             }
         } catch {
             setFailures(
                 for: components,
                 kind: .indeterminateLookup,
-                sourceLabel: sourceLabel,
+                sourceLabel: preferencesSourceLabel,
                 results: &results
             )
+        }
+    }
+
+    private func processLegacyHistoryFile(
+        at sourceURL: URL,
+        results: inout [LegacyMigrationComponent: LegacyMigrationComponentResult],
+        changedDestination: inout Bool
+    ) {
+        do {
+            switch try inspectedSource(at: sourceURL, expectedKind: .regularFile) {
+            case .missing:
+                completeNoLegacyData([.history], results: &results)
+                return
+            case let .failure(kind):
+                setFailures(
+                    for: [.history],
+                    kind: kind,
+                    sourceLabel: Self.historySourceLabel,
+                    results: &results
+                )
+                return
+            case .present:
+                break
+            }
+
+            let legacyData: Data
+            do {
+                legacyData = try fileSystem.readData(at: sourceURL)
+            } catch {
+                results[.history] = .incomplete(
+                    failure(
+                        component: .history,
+                        kind: sourceReadFailureKind(error),
+                        sourceLabel: Self.historySourceLabel,
+                        description: nonSensitiveDescription(for: sourceReadFailureKind(error))
+                    )
+                )
+                return
+            }
+
+            processHistory(
+                legacyData,
+                results: &results,
+                changedDestination: &changedDestination
+            )
+        } catch {
+            results[.history] = .incomplete(
+                failure(
+                    component: .history,
+                    kind: .indeterminateLookup,
+                    sourceLabel: Self.historySourceLabel,
+                    description: nonSensitiveDescription(for: .indeterminateLookup)
+                )
+            )
+        }
+    }
+
+    private enum LegacyPreferenceValidationError: Error {
+        case invalidValue
+    }
+
+    private var preferenceBaselineAttemptGuardURL: URL {
+        storagePaths.applicationSupportRootURL.appendingPathComponent(
+            "legacy-migration.preference-baseline-attempted"
+        )
+    }
+
+    private enum PreferenceBaselineAttemptGuardState {
+        case newAttempt
+        case attempted
+        case verified
+    }
+
+    private var preferenceBaselineAttemptedGuardData: Data {
+        Data("Inklet legacy preference baseline attempted v1\n\(bundleIdentifier)\n".utf8)
+    }
+
+    private var preferenceBaselineVerifiedGuardData: Data {
+        Data("Inklet legacy preference baseline verified v1\n\(bundleIdentifier)\n".utf8)
+    }
+
+    private func ensurePreferenceBaseline(
+        mode: LegacyMigrationMode
+    ) throws -> [String: PreferenceFingerprint] {
+        let guardState = try ensurePreferenceBaselineAttemptGuard()
+
+        let storedBaseline: [String: PreferenceFingerprint]?
+        do {
+            storedBaseline = try stateStore.preferenceBaseline()
+        } catch {
+            throw baselineFailure()
+        }
+
+        if guardState == .verified, let storedBaseline {
+            guard hasExactPreferenceBaselineKeys(storedBaseline) else {
+                throw baselineFailure()
+            }
+            return storedBaseline
+        }
+
+        guard guardState == .newAttempt else {
+            throw baselineFailure()
+        }
+
+        if let storedBaseline {
+            guard hasExactPreferenceBaselineKeys(storedBaseline) else {
+                throw baselineFailure()
+            }
+            do {
+                try markPreferenceBaselineGuardVerified()
+            } catch {
+                try markPreferenceBaselineGuardAttempted()
+                throw baselineFailure()
+            }
+            return storedBaseline
+        }
+
+        guard mode == .automatic else { throw baselineFailure() }
+
+        let persistentDomain: [String: Any]
+        do {
+            persistentDomain = try freshPersistentDomain()
+        } catch {
+            throw baselineFailure()
+        }
+
+        var baseline: [String: PreferenceFingerprint] = [:]
+        do {
+            for key in InkletPreferenceKeys.recognizedLegacyKeys {
+                baseline[key] = try LegacyPreferenceFingerprinter.fingerprint(
+                    of: persistentDomain[key]
+                )
+            }
+        } catch {
+            throw baselineFailure()
+        }
+
+        try markPreferenceBaselineGuardVerified()
+        do {
+            try stateStore.setPreferenceBaseline(baseline)
+            guard try stateStore.preferenceBaseline() == baseline else {
+                throw LegacyMigrationStateStoreError.writeVerificationFailed
+            }
+        } catch {
+            try markPreferenceBaselineGuardAttempted()
+            throw baselineFailure()
+        }
+        return baseline
+    }
+
+    private func ensurePreferenceBaselineAttemptGuard() throws
+        -> PreferenceBaselineAttemptGuardState {
+        let guardURL = preferenceBaselineAttemptGuardURL.standardizedFileURL
+        let isMissing: Bool
+        do {
+            let kind = try fileSystem.itemKind(at: guardURL)
+            guard kind == .regularFile else { throw baselineFailure() }
+            isMissing = false
+        } catch let failure as LegacyMigrationFailure {
+            throw failure
+        } catch {
+            switch LegacyMigrationLookupErrorClassifier.classify(error) {
+            case .missing:
+                isMissing = true
+            case .permissionDenied, .indeterminateLookup:
+                throw baselineFailure()
+            }
+        }
+
+        if isMissing {
+            do {
+                try fileSystem.createDirectory(at: storagePaths.applicationSupportRootURL)
+                try fileSystem.writeDataAtomically(
+                    preferenceBaselineAttemptedGuardData,
+                    to: guardURL
+                )
+            } catch {
+                throw baselineFailure()
+            }
+            try verifyPreferenceBaselineGuardData(preferenceBaselineAttemptedGuardData)
+            return .newAttempt
+        }
+
+        let storedData: Data
+        do {
+            guard try fileSystem.itemKind(at: guardURL) == .regularFile else {
+                throw baselineFailure()
+            }
+            storedData = try fileSystem.readData(at: guardURL)
+        } catch let failure as LegacyMigrationFailure {
+            throw failure
+        } catch {
+            throw baselineFailure()
+        }
+        if storedData == preferenceBaselineVerifiedGuardData {
+            return .verified
+        }
+        if storedData == preferenceBaselineAttemptedGuardData {
+            return .attempted
+        }
+        throw baselineFailure()
+    }
+
+    private func markPreferenceBaselineGuardVerified() throws {
+        do {
+            try fileSystem.writeDataAtomically(
+                preferenceBaselineVerifiedGuardData,
+                to: preferenceBaselineAttemptGuardURL
+            )
+            try verifyPreferenceBaselineGuardData(preferenceBaselineVerifiedGuardData)
+        } catch let failure as LegacyMigrationFailure {
+            throw failure
+        } catch {
+            throw baselineFailure()
+        }
+    }
+
+    private func markPreferenceBaselineGuardAttempted() throws {
+        do {
+            try fileSystem.writeDataAtomically(
+                preferenceBaselineAttemptedGuardData,
+                to: preferenceBaselineAttemptGuardURL
+            )
+            try verifyPreferenceBaselineGuardData(preferenceBaselineAttemptedGuardData)
+        } catch let failure as LegacyMigrationFailure {
+            throw failure
+        } catch {
+            throw baselineFailure()
+        }
+    }
+
+    private func verifyPreferenceBaselineGuardData(_ expectedData: Data) throws {
+        do {
+            guard try fileSystem.itemKind(at: preferenceBaselineAttemptGuardURL) == .regularFile,
+                  try fileSystem.readData(at: preferenceBaselineAttemptGuardURL) == expectedData else {
+                throw baselineFailure()
+            }
+        } catch let failure as LegacyMigrationFailure {
+            throw failure
+        } catch {
+            throw baselineFailure()
+        }
+    }
+
+    private func hasExactPreferenceBaselineKeys(
+        _ baseline: [String: PreferenceFingerprint]
+    ) -> Bool {
+        Set(baseline.keys) == Set(InkletPreferenceKeys.recognizedLegacyKeys)
+    }
+
+    private func baselineFailure() -> LegacyMigrationFailure {
+        failure(
+            component: .preferences,
+            kind: .writeFailed,
+            sourceLabel: preferencesSourceLabel,
+            description: "Preference migration safety state could not be verified."
+        )
+    }
+
+    private func freshPersistentDomain() throws -> [String: Any] {
+        guard let freshDefaults = exactDomainResolver.freshDefaults(for: bundleIdentifier),
+              freshDefaults.synchronize() else {
+            throw LegacyMigrationStateStoreError.synchronizationFailed
+        }
+        return freshDefaults.persistentDomain(forName: bundleIdentifier) ?? [:]
+    }
+
+    private func processPreferences(
+        _ propertyList: [String: Any],
+        baseline: [String: PreferenceFingerprint],
+        results: inout [LegacyMigrationComponent: LegacyMigrationComponentResult],
+        changedDestination: inout Bool
+    ) {
+        let legacyValues: [String: Any]
+        do {
+            legacyValues = try validatedLegacyPreferenceValues(in: propertyList)
+        } catch {
+            results[.preferences] = .incomplete(
+                failure(
+                    component: .preferences,
+                    kind: .decodeFailed,
+                    sourceLabel: preferencesSourceLabel,
+                    description: nonSensitiveDescription(for: .decodeFailed)
+                )
+            )
+            return
+        }
+
+        guard hasExactPreferenceBaselineKeys(baseline) else {
+            results[.preferences] = .incomplete(baselineFailure())
+            return
+        }
+
+        guard let preferenceDefaults else {
+            results[.preferences] = .incomplete(preferenceWriteFailure())
+            return
+        }
+
+        let currentDomain: [String: Any]
+        do {
+            currentDomain = try freshPersistentDomain()
+        } catch {
+            results[.preferences] = .incomplete(
+                preferenceWriteFailure()
+            )
+            return
+        }
+
+        var expectedWrites: [String: PreferenceFingerprint] = [:]
+        var didChange = false
+        do {
+            for key in InkletPreferenceKeys.recognizedLegacyKeys {
+                guard let legacyValue = legacyValues[key] else { continue }
+                let currentFingerprint = try LegacyPreferenceFingerprinter.fingerprint(
+                    of: currentDomain[key]
+                )
+                guard currentFingerprint == baseline[key] else { continue }
+                let legacyFingerprint = try LegacyPreferenceFingerprinter.fingerprint(
+                    of: legacyValue
+                )
+                guard currentFingerprint != legacyFingerprint else { continue }
+                preferenceDefaults.set(legacyValue, forKey: key)
+                expectedWrites[key] = legacyFingerprint
+                didChange = true
+            }
+        } catch {
+            results[.preferences] = .incomplete(preferenceWriteFailure())
+            return
+        }
+
+        if didChange {
+            changedDestination = true
+            guard preferenceDefaults.synchronize() else {
+                results[.preferences] = .incomplete(preferenceWriteFailure())
+                return
+            }
+
+            do {
+                let verificationDomain = try freshPersistentDomain()
+                for (key, expectedFingerprint) in expectedWrites {
+                    guard try LegacyPreferenceFingerprinter.fingerprint(
+                        of: verificationDomain[key]
+                    ) == expectedFingerprint else {
+                        throw LegacyMigrationStateStoreError.writeVerificationFailed
+                    }
+                }
+            } catch {
+                results[.preferences] = .incomplete(preferenceWriteFailure())
+                return
+            }
+        }
+
+        finishComponent(
+            .preferences,
+            changed: didChange,
+            sourceLabel: preferencesSourceLabel,
+            results: &results,
+            changedDestination: &changedDestination
+        )
+    }
+
+    private func validatedLegacyPreferenceValues(
+        in propertyList: [String: Any]
+    ) throws -> [String: Any] {
+        var values: [String: Any] = [:]
+        for key in InkletPreferenceKeys.recognizedLegacyKeys {
+            guard let value = propertyList[key] else { continue }
+            switch key {
+            case InkletPreferenceKeys.appConfig,
+                 InkletPreferenceKeys.modelCatalogSnapshot:
+                guard value is Data else {
+                    throw LegacyPreferenceValidationError.invalidValue
+                }
+                values[key] = value
+            case InkletPreferenceKeys.interfaceLanguage:
+                guard value is String else {
+                    throw LegacyPreferenceValidationError.invalidValue
+                }
+                values[key] = value
+            case InkletPreferenceKeys.didCompleteOnboarding:
+                guard CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID(),
+                      value is Bool else {
+                    throw LegacyPreferenceValidationError.invalidValue
+                }
+                values[key] = value
+            case InkletPreferenceKeys.translationPanelSize:
+                guard let dictionary = value as? [String: Any] else {
+                    throw LegacyPreferenceValidationError.invalidValue
+                }
+                var numericDictionary: [String: NSNumber] = [:]
+                for (dimension, rawNumber) in dictionary {
+                    guard let number = rawNumber as? NSNumber,
+                          CFGetTypeID(number) != CFBooleanGetTypeID() else {
+                        throw LegacyPreferenceValidationError.invalidValue
+                    }
+                    numericDictionary[dimension] = number
+                }
+                values[key] = numericDictionary
+            default:
+                throw LegacyPreferenceValidationError.invalidValue
+            }
+        }
+        return values
+    }
+
+    private func processCredentials(
+        _ propertyList: [String: Any],
+        results: inout [LegacyMigrationComponent: LegacyMigrationComponentResult],
+        changedDestination: inout Bool
+    ) {
+        let entries: [(providerID: String, apiKey: String)]
+        do {
+            entries = try propertyList.compactMap { key, value in
+                guard let providerID = InkletPreferenceKeys.providerID(
+                    fromLegacyKey: key
+                ) else {
+                    return nil
+                }
+                guard let apiKey = value as? String else {
+                    throw LegacyPreferenceValidationError.invalidValue
+                }
+                return (providerID, apiKey)
+            }.sorted { $0.providerID < $1.providerID }
+        } catch {
+            results[.credentials] = .incomplete(
+                failure(
+                    component: .credentials,
+                    kind: .decodeFailed,
+                    sourceLabel: preferencesSourceLabel,
+                    description: nonSensitiveDescription(for: .decodeFailed)
+                )
+            )
+            return
+        }
+
+        var didChange = false
+        for entry in entries {
+            do {
+                let store = keychainStore(entry.providerID)
+                if try store.loadAPIKey() == nil {
+                    if try store.insertAPIKeyIfAbsent(entry.apiKey) {
+                        didChange = true
+                        changedDestination = true
+                    }
+                }
+            } catch {
+                results[.credentials] = .incomplete(
+                    failure(
+                        component: .credentials,
+                        kind: .keychainFailed,
+                        sourceLabel: preferencesSourceLabel,
+                        description: nonSensitiveDescription(for: .keychainFailed)
+                    )
+                )
+                return
+            }
+        }
+
+        finishComponent(
+            .credentials,
+            changed: didChange,
+            sourceLabel: preferencesSourceLabel,
+            results: &results,
+            changedDestination: &changedDestination
+        )
+    }
+
+    private func processHistory(
+        _ legacyData: Data,
+        results: inout [LegacyMigrationComponent: LegacyMigrationComponentResult],
+        changedDestination: inout Bool
+    ) {
+        let destinationData: Data
+        do {
+            destinationData = try readDestinationHistoryData()
+        } catch let migrationFailure as LegacyMigrationFailure {
+            results[.history] = .incomplete(migrationFailure)
+            return
+        } catch {
+            results[.history] = .incomplete(historyReadFailure())
+            return
+        }
+
+        var itemsByID: [UUID: HistoryItem] = [:]
+        for item in HistoryJSONLCodec.decodeValidItems(from: legacyData) {
+            itemsByID[item.id] = item
+        }
+        for item in HistoryJSONLCodec.decodeValidItems(from: destinationData) {
+            itemsByID[item.id] = item
+        }
+        let mergedItems = itemsByID.values.sorted { lhs, rhs in
+            if lhs.createdAt != rhs.createdAt {
+                return lhs.createdAt < rhs.createdAt
+            }
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+
+        let mergedData: Data
+        do {
+            mergedData = try HistoryJSONLCodec.encode(mergedItems)
+        } catch {
+            results[.history] = .incomplete(historyWriteFailure())
+            return
+        }
+
+        var didChange = false
+        if mergedData != destinationData {
+            do {
+                try fileSystem.createDirectory(
+                    at: storagePaths.historyFileURL.deletingLastPathComponent()
+                )
+                try fileSystem.writeDataAtomically(
+                    mergedData,
+                    to: storagePaths.historyFileURL
+                )
+                didChange = true
+                changedDestination = true
+            } catch {
+                if let writeError = error as? LegacyMigrationAtomicWriteError,
+                   writeError.destinationWasReplaced {
+                    changedDestination = true
+                }
+                results[.history] = .incomplete(historyWriteFailure())
+                return
+            }
+        }
+
+        finishComponent(
+            .history,
+            changed: didChange,
+            sourceLabel: Self.historySourceLabel,
+            results: &results,
+            changedDestination: &changedDestination
+        )
+    }
+
+    private func readDestinationHistoryData() throws -> Data {
+        let destinationURL = storagePaths.historyFileURL.standardizedFileURL
+        do {
+            let kind = try fileSystem.itemKind(at: destinationURL)
+            guard kind == .regularFile else {
+                throw failure(
+                    component: .history,
+                    kind: .invalidSource,
+                    sourceLabel: Self.historySourceLabel,
+                    description: nonSensitiveDescription(for: .invalidSource)
+                )
+            }
+        } catch let migrationFailure as LegacyMigrationFailure {
+            throw migrationFailure
+        } catch {
+            switch LegacyMigrationLookupErrorClassifier.classify(error) {
+            case .missing:
+                return Data()
+            case .permissionDenied, .indeterminateLookup:
+                throw historyReadFailure()
+            }
+        }
+
+        do {
+            return try fileSystem.readData(at: destinationURL)
+        } catch {
+            throw historyReadFailure()
+        }
+    }
+
+    private func finishComponent(
+        _ component: LegacyMigrationComponent,
+        changed: Bool,
+        sourceLabel: String,
+        results: inout [LegacyMigrationComponent: LegacyMigrationComponentResult],
+        changedDestination: inout Bool
+    ) {
+        if changed {
+            changedDestination = true
+        }
+        do {
+            try stateStore.setCompletedVersion(
+                currentVersion(for: component),
+                for: component
+            )
+            results[component] = .completed(changedDestination: changed)
+        } catch {
+            results[component] = .incomplete(
+                failure(
+                    component: component,
+                    kind: .writeFailed,
+                    sourceLabel: sourceLabel,
+                    description: nonSensitiveDescription(for: .writeFailed)
+                )
+            )
+        }
+    }
+
+    private func preferenceWriteFailure() -> LegacyMigrationFailure {
+        failure(
+            component: .preferences,
+            kind: .writeFailed,
+            sourceLabel: preferencesSourceLabel,
+            description: nonSensitiveDescription(for: .writeFailed)
+        )
+    }
+
+    private func historyReadFailure() -> LegacyMigrationFailure {
+        failure(
+            component: .history,
+            kind: .readFailed,
+            sourceLabel: Self.historySourceLabel,
+            description: nonSensitiveDescription(for: .readFailed)
+        )
+    }
+
+    private func historyWriteFailure() -> LegacyMigrationFailure {
+        failure(
+            component: .history,
+            kind: .writeFailed,
+            sourceLabel: Self.historySourceLabel,
+            description: nonSensitiveDescription(for: .writeFailed)
+        )
+    }
+
+    private func sourceReadFailureKind(_ error: Error) -> LegacyMigrationFailureKind {
+        switch LegacyMigrationLookupErrorClassifier.classify(error) {
+        case .permissionDenied:
+            return .permissionDenied
+        case .missing, .indeterminateLookup:
+            return .readFailed
         }
     }
 

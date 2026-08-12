@@ -4,7 +4,7 @@ import XCTest
 @testable import InkletCore
 
 final class LegacyMigrationSourceValidationTests: XCTestCase {
-    private let bundleIdentifier = "com.example.inklet"
+    private let bundleIdentifier = "com.example.inklet.tests.\(UUID().uuidString)"
 
     func testLiveFileSystemReportsSymlinkWithoutFollowingIt() throws {
         let directoryURL = FileManager.default.temporaryDirectory
@@ -197,7 +197,11 @@ final class LegacyMigrationSourceValidationTests: XCTestCase {
         assertIncomplete(wrongTypeOutcome.results[.preferences], hasKind: .invalidSource)
         assertIncomplete(wrongTypeOutcome.results[.credentials], hasKind: .invalidSource)
         assertIncomplete(wrongTypeOutcome.results[.history], hasKind: .invalidSource)
-        XCTAssertTrue(wrongTypeFileSystem.readDataURLs.isEmpty)
+        XCTAssertFalse(
+            wrongTypeFileSystem.readDataURLs.contains {
+                $0.path.hasPrefix(wrongTypeFixture.legacyRoot.path + "/")
+            }
+        )
     }
 
     func testUserSelectedValidationRejectsCanonicalMismatchBeforeReadingContent() {
@@ -345,21 +349,43 @@ final class LegacyMigrationSourceValidationTests: XCTestCase {
         }
     }
 
-    func testPresentValidatedSourcesAreNotReadOrMarkedCompleteInTaskThree() {
+    func testPresentValidatedSourcesAreReadAndMigratedInTaskFour() throws {
         let fileSystem = FakeLegacyMigrationFileSystem()
         let stateStore = InMemoryLegacyMigrationStateStore()
         let fixture = makeMigrator(fileSystem: fileSystem, stateStore: stateStore)
+        let historyItem = HistoryItem(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000301")!,
+            createdAt: Date(timeIntervalSince1970: 10),
+            source: .write,
+            inputText: "legacy-input",
+            outputText: "legacy-output"
+        )
         fileSystem.setItemKind(.directory, at: fixture.legacyRoot)
-        fileSystem.setItemKind(.regularFile, at: fixture.preferencesURL)
-        fileSystem.setItemKind(.regularFile, at: fixture.historyURL)
+        fileSystem.setData(
+            try PropertyListSerialization.data(
+                fromPropertyList: [InkletPreferenceKeys.interfaceLanguage: "zh-CN"],
+                format: .binary,
+                options: 0
+            ),
+            at: fixture.preferencesURL
+        )
+        let legacyHistoryData = try HistoryJSONLCodec.encode([historyItem])
+        fileSystem.setData(legacyHistoryData, at: fixture.historyURL)
 
         let outcome = fixture.migrator.migrateAutomatically()
 
-        for component in LegacyMigrationComponent.allCases {
-            assertIncomplete(outcome.results[component], hasKind: .readFailed)
-            XCTAssertNil(stateStore.versions[component])
-        }
-        XCTAssertTrue(fileSystem.readDataURLs.isEmpty)
+        XCTAssertEqual(outcome.results[.preferences], .completed(changedDestination: true))
+        XCTAssertEqual(outcome.results[.credentials], .completed(changedDestination: false))
+        XCTAssertEqual(outcome.results[.history], .completed(changedDestination: true))
+        XCTAssertEqual(stateStore.versions[.preferences], 1)
+        XCTAssertEqual(stateStore.versions[.credentials], 1)
+        XCTAssertEqual(stateStore.versions[.history], 1)
+        XCTAssertTrue(fileSystem.readDataURLs.contains(fixture.preferencesURL))
+        XCTAssertTrue(fileSystem.readDataURLs.contains(fixture.historyURL))
+        XCTAssertEqual(fileSystem.data(at: fixture.historyURL), legacyHistoryData)
+        XCTAssertFalse(
+            fileSystem.readDataURLs.contains { $0.path.contains("selection-translation-cache") }
+        )
     }
 
     private func makeMigrator(
@@ -379,6 +405,24 @@ final class LegacyMigrationSourceValidationTests: XCTestCase {
             applicationSupportRootURL: destinationRoot,
             temporaryDirectory: FileManager.default.temporaryDirectory
         )
+        let missingError = NSError(domain: NSPOSIXErrorDomain, code: Int(ENOENT))
+        fileSystem.setItemKindFailure(
+            missingError,
+            at: storagePaths.applicationSupportRootURL.appendingPathComponent(
+                "legacy-migration.preference-baseline-attempted"
+            )
+        )
+        fileSystem.setItemKindFailure(missingError, at: storagePaths.historyFileURL)
+        let defaultsDomainName = bundleIdentifier
+        guard let defaults = UserDefaults(suiteName: defaultsDomainName) else {
+            preconditionFailure("Unable to open source-validation test defaults")
+        }
+        defaults.removePersistentDomain(forName: defaultsDomainName)
+        addTeardownBlock {
+            UserDefaults(suiteName: defaultsDomainName)?.removePersistentDomain(
+                forName: defaultsDomainName
+            )
+        }
         let legacyRoot = LegacySandboxDataMigrator.expectedLegacyDataRoot(
             bundleIdentifier: bundleIdentifier,
             homeDirectoryURL: homeDirectory
@@ -396,7 +440,7 @@ final class LegacyMigrationSourceValidationTests: XCTestCase {
             bundleIdentifier: bundleIdentifier,
             storagePaths: storagePaths,
             homeDirectoryURL: homeDirectory,
-            defaults: .standard,
+            defaults: defaults,
             fileSystem: fileSystem,
             stateStore: stateStore,
             keychainStore: { _ in KeychainStore() },
@@ -470,6 +514,7 @@ private struct MigrationFixture {
 private final class FakeLegacyMigrationFileSystem: LegacyMigrationFileSystem, @unchecked Sendable {
     private var itemKinds: [String: Result<LegacyMigrationItemKind, NSError>] = [:]
     private var canonicalURLResults: [String: [Result<URL, NSError>]] = [:]
+    private var storedData: [String: Data] = [:]
 
     private(set) var itemKindURLs: [URL] = []
     private(set) var readDataURLs: [URL] = []
@@ -480,6 +525,16 @@ private final class FakeLegacyMigrationFileSystem: LegacyMigrationFileSystem, @u
 
     func setItemKindFailure(_ error: NSError, at url: URL) {
         itemKinds[url.standardizedFileURL.path] = .failure(error)
+    }
+
+    func setData(_ data: Data, at url: URL) {
+        let standardizedURL = url.standardizedFileURL
+        storedData[standardizedURL.path] = data
+        itemKinds[standardizedURL.path] = .success(.regularFile)
+    }
+
+    func data(at url: URL) -> Data? {
+        storedData[url.standardizedFileURL.path]
     }
 
     func setCanonicalURL(_ canonicalURL: URL, for url: URL) {
@@ -506,13 +561,19 @@ private final class FakeLegacyMigrationFileSystem: LegacyMigrationFileSystem, @u
     }
 
     func readData(at url: URL) throws -> Data {
-        readDataURLs.append(url.standardizedFileURL)
-        return Data()
+        let standardizedURL = url.standardizedFileURL
+        readDataURLs.append(standardizedURL)
+        guard let data = storedData[standardizedURL.path] else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOENT))
+        }
+        return data
     }
 
     func createDirectory(at url: URL) throws {}
 
-    func writeDataAtomically(_ data: Data, to url: URL) throws {}
+    func writeDataAtomically(_ data: Data, to url: URL) throws {
+        setData(data, at: url)
+    }
 
     func canonicalURL(for url: URL) throws -> URL {
         let key = url.standardizedFileURL.path

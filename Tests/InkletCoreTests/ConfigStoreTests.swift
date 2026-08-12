@@ -600,6 +600,40 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(client.calls, [.update, .add])
     }
 
+    func testInsertAPIKeyIfAbsentAddsWithoutUpdatingAndReturnsTrue() throws {
+        let client = FakeKeychainClient()
+        client.addStatus = errSecSuccess
+        let store = KeychainStore(client: client)
+
+        XCTAssertTrue(try store.insertAPIKeyIfAbsent("new-key"))
+
+        XCTAssertEqual(client.calls, [.add])
+    }
+
+    func testInsertAPIKeyIfAbsentPreservesDuplicateAndReturnsFalse() throws {
+        let client = FakeKeychainClient()
+        client.addStatus = errSecDuplicateItem
+        let store = KeychainStore(client: client)
+
+        XCTAssertFalse(try store.insertAPIKeyIfAbsent("must-not-overwrite"))
+
+        XCTAssertEqual(client.calls, [.add])
+    }
+
+    func testInsertAPIKeyIfAbsentPropagatesUnexpectedAddFailure() {
+        let client = FakeKeychainClient()
+        client.addStatus = errSecAuthFailed
+        let store = KeychainStore(client: client)
+
+        XCTAssertThrowsError(try store.insertAPIKeyIfAbsent("private-value")) { error in
+            XCTAssertEqual(
+                error as? KeychainStoreError,
+                .unexpectedStatus(errSecAuthFailed)
+            )
+        }
+        XCTAssertEqual(client.calls, [.add])
+    }
+
     func testLoadAPIKeyReturnsNilWhenItemNotFound() throws {
         let client = FakeKeychainClient()
         client.copyMatchingStatus = errSecItemNotFound

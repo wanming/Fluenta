@@ -58,6 +58,42 @@ public protocol HistoryStore: Sendable {
     func clear() throws
 }
 
+enum HistoryJSONLCodec {
+    static func decodeValidItems(from data: Data) -> [HistoryItem] {
+        let decoder = makeDecoder()
+        return String(decoding: data, as: UTF8.self)
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .compactMap { line in
+                try? decoder.decode(HistoryItem.self, from: Data(line.utf8))
+            }
+    }
+
+    static func encode(_ items: [HistoryItem]) throws -> Data {
+        guard !items.isEmpty else { return Data() }
+
+        let encoder = makeEncoder()
+        var data = Data()
+        for item in items {
+            data.append(try encoder.encode(item))
+            data.append(0x0A)
+        }
+        return data
+    }
+
+    private static func makeEncoder() -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        return encoder
+    }
+
+    private static func makeDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }
+}
+
 public final class JSONLHistoryStore: HistoryStore, @unchecked Sendable {
     private let fileURL: URL
     private let lock = NSLock()
@@ -79,16 +115,7 @@ public final class JSONLHistoryStore: HistoryStore, @unchecked Sendable {
             return []
         }
 
-        let data = try Data(contentsOf: fileURL)
-        let lines = String(decoding: data, as: UTF8.self).split(
-            separator: "\n",
-            omittingEmptySubsequences: true
-        )
-        let decoder = Self.makeDecoder()
-
-        return lines.compactMap { line in
-            try? decoder.decode(HistoryItem.self, from: Data(line.utf8))
-        }
+        return HistoryJSONLCodec.decodeValidItems(from: try Data(contentsOf: fileURL))
     }
 
     public func append(_ item: HistoryItem) throws {
@@ -104,9 +131,7 @@ public final class JSONLHistoryStore: HistoryStore, @unchecked Sendable {
             withIntermediateDirectories: true
         )
 
-        let encoder = Self.makeEncoder()
-        var data = try encoder.encode(item)
-        data.append(0x0A)
+        let data = try HistoryJSONLCodec.encode([item])
 
         if FileManager.default.fileExists(atPath: fileURL.path) {
             let handle = try FileHandle(forWritingTo: fileURL)
@@ -133,36 +158,13 @@ public final class JSONLHistoryStore: HistoryStore, @unchecked Sendable {
         storagePaths.historyFileURL
     }
 
-    private static func makeEncoder() -> JSONEncoder {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        return encoder
-    }
-
-    private static func makeDecoder() -> JSONDecoder {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return decoder
-    }
-
     private func lastStoredItem() throws -> HistoryItem? {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             return nil
         }
 
-        let data = try Data(contentsOf: fileURL)
-        let lines = String(decoding: data, as: UTF8.self).split(
-            separator: "\n",
-            omittingEmptySubsequences: true
-        )
-        let decoder = Self.makeDecoder()
-
-        for line in lines.reversed() {
-            if let item = try? decoder.decode(HistoryItem.self, from: Data(line.utf8)) {
-                return item
-            }
-        }
-
-        return nil
+        return HistoryJSONLCodec.decodeValidItems(
+            from: try Data(contentsOf: fileURL)
+        ).last
     }
 }
