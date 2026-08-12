@@ -41,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install
 
 1. 在任意应用里聚焦一个文本框。
 2. 按 `Option+Space`。
-3. 用模糊搜索查找 Prompt 模式（例如 `ts` 可以匹配 `To Chinese Summary`），用 `↑` / `↓` 高亮，然后按 `Tab` 确认。
+3. 用模糊搜索查找 Prompt 模式（例如 `ts` 可以匹配 `To Chinese Summary`），用 `↑` / `↓` 高亮，然后按 `Tab` 或 `Enter` 确认。
 4. 输入或粘贴一段草稿。
 5. 按 `Enter` 让 Inklet 处理文本。
 6. 再按一次 `Enter` 插入结果。
@@ -117,8 +117,7 @@ swift test
 - `Option+Space`：打开写作 popover。
 - `Right Option`：默认按住进行语音输入。可以在 Settings 中修改快捷键、关闭语音快捷键，或改成单击/双击录音方式。
 - 模式启动器中的 `↑` / `↓`：在按模糊匹配度排序的 Prompt 模式之间移动高亮。
-- 模式启动器中的 `Tab`：确认高亮的 Prompt 模式并聚焦源文本编辑器。
-- 模式启动器中的 `Return`：未处于输入法组合状态时，该按键会被拦截，不执行任何启动器操作，并让启动器保持打开；输入法正在组合文字时，仍可用它确认文字或候选项。
+- 模式启动器中的 `Tab`、`Return` 或小键盘 `Enter`：确认高亮的 Prompt 模式并聚焦源文本编辑器。输入法正在组合文字时，Return 仍用于确认文字或候选项；配合 Command、Shift、Option 或 Control 的 Return 不会确认模式。
 - 编辑器中的 `Enter`：处理源文本；插入由当前模式生成的结果；如果可见结果由之前的模式生成，则用刚确认的新模式重新生成。
 - `Command+Enter`：不调用模型，直接插入原文。
 - `Command+Up` / `Command+Down`：切换可见 prompt modes。

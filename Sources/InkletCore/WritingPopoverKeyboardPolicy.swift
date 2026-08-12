@@ -48,7 +48,7 @@ public enum WritingPopoverKeyboardPolicy {
             }
 
             if isReturnKey {
-                return .consume
+                return modifiers.isEmpty ? .commitMode : .consume
             }
 
             guard modifiers.isEmpty else {

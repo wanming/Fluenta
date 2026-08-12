@@ -12,7 +12,7 @@
 
 ## Core Flow
 
-- TextEdit: focus a text field, press `Option+Space`, search for a prompt mode, use `Up` / `Down` to highlight it, press `Tab` to commit it, enter text, press `Enter` to transform, then press `Enter` again to insert the result.
+- TextEdit: focus a text field, press `Option+Space`, search for a prompt mode, use `Up` / `Down` to highlight it, press `Tab` or `Return` to commit it, enter text, press `Enter` to transform, then press `Enter` again to insert the result.
 - TextEdit: enter a rough English sentence, improve it, then insert the result.
 - Notes: repeat the transform and insert flow.
 - Safari or Chrome: repeat the flow in a web text field.
@@ -21,8 +21,8 @@
 - Fuzzy ranking: configure `To Simple and Correct English`, `To Chinese Summary`, mixed-case, diacritic-bearing, and Chinese mode names; confirm `ts` finds both built-in modes with Simple first, `tcs` ranks the Chinese mode first, and search supports case-insensitive, diacritic-insensitive, Chinese substring, and Chinese ordered-character matching.
 - Arrow navigation: press `Up` / `Down` through filtered modes and confirm the highlight clamps at the first and last result instead of wrapping.
 - `Tab` in the launcher: confirm it commits the highlighted mode and focuses the source editor.
-- `Return` in the launcher: outside active IME composition, confirm it is consumed, performs no action, and leaves the launcher open. During Chinese IME composition, confirm it accepts the text or candidate normally without unexpectedly entering the source editor.
-- No matches: enter a query with no matching modes, confirm the empty state appears, and confirm `Tab` does not advance to the editor.
+- `Return` in the launcher: confirm both main Return and keypad Enter commit the highlighted mode and focus the source editor. Confirm Command-, Shift-, Option-, and Control-modified Return stay in the launcher. During Chinese IME composition, confirm Return accepts the text or candidate without entering the source editor, then a subsequent Return commits the highlighted mode.
+- No matches: enter a query with no matching modes, confirm the empty state appears, and confirm `Tab`, Return, and keypad Enter do not advance to the editor.
 - Back to modes: after committing a mode from a nonempty query, use the editor's back control and confirm the query clears while the source, any existing result, and the current mode highlight remain.
 - Reopen persistence: commit a non-first visible mode, close and reopen the popover, and confirm that last committed mode is highlighted.
 - Missing saved mode: hide the last committed mode in Settings, then delete it in a separate pass; each time, reopen the popover and confirm the first visible mode in Settings order is highlighted.

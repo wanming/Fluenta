@@ -145,6 +145,7 @@ struct WritingModePickerView: View {
 
                 if isHighlighted {
                     HStack(spacing: 4) {
+                        Keycap(title: "↵", compact: true)
                         Keycap(title: "tab", compact: true)
                         Text(L10n.text("popover.modeSearch.write"))
                             .font(.system(size: 9, weight: .medium))
@@ -207,18 +208,20 @@ struct WritingModePickerView: View {
                     .padding(.leading, 2)
             }
             .accessibilityElement(children: .combine)
-            footerHint(key: "tab", label: L10n.text("popover.modeSearch.write"))
+            footerHint(keys: ["↵", "tab"], label: L10n.text("popover.modeSearch.write"))
             Spacer()
-            footerHint(key: "esc", label: L10n.text("popover.hint.close"))
+            footerHint(keys: ["esc"], label: L10n.text("popover.hint.close"))
         }
         .padding(.horizontal, 12)
         .frame(height: Self.footerHeight)
         .background(InkletTheme.toolbarBackground)
     }
 
-    private func footerHint(key: String, label: String) -> some View {
+    private func footerHint(keys: [String], label: String) -> some View {
         HStack(spacing: 4) {
-            Keycap(title: key, compact: true)
+            ForEach(keys, id: \.self) { key in
+                Keycap(title: key, compact: true)
+            }
             Text(label)
                 .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(InkletTheme.textSecondary)

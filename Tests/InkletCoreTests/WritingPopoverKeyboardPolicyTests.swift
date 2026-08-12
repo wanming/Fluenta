@@ -14,13 +14,28 @@ final class WritingPopoverKeyboardPolicyTests: XCTestCase {
         }
     }
 
-    func testPickerReturnKeysConsumeWithoutTriggeringAnAction() {
+    func testPickerPlainReturnKeysCommitHighlightedMode() {
         for keyCode: UInt16 in [36, 76] {
-            XCTAssertEqual(action(route: .modePicker, keyCode: keyCode), .consume)
-            XCTAssertEqual(
-                action(route: .modePicker, keyCode: keyCode, modifiers: [.command, .shift]),
-                .consume
-            )
+            XCTAssertEqual(action(route: .modePicker, keyCode: keyCode), .commitMode)
+        }
+    }
+
+    func testPickerModifiedReturnKeysAreConsumedWithoutCommitting() {
+        let modifiers: [WritingPopoverKeyboardModifiers] = [
+            .command,
+            .shift,
+            .option,
+            .control,
+            [.command, .shift, .option, .control]
+        ]
+
+        for keyCode: UInt16 in [36, 76] {
+            for modifierSet in modifiers {
+                XCTAssertEqual(
+                    action(route: .modePicker, keyCode: keyCode, modifiers: modifierSet),
+                    .consume
+                )
+            }
         }
     }
 
@@ -62,14 +77,16 @@ final class WritingPopoverKeyboardPolicyTests: XCTestCase {
         XCTAssertEqual(action(route: .modePicker, keyCode: 0), .passThrough)
     }
 
-    func testPickerTabStillConsumesWhenFilteringHasNoResultToCommit() {
+    func testPickerCommitKeysRemainSafeWhenFilteringHasNoResult() {
         var pickerState = WritingModePickerState(items: [
             WritingModePickerItem(id: "summary", title: "Summary")
         ])
         pickerState.setQuery("missing")
 
         XCTAssertNil(pickerState.highlightedModeID)
-        XCTAssertEqual(action(route: .modePicker, keyCode: 48), .commitMode)
+        for keyCode: UInt16 in [48, 36, 76] {
+            XCTAssertEqual(action(route: .modePicker, keyCode: keyCode), .commitMode)
+        }
     }
 
     func testEditorCompositionPassesEscapeAndBothReturnKeysThrough() {
