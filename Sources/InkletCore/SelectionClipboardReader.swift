@@ -17,23 +17,49 @@ public final class SelectionClipboardReader {
     public typealias CopyShortcutSender = @MainActor (CGEventSource?) throws -> Void
     public typealias DelayProvider = @MainActor (UInt64) async -> Void
     public typealias ShortcutReadWrapper = @MainActor (@escaping @MainActor () async -> String?) async -> String?
+    public typealias SourceProcessValidator = @MainActor @Sendable (pid_t) -> Bool
+
+    private struct ActiveRead {
+        let token: UUID
+        let task: Task<SelectedTextReadResult, Never>
+    }
+
+    private struct PasteboardTransaction {
+        let token: UUID
+        let snapshot: PasteboardSnapshot
+        let initialChangeCount: Int
+        var observedCopyChangeCount: Int?
+    }
+
+    private enum PasteboardReadResult {
+        case text(String)
+        case empty
+        case invalidSource
+    }
 
     private let pasteboard: NSPasteboard
     private let clipboardService: ClipboardService
     private let eventSource: CGEventSource?
     private let pollIntervalNanoseconds: UInt64
     private let pollTimeoutNanoseconds: UInt64
+    private let sourceProcessValidator: SourceProcessValidator
     private let isTrusted: TrustChecker
     private let copyMenuActionPerformer: CopyMenuActionPerformer
     private let copyShortcutSender: CopyShortcutSender
     private let delayProvider: DelayProvider
     private let shortcutReadWrapper: ShortcutReadWrapper
+    private var activeRead: ActiveRead?
+    private var pasteboardTransaction: PasteboardTransaction?
+    private var latestReadRequestToken: UUID?
 
     public init(
         pasteboard: NSPasteboard = .general,
         eventSource: CGEventSource? = CGEventSource(stateID: .hidSystemState),
         pollIntervalNanoseconds: UInt64 = 5_000_000,
         pollTimeoutNanoseconds: UInt64 = 400_000_000,
+        sourceProcessValidator: @escaping SourceProcessValidator = {
+            SelectionSourceValidator().isCurrent($0)
+        },
         isTrusted: @escaping TrustChecker = { AXIsProcessTrusted() },
         copyMenuActionPerformer: @escaping CopyMenuActionPerformer = {
             SelectionClipboardReader.systemPerformCopyMenuAction(sourceProcessIdentifier: $0)
@@ -53,6 +79,7 @@ public final class SelectionClipboardReader {
         self.eventSource = eventSource
         self.pollIntervalNanoseconds = pollIntervalNanoseconds
         self.pollTimeoutNanoseconds = pollTimeoutNanoseconds
+        self.sourceProcessValidator = sourceProcessValidator
         self.isTrusted = isTrusted
         self.copyMenuActionPerformer = copyMenuActionPerformer
         self.copyShortcutSender = copyShortcutSender
@@ -61,11 +88,84 @@ public final class SelectionClipboardReader {
     }
 
     public func readSelectedText(
-        sourceProcessIdentifier: pid_t?,
+        sourceProcessIdentifier: pid_t,
         forceSelectionMode: SelectionForceSelectionMode = .menuCopyThenShortcut
     ) async -> SelectedTextReadResult {
-        guard let sourceProcessIdentifier else {
-            return .unsupported
+        let token = UUID()
+        latestReadRequestToken = token
+        guard let activeRead = await beginActiveRead(
+            token: token,
+            sourceProcessIdentifier: sourceProcessIdentifier,
+            forceSelectionMode: forceSelectionMode
+        ) else {
+            if latestReadRequestToken == token {
+                latestReadRequestToken = nil
+            }
+            return .emptySelection
+        }
+
+        let result = await withTaskCancellationHandler {
+            await activeRead.task.value
+        } onCancel: {
+            activeRead.task.cancel()
+        }
+
+        if self.activeRead?.token == activeRead.token {
+            self.activeRead = nil
+        }
+        if latestReadRequestToken == token {
+            latestReadRequestToken = nil
+        }
+        return Task.isCancelled ? .emptySelection : result
+    }
+
+    private func beginActiveRead(
+        token: UUID,
+        sourceProcessIdentifier: pid_t,
+        forceSelectionMode: SelectionForceSelectionMode
+    ) async -> ActiveRead? {
+        while let precedingRead = activeRead {
+            guard latestReadRequestToken == token,
+                  !Task.isCancelled
+            else {
+                return nil
+            }
+            precedingRead.task.cancel()
+            _ = await precedingRead.task.value
+            if activeRead?.token == precedingRead.token {
+                activeRead = nil
+            }
+            guard latestReadRequestToken == token,
+                  !Task.isCancelled
+            else {
+                return nil
+            }
+        }
+
+        guard latestReadRequestToken == token,
+              !Task.isCancelled
+        else {
+            return nil
+        }
+        let task = Task { @MainActor in
+            await self.performRead(
+                token: token,
+                sourceProcessIdentifier: sourceProcessIdentifier,
+                forceSelectionMode: forceSelectionMode
+            )
+        }
+        let activeRead = ActiveRead(token: token, task: task)
+        self.activeRead = activeRead
+        return activeRead
+    }
+
+    private func performRead(
+        token: UUID,
+        sourceProcessIdentifier: pid_t,
+        forceSelectionMode: SelectionForceSelectionMode
+    ) async -> SelectedTextReadResult {
+        guard !Task.isCancelled else {
+            return .emptySelection
         }
 
         switch forceSelectionMode {
@@ -73,20 +173,29 @@ public final class SelectionClipboardReader {
             return .unsupported
         case .menuCopyOnly:
             return await readSelectedTextByMenuAction(
+                token: token,
                 sourceProcessIdentifier: sourceProcessIdentifier,
                 fallbackToShortcut: false
             )
         case .menuCopyThenShortcut:
             return await readSelectedTextByMenuAction(
+                token: token,
                 sourceProcessIdentifier: sourceProcessIdentifier,
                 fallbackToShortcut: true
             )
         case .shortcutThenMenuCopy:
-            let shortcutResult = await readSelectedTextByShortcut()
+            let shortcutResult = await readSelectedTextByShortcut(
+                token: token,
+                sourceProcessIdentifier: sourceProcessIdentifier
+            )
             if case .success = shortcutResult {
                 return shortcutResult
             }
+            guard !Task.isCancelled else {
+                return .emptySelection
+            }
             let menuResult = await readSelectedTextByMenuAction(
+                token: token,
                 sourceProcessIdentifier: sourceProcessIdentifier,
                 fallbackToShortcut: false
             )
@@ -94,23 +203,62 @@ public final class SelectionClipboardReader {
         }
     }
 
+    public func cancelActiveRead() async {
+        latestReadRequestToken = nil
+        guard let activeRead else {
+            return
+        }
+        activeRead.task.cancel()
+        _ = await activeRead.task.value
+        if self.activeRead?.token == activeRead.token {
+            self.activeRead = nil
+        }
+    }
+
+    // Compatibility for the current app caller; remove when its source PID is required at the call site.
+    public func readSelectedText(
+        sourceProcessIdentifier: pid_t?,
+        forceSelectionMode: SelectionForceSelectionMode = .menuCopyThenShortcut
+    ) async -> SelectedTextReadResult {
+        guard let sourceProcessIdentifier else {
+            return .emptySelection
+        }
+        return await readSelectedText(
+            sourceProcessIdentifier: sourceProcessIdentifier,
+            forceSelectionMode: forceSelectionMode
+        )
+    }
+
     private func readSelectedTextByMenuAction(
+        token: UUID,
         sourceProcessIdentifier: pid_t,
         fallbackToShortcut: Bool
     ) async -> SelectedTextReadResult {
         var menuActionResult = SelectionCopyMenuActionResult.noMenuItem
-        let menuActionText = await readPasteboardText {
+        let pasteboardResult = await readPasteboardText(
+            token: token,
+            sourceProcessIdentifier: sourceProcessIdentifier
+        ) {
             menuActionResult = self.copyMenuActionPerformer(sourceProcessIdentifier)
             return menuActionResult == .performed
         }
+        if case .invalidSource = pasteboardResult {
+            return .emptySelection
+        }
+
         switch menuActionResult {
         case .performed:
-            if let text = menuActionText {
+            if case .text(let text) = pasteboardResult {
                 return .success(text)
             }
             return .emptySelection
         case .noMenuItem:
-            return fallbackToShortcut ? await readSelectedTextByShortcut() : .unsupported
+            return fallbackToShortcut
+                ? await readSelectedTextByShortcut(
+                    token: token,
+                    sourceProcessIdentifier: sourceProcessIdentifier
+                )
+                : .unsupported
         case .disabled:
             return .emptySelection
         case .failed(let message):
@@ -169,22 +317,42 @@ public final class SelectionClipboardReader {
         keyUp.post(tap: .cghidEventTap)
     }
 
-    private func readSelectedTextByShortcut() async -> SelectedTextReadResult {
+    private func readSelectedTextByShortcut(
+        token: UUID,
+        sourceProcessIdentifier: pid_t
+    ) async -> SelectedTextReadResult {
+        guard sourceProcessValidator(sourceProcessIdentifier) else {
+            return .emptySelection
+        }
         guard isTrusted() else {
             return .permissionDenied
         }
 
-        let text = await shortcutReadWrapper {
-            await self.readPasteboardText {
+        var pasteboardResult = PasteboardReadResult.empty
+        let wrappedText = await shortcutReadWrapper {
+            pasteboardResult = await self.readPasteboardText(
+                token: token,
+                sourceProcessIdentifier: sourceProcessIdentifier
+            ) {
                 try self.copyShortcutSender(self.eventSource)
                 return true
             }
+            if case .text(let text) = pasteboardResult {
+                return text
+            }
+            return nil
         }
 
-        guard let text else {
+        guard !Task.isCancelled else {
             return .emptySelection
         }
-        return .success(text)
+        guard case .text = pasteboardResult,
+              let wrappedText,
+              sourceProcessValidator(sourceProcessIdentifier)
+        else {
+            return .emptySelection
+        }
+        return .success(wrappedText)
     }
 
     private func preferredFallbackResult(
@@ -206,32 +374,60 @@ public final class SelectionClipboardReader {
         return secondary
     }
 
-    private func readPasteboardText(after action: @MainActor () throws -> Bool) async -> String? {
-        let snapshot = clipboardService.save()
-        let initialChangeCount = pasteboard.changeCount
+    private func readPasteboardText(
+        token: UUID,
+        sourceProcessIdentifier: pid_t,
+        after action: @MainActor () throws -> Bool
+    ) async -> PasteboardReadResult {
+        pasteboardTransaction = PasteboardTransaction(
+            token: token,
+            snapshot: clipboardService.save(),
+            initialChangeCount: pasteboard.changeCount,
+            observedCopyChangeCount: nil
+        )
+        defer {
+            finishPasteboardTransaction(token: token)
+        }
 
+        guard sourceProcessValidator(sourceProcessIdentifier) else {
+            return .invalidSource
+        }
+
+        let shouldPoll: Bool
         do {
-            guard try action() else {
-                _ = clipboardService.restore(snapshot)
-                return nil
-            }
+            shouldPoll = try action()
         } catch {
-            _ = clipboardService.restore(snapshot)
-            return nil
+            recordObservedPasteboardChange(token: token)
+            return .empty
+        }
+        recordObservedPasteboardChange(token: token)
+        guard shouldPoll else {
+            return .empty
         }
 
         var elapsedNanoseconds: UInt64 = 0
         while elapsedNanoseconds < pollTimeoutNanoseconds {
             if Task.isCancelled {
-                break
+                return .empty
             }
 
-            if pasteboard.changeCount != initialChangeCount,
-               let text = pasteboard.string(forType: .string)?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-               !text.isEmpty {
-                _ = clipboardService.restore(snapshot)
-                return text
+            recordObservedPasteboardChange(token: token)
+            if let observedCopyChangeCount = pasteboardTransaction?.observedCopyChangeCount {
+                guard pasteboard.changeCount == observedCopyChangeCount else {
+                    return .empty
+                }
+
+                if let text = pasteboard.string(forType: .string)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                   !text.isEmpty {
+                    guard sourceProcessValidator(sourceProcessIdentifier) else {
+                        return .invalidSource
+                    }
+                    guard pasteboard.changeCount == observedCopyChangeCount else {
+                        return .empty
+                    }
+                    return .text(text)
+                }
             }
 
             let nextDelay = min(pollIntervalNanoseconds, pollTimeoutNanoseconds - elapsedNanoseconds)
@@ -239,8 +435,40 @@ public final class SelectionClipboardReader {
             elapsedNanoseconds += nextDelay
         }
 
-        _ = clipboardService.restore(snapshot)
-        return nil
+        return .empty
+    }
+
+    private func recordObservedPasteboardChange(token: UUID) {
+        guard var transaction = pasteboardTransaction,
+              transaction.token == token,
+              transaction.observedCopyChangeCount == nil,
+              pasteboard.changeCount != transaction.initialChangeCount
+        else {
+            return
+        }
+        transaction.observedCopyChangeCount = pasteboard.changeCount
+        pasteboardTransaction = transaction
+    }
+
+    private func finishPasteboardTransaction(token: UUID) {
+        guard let transaction = pasteboardTransaction,
+              transaction.token == token
+        else {
+            return
+        }
+        defer {
+            if pasteboardTransaction?.token == token {
+                pasteboardTransaction = nil
+            }
+        }
+
+        guard activeRead?.token == token,
+              let observedCopyChangeCount = transaction.observedCopyChangeCount,
+              pasteboard.changeCount == observedCopyChangeCount
+        else {
+            return
+        }
+        _ = clipboardService.restore(transaction.snapshot)
     }
 
     public static func systemWithMutedAlertVolume(
