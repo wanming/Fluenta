@@ -1343,6 +1343,109 @@ final class LegacySandboxDataMigratorTests: XCTestCase {
         XCTAssertEqual(fileSystem.data(at: fixture.preferenceAttemptGuardURL), fixture.guardContents)
     }
 
+    func testAutomaticCaptureCommitsBaselineBeforeVerifiedGuard() throws {
+        let eventLog = MigrationTestEventLog()
+        let fileSystem = MigrationTestFileSystem(eventLog: eventLog)
+        let stateStore = MigrationTestStateStore(eventLog: eventLog)
+        let fixture = makeMigrator(fileSystem: fileSystem, stateStore: stateStore)
+        try configureLegacySources(
+            fixture,
+            fileSystem: fileSystem,
+            preferences: [InkletPreferenceKeys.interfaceLanguage: "legacy"]
+        )
+
+        let outcome = fixture.migrator.migrateAutomatically()
+
+        XCTAssertEqual(outcome.results[.preferences], .completed(changedDestination: true))
+        let events = eventLog.events
+        guard let baselineSetIndex = events.firstIndex(of: .preferenceBaselineSet),
+              let verifiedGuardIndex = events.firstIndex(
+                  of: .preferenceGuardWrite(fixture.guardContents)
+              ),
+              let baselineReadbackIndex = events.indices.first(where: { index in
+                  index > baselineSetIndex && events[index] == .preferenceBaselineRead
+              }) else {
+            return XCTFail("Expected the complete preference baseline commit sequence")
+        }
+        XCTAssertLessThan(baselineSetIndex, baselineReadbackIndex)
+        XCTAssertLessThan(baselineReadbackIndex, verifiedGuardIndex)
+    }
+
+    func testAttemptedGuardWithExactBaselineRecoversAutomaticMigration() throws {
+        let fileSystem = MigrationTestFileSystem()
+        let stateStore = MigrationTestStateStore()
+        let fixture = makeMigrator(fileSystem: fileSystem, stateStore: stateStore)
+        try preparePreferenceRecovery(
+            fixture,
+            fileSystem: fileSystem,
+            stateStore: stateStore,
+            guardData: fixture.attemptedGuardContents
+        )
+
+        let outcome = fixture.makeFreshMigrator(
+            fileSystem: fileSystem,
+            stateStore: stateStore
+        ).migrateAutomatically()
+
+        assertPreferenceRecovery(
+            outcome,
+            fixture: fixture,
+            fileSystem: fileSystem,
+            stateStore: stateStore,
+            expectedBaselineSetCount: 0
+        )
+    }
+
+    func testAttemptedGuardWithExactBaselineRecoversUserAssistedMigration() throws {
+        let fileSystem = MigrationTestFileSystem()
+        let stateStore = MigrationTestStateStore()
+        let fixture = makeMigrator(fileSystem: fileSystem, stateStore: stateStore)
+        try preparePreferenceRecovery(
+            fixture,
+            fileSystem: fileSystem,
+            stateStore: stateStore,
+            guardData: fixture.attemptedGuardContents
+        )
+
+        let outcome = fixture.makeFreshMigrator(
+            fileSystem: fileSystem,
+            stateStore: stateStore
+        ).migrateUserSelectedData(at: fixture.legacyRoot)
+
+        assertPreferenceRecovery(
+            outcome,
+            fixture: fixture,
+            fileSystem: fileSystem,
+            stateStore: stateStore,
+            expectedBaselineSetCount: 0
+        )
+    }
+
+    func testNewAttemptWithExistingBaselinePromotesWithoutRecapture() throws {
+        let fileSystem = MigrationTestFileSystem()
+        let stateStore = MigrationTestStateStore()
+        let fixture = makeMigrator(fileSystem: fileSystem, stateStore: stateStore)
+        try preparePreferenceRecovery(
+            fixture,
+            fileSystem: fileSystem,
+            stateStore: stateStore,
+            guardData: nil
+        )
+
+        let outcome = fixture.makeFreshMigrator(
+            fileSystem: fileSystem,
+            stateStore: stateStore
+        ).migrateUserSelectedData(at: fixture.legacyRoot)
+
+        assertPreferenceRecovery(
+            outcome,
+            fixture: fixture,
+            fileSystem: fileSystem,
+            stateStore: stateStore,
+            expectedBaselineSetCount: 0
+        )
+    }
+
     func testBaselinePersistenceFailureLeavesDurableGuardAndFutureInstanceFailsClosed() throws {
         let fileSystem = MigrationTestFileSystem()
         let stateStore = MigrationTestStateStore()
@@ -1379,38 +1482,49 @@ final class LegacySandboxDataMigratorTests: XCTestCase {
         XCTAssertNil(stateStore.versions[.preferences])
     }
 
-    func testBaselineReadbackFailureRemainsFailClosedAcrossFreshInstance() throws {
+    func testBaselineReadbackFailureRecoversFromDurableBaseline() throws {
         let fileSystem = MigrationTestFileSystem()
         let stateStore = MigrationTestStateStore()
         stateStore.failBaselineReadAfterSet = true
         let fixture = makeMigrator(fileSystem: fileSystem, stateStore: stateStore)
-        fixture.defaults.set("initial", forKey: InkletPreferenceKeys.interfaceLanguage)
-        XCTAssertTrue(fixture.defaults.synchronize())
-        try configureLegacySources(
-            fixture,
-            fileSystem: fileSystem,
-            preferences: [InkletPreferenceKeys.interfaceLanguage: "legacy"]
-        )
+        try prepareInitialPreferenceMigration(fixture, fileSystem: fileSystem)
 
         let firstOutcome = fixture.migrator.migrateAutomatically()
 
         assertIncomplete(firstOutcome.results[.preferences], kind: .writeFailed)
         XCTAssertNotNil(stateStore.baseline)
-        fixture.defaults.set("post-failure-edit", forKey: InkletPreferenceKeys.interfaceLanguage)
-        XCTAssertTrue(fixture.defaults.synchronize())
         stateStore.failBaselineReadAfterSet = false
-        let freshMigrator = fixture.makeFreshMigrator(
+        assertAutomaticPreferenceRetryRecovers(
+            fixture,
             fileSystem: fileSystem,
             stateStore: stateStore
         )
+    }
 
-        let retryOutcome = freshMigrator.migrateAutomatically()
+    func testVerifiedGuardPreReplacementFailureRecoversFromDurableBaseline() throws {
+        let fileSystem = MigrationTestFileSystem()
+        let stateStore = MigrationTestStateStore()
+        let fixture = makeMigrator(fileSystem: fileSystem, stateStore: stateStore)
+        fileSystem.failWrite(
+            at: fixture.preferenceAttemptGuardURL,
+            onAttempt: 2,
+            with: NSError(domain: NSPOSIXErrorDomain, code: Int(EIO))
+        )
+        try prepareInitialPreferenceMigration(fixture, fileSystem: fileSystem)
 
-        assertIncomplete(retryOutcome.results[.preferences], kind: .writeFailed)
-        XCTAssertNil(stateStore.versions[.preferences])
+        let firstOutcome = fixture.migrator.migrateAutomatically()
+
+        assertIncomplete(firstOutcome.results[.preferences], kind: .writeFailed)
+        XCTAssertFalse(firstOutcome.changedDestination)
+        XCTAssertNotNil(stateStore.baseline)
         XCTAssertEqual(
-            fixture.persistentDomain[InkletPreferenceKeys.interfaceLanguage] as? String,
-            "post-failure-edit"
+            fileSystem.data(at: fixture.preferenceAttemptGuardURL),
+            fixture.attemptedGuardContents
+        )
+        assertAutomaticPreferenceRetryRecovers(
+            fixture,
+            fileSystem: fileSystem,
+            stateStore: stateStore
         )
     }
 
@@ -1456,7 +1570,7 @@ final class LegacySandboxDataMigratorTests: XCTestCase {
         XCTAssertNil(stateStore.versions[.preferences])
     }
 
-    func testPreferenceVerifiedGuardPostRenameDurabilityFailureStaysFailClosed() throws {
+    func testPreferenceVerifiedGuardPostRenameDurabilityFailureRecovers() throws {
         let fileSystem = MigrationTestFileSystem()
         let stateStore = MigrationTestStateStore()
         let fixture = makeMigrator(fileSystem: fileSystem, stateStore: stateStore)
@@ -1465,37 +1579,68 @@ final class LegacySandboxDataMigratorTests: XCTestCase {
             onAttempt: 2,
             with: NSError(domain: NSPOSIXErrorDomain, code: Int(EIO))
         )
-        fixture.defaults.set("initial", forKey: InkletPreferenceKeys.interfaceLanguage)
-        XCTAssertTrue(fixture.defaults.synchronize())
-        try configureLegacySources(
-            fixture,
-            fileSystem: fileSystem,
-            preferences: [InkletPreferenceKeys.interfaceLanguage: "legacy"]
-        )
+        try prepareInitialPreferenceMigration(fixture, fileSystem: fileSystem)
 
         let firstOutcome = fixture.migrator.migrateAutomatically()
 
         assertIncomplete(firstOutcome.results[.preferences], kind: .writeFailed)
         XCTAssertFalse(firstOutcome.changedDestination)
-        XCTAssertNil(stateStore.baseline)
+        XCTAssertNotNil(stateStore.baseline)
         XCTAssertEqual(
             fileSystem.data(at: fixture.preferenceAttemptGuardURL),
             fixture.guardContents
         )
-        fixture.defaults.set("post-failure-edit", forKey: InkletPreferenceKeys.interfaceLanguage)
-        XCTAssertTrue(fixture.defaults.synchronize())
-
-        let retryOutcome = fixture.makeFreshMigrator(
+        assertAutomaticPreferenceRetryRecovers(
+            fixture,
             fileSystem: fileSystem,
             stateStore: stateStore
-        ).migrateAutomatically()
-
-        assertIncomplete(retryOutcome.results[.preferences], kind: .writeFailed)
-        XCTAssertEqual(
-            fixture.persistentDomain[InkletPreferenceKeys.interfaceLanguage] as? String,
-            "post-failure-edit"
         )
-        XCTAssertNil(stateStore.versions[.preferences])
+    }
+
+    func testVerifiedGuardWithoutBaselineRemainsFailClosed() throws {
+        let fileSystem = MigrationTestFileSystem()
+        let stateStore = MigrationTestStateStore()
+        let fixture = makeMigrator(fileSystem: fileSystem, stateStore: stateStore)
+        fileSystem.setData(fixture.guardContents, at: fixture.preferenceAttemptGuardURL)
+        try assertAutomaticPreferenceMigrationFailsClosed(
+            fixture,
+            fileSystem: fileSystem,
+            stateStore: stateStore,
+            expectedGuardData: fixture.guardContents
+        )
+        XCTAssertNil(stateStore.baseline)
+    }
+
+    func testBaselineReadFailureRemainsFailClosedWithoutCapture() throws {
+        let fileSystem = MigrationTestFileSystem()
+        let stateStore = MigrationTestStateStore()
+        stateStore.failReadBaseline = true
+        let fixture = makeMigrator(fileSystem: fileSystem, stateStore: stateStore)
+        try assertAutomaticPreferenceMigrationFailsClosed(
+            fixture,
+            fileSystem: fileSystem,
+            stateStore: stateStore,
+            expectedGuardData: fixture.attemptedGuardContents
+        )
+        XCTAssertNil(stateStore.baseline)
+    }
+
+    func testAttemptedGuardWithIncompleteBaselineRemainsFailClosed() throws {
+        let fileSystem = MigrationTestFileSystem()
+        let stateStore = MigrationTestStateStore()
+        let fixture = makeMigrator(fileSystem: fileSystem, stateStore: stateStore)
+        stateStore.baseline = [InkletPreferenceKeys.interfaceLanguage: .absent]
+        fileSystem.setData(
+            fixture.attemptedGuardContents,
+            at: fixture.preferenceAttemptGuardURL
+        )
+        try assertAutomaticPreferenceMigrationFailsClosed(
+            fixture,
+            fileSystem: fileSystem,
+            stateStore: stateStore,
+            expectedGuardData: fixture.attemptedGuardContents
+        )
+        XCTAssertNotNil(stateStore.baseline)
     }
 
     func testAttemptGuardWriteFailurePreventsPreferenceOverwrite() throws {
@@ -2584,6 +2729,147 @@ final class LegacySandboxDataMigratorTests: XCTestCase {
         }
     }
 
+    private func prepareInitialPreferenceMigration(
+        _ fixture: MigratorTestFixture,
+        fileSystem: MigrationTestFileSystem
+    ) throws {
+        fixture.defaults.set("initial", forKey: InkletPreferenceKeys.interfaceLanguage)
+        XCTAssertTrue(fixture.defaults.synchronize())
+        try configureLegacySources(
+            fixture,
+            fileSystem: fileSystem,
+            preferences: [InkletPreferenceKeys.interfaceLanguage: "legacy"]
+        )
+    }
+
+    private func preparePreferenceRecovery(
+        _ fixture: MigratorTestFixture,
+        fileSystem: MigrationTestFileSystem,
+        stateStore: MigrationTestStateStore,
+        guardData: Data?
+    ) throws {
+        fixture.defaults.set("baseline-value", forKey: InkletPreferenceKeys.interfaceLanguage)
+        XCTAssertTrue(fixture.defaults.synchronize())
+        stateStore.baseline = try preferenceBaseline(for: fixture.persistentDomain)
+        if let guardData {
+            fileSystem.setData(guardData, at: fixture.preferenceAttemptGuardURL)
+        }
+        fixture.defaults.set("post-baseline-edit", forKey: InkletPreferenceKeys.interfaceLanguage)
+        XCTAssertTrue(fixture.defaults.synchronize())
+        try configureLegacySources(
+            fixture,
+            fileSystem: fileSystem,
+            preferences: [InkletPreferenceKeys.interfaceLanguage: "legacy"]
+        )
+    }
+
+    private func assertPreferenceRecovery(
+        _ outcome: LegacySandboxMigrationOutcome,
+        fixture: MigratorTestFixture,
+        fileSystem: MigrationTestFileSystem,
+        stateStore: MigrationTestStateStore,
+        expectedBaselineSetCount: Int,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertEqual(
+            outcome.results[.preferences],
+            .completed(changedDestination: false),
+            file: file,
+            line: line
+        )
+        XCTAssertEqual(
+            fixture.persistentDomain[InkletPreferenceKeys.interfaceLanguage] as? String,
+            "post-baseline-edit",
+            file: file,
+            line: line
+        )
+        XCTAssertEqual(
+            fileSystem.data(at: fixture.preferenceAttemptGuardURL),
+            fixture.guardContents,
+            file: file,
+            line: line
+        )
+        XCTAssertEqual(stateStore.versions[.preferences], 1, file: file, line: line)
+        XCTAssertEqual(
+            stateStore.setBaselineCalls.count,
+            expectedBaselineSetCount,
+            file: file,
+            line: line
+        )
+    }
+
+    private func assertAutomaticPreferenceRetryRecovers(
+        _ fixture: MigratorTestFixture,
+        fileSystem: MigrationTestFileSystem,
+        stateStore: MigrationTestStateStore,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        fixture.defaults.set("post-baseline-edit", forKey: InkletPreferenceKeys.interfaceLanguage)
+        XCTAssertTrue(fixture.defaults.synchronize(), file: file, line: line)
+        let outcome = fixture.makeFreshMigrator(
+            fileSystem: fileSystem,
+            stateStore: stateStore
+        ).migrateAutomatically()
+        assertPreferenceRecovery(
+            outcome,
+            fixture: fixture,
+            fileSystem: fileSystem,
+            stateStore: stateStore,
+            expectedBaselineSetCount: 1,
+            file: file,
+            line: line
+        )
+    }
+
+    private func assertAutomaticPreferenceMigrationFailsClosed(
+        _ fixture: MigratorTestFixture,
+        fileSystem: MigrationTestFileSystem,
+        stateStore: MigrationTestStateStore,
+        expectedGuardData: Data,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        fixture.defaults.set("user-current", forKey: InkletPreferenceKeys.interfaceLanguage)
+        XCTAssertTrue(fixture.defaults.synchronize(), file: file, line: line)
+        try configureLegacySources(
+            fixture,
+            fileSystem: fileSystem,
+            preferences: [InkletPreferenceKeys.interfaceLanguage: "legacy"]
+        )
+
+        let outcome = fixture.migrator.migrateAutomatically()
+
+        assertIncomplete(outcome.results[.preferences], kind: .writeFailed, file: file, line: line)
+        XCTAssertEqual(
+            fixture.persistentDomain[InkletPreferenceKeys.interfaceLanguage] as? String,
+            "user-current",
+            file: file,
+            line: line
+        )
+        XCTAssertEqual(
+            fileSystem.data(at: fixture.preferenceAttemptGuardURL),
+            expectedGuardData,
+            file: file,
+            line: line
+        )
+        XCTAssertNil(stateStore.versions[.preferences], file: file, line: line)
+        XCTAssertTrue(stateStore.setBaselineCalls.isEmpty, file: file, line: line)
+    }
+
+    private func preferenceBaseline(
+        for persistentDomain: [String: Any]
+    ) throws -> [String: PreferenceFingerprint] {
+        var baseline: [String: PreferenceFingerprint] = [:]
+        for key in InkletPreferenceKeys.recognizedLegacyKeys {
+            baseline[key] = try LegacyPreferenceFingerprinter.fingerprint(
+                of: persistentDomain[key]
+            )
+        }
+        return baseline
+    }
+
     private func encodedHistory(_ items: [HistoryItem]) throws -> Data {
         try HistoryJSONLCodec.encode(items)
     }
@@ -2643,6 +2929,20 @@ final class LegacySandboxDataMigratorTests: XCTestCase {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO))
         }
         return String(decoding: outputData, as: UTF8.self)
+    }
+}
+
+private enum MigrationTestEvent: Equatable, Sendable {
+    case preferenceBaselineRead
+    case preferenceBaselineSet
+    case preferenceGuardWrite(Data)
+}
+
+private final class MigrationTestEventLog: @unchecked Sendable {
+    private(set) var events: [MigrationTestEvent] = []
+
+    func record(_ event: MigrationTestEvent) {
+        events.append(event)
     }
 }
 
@@ -2706,10 +3006,12 @@ private struct MigratorTestFixture {
 }
 
 private final class MigrationTestFileSystem: LegacyMigrationFileSystem, @unchecked Sendable {
+    private let eventLog: MigrationTestEventLog?
     private var itemKinds: [String: Result<LegacyMigrationItemKind, NSError>] = [:]
     private var storedData: [String: Data] = [:]
     private var readFailures: [String: NSError] = [:]
     private var writeFailures: [String: NSError] = [:]
+    private var preReplacementWriteFailures: [String: [Int: NSError]] = [:]
     private var postReplacementWriteFailures: [String: [Int: NSError]] = [:]
     private var writeAttemptCounts: [String: Int] = [:]
     private(set) var itemKindURLs: [URL] = []
@@ -2718,6 +3020,10 @@ private final class MigrationTestFileSystem: LegacyMigrationFileSystem, @uncheck
     private(set) var createDirectoryURLs: [URL] = []
     private(set) var writeDataURLs: [URL] = []
     private(set) var successfulWriteURLs: [URL] = []
+
+    init(eventLog: MigrationTestEventLog? = nil) {
+        self.eventLog = eventLog
+    }
 
     var allURLs: [URL] {
         itemKindURLs
@@ -2771,6 +3077,14 @@ private final class MigrationTestFileSystem: LegacyMigrationFileSystem, @uncheck
         writeFailures[url.standardizedFileURL.path] = error
     }
 
+    func failWrite(
+        at url: URL,
+        onAttempt attempt: Int,
+        with error: NSError
+    ) {
+        preReplacementWriteFailures[url.standardizedFileURL.path, default: [:]][attempt] = error
+    }
+
     func failWriteAfterReplacing(
         at url: URL,
         onAttempt attempt: Int,
@@ -2807,9 +3121,15 @@ private final class MigrationTestFileSystem: LegacyMigrationFileSystem, @uncheck
     func writeDataAtomically(_ data: Data, to url: URL) throws {
         let standardizedURL = url.standardizedFileURL
         writeDataURLs.append(standardizedURL)
+        if standardizedURL.lastPathComponent == "legacy-migration.preference-baseline-attempted" {
+            eventLog?.record(.preferenceGuardWrite(data))
+        }
         let attempt = writeAttemptCounts[standardizedURL.path, default: 0] + 1
         writeAttemptCounts[standardizedURL.path] = attempt
         if let error = writeFailures[standardizedURL.path] {
+            throw error
+        }
+        if let error = preReplacementWriteFailures[standardizedURL.path]?[attempt] {
             throw error
         }
         storedData[standardizedURL.path] = data
@@ -2831,6 +3151,7 @@ private final class MigrationTestFileSystem: LegacyMigrationFileSystem, @uncheck
 }
 
 private final class MigrationTestStateStore: LegacyMigrationStateStore, @unchecked Sendable {
+    private let eventLog: MigrationTestEventLog?
     var versions: [LegacyMigrationComponent: Int] = [:]
     var baseline: [String: PreferenceFingerprint]?
     var failSetBaseline = false
@@ -2838,8 +3159,13 @@ private final class MigrationTestStateStore: LegacyMigrationStateStore, @uncheck
     var failBaselineReadAfterSet = false
     var markerFailures: Set<LegacyMigrationComponent> = []
     private(set) var reloadCount = 0
+    private(set) var setBaselineCalls: [[String: PreferenceFingerprint]] = []
     private(set) var setVersionCalls: [LegacyMigrationComponent] = []
     private var didSetBaseline = false
+
+    init(eventLog: MigrationTestEventLog? = nil) {
+        self.eventLog = eventLog
+    }
 
     func reload() throws {
         reloadCount += 1
@@ -2858,6 +3184,7 @@ private final class MigrationTestStateStore: LegacyMigrationStateStore, @uncheck
     }
 
     func preferenceBaseline() throws -> [String: PreferenceFingerprint]? {
+        eventLog?.record(.preferenceBaselineRead)
         if failReadBaseline || (failBaselineReadAfterSet && didSetBaseline) {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO))
         }
@@ -2865,6 +3192,8 @@ private final class MigrationTestStateStore: LegacyMigrationStateStore, @uncheck
     }
 
     func setPreferenceBaseline(_ baseline: [String: PreferenceFingerprint]) throws {
+        eventLog?.record(.preferenceBaselineSet)
+        setBaselineCalls.append(baseline)
         if failSetBaseline {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO))
         }

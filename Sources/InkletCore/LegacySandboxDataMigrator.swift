@@ -967,28 +967,24 @@ public final class LegacySandboxDataMigrator: @unchecked Sendable {
             throw baselineFailure()
         }
 
-        if guardState == .verified, let storedBaseline {
-            guard hasExactPreferenceBaselineKeys(storedBaseline) else {
+        if guardState == .verified {
+            guard let storedBaseline,
+                  hasExactPreferenceBaselineKeys(storedBaseline) else {
                 throw baselineFailure()
             }
             return storedBaseline
-        }
-
-        guard guardState == .newAttempt else {
-            throw baselineFailure()
         }
 
         if let storedBaseline {
             guard hasExactPreferenceBaselineKeys(storedBaseline) else {
                 throw baselineFailure()
             }
-            do {
-                try markPreferenceBaselineGuardVerified()
-            } catch {
-                try markPreferenceBaselineGuardAttempted()
-                throw baselineFailure()
-            }
+            try markPreferenceBaselineGuardVerified()
             return storedBaseline
+        }
+
+        guard guardState == .newAttempt else {
+            throw baselineFailure()
         }
 
         guard mode == .automatic else { throw baselineFailure() }
@@ -1011,16 +1007,15 @@ public final class LegacySandboxDataMigrator: @unchecked Sendable {
             throw baselineFailure()
         }
 
-        try markPreferenceBaselineGuardVerified()
         do {
             try stateStore.setPreferenceBaseline(baseline)
             guard try stateStore.preferenceBaseline() == baseline else {
                 throw LegacyMigrationStateStoreError.writeVerificationFailed
             }
         } catch {
-            try markPreferenceBaselineGuardAttempted()
             throw baselineFailure()
         }
+        try markPreferenceBaselineGuardVerified()
         return baseline
     }
 
@@ -1084,20 +1079,6 @@ public final class LegacySandboxDataMigrator: @unchecked Sendable {
                 to: preferenceBaselineAttemptGuardURL
             )
             try verifyPreferenceBaselineGuardData(preferenceBaselineVerifiedGuardData)
-        } catch let failure as LegacyMigrationFailure {
-            throw failure
-        } catch {
-            throw baselineFailure()
-        }
-    }
-
-    private func markPreferenceBaselineGuardAttempted() throws {
-        do {
-            try fileSystem.writeDataAtomically(
-                preferenceBaselineAttemptedGuardData,
-                to: preferenceBaselineAttemptGuardURL
-            )
-            try verifyPreferenceBaselineGuardData(preferenceBaselineAttemptedGuardData)
         } catch let failure as LegacyMigrationFailure {
             throw failure
         } catch {
