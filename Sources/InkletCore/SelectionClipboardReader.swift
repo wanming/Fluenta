@@ -10,6 +10,23 @@ public enum SelectionCopyMenuActionResult: Equatable, Sendable {
     case failed(String)
 }
 
+public struct SelectionClipboardUserCopyHandoff: Sendable {
+    public let id: UUID
+    public let boundaryChangeCount: Int
+
+    fileprivate let activeReadToken: UUID?
+    fileprivate let activeReadTask: Task<SelectedTextReadResult, Never>?
+    fileprivate let didRelinquishRestoration: Bool
+    fileprivate let didCaptureUnobservedSyntheticAction: Bool
+}
+
+public enum SelectionClipboardUserCopyHandoffOutcome: Equatable, Sendable {
+    case noActiveRead
+    case unobservedSyntheticAction
+    case restorationRelinquished
+    case completedWithoutPasteboardMutation
+}
+
 @MainActor
 public final class SelectionClipboardReader {
     public typealias TrustChecker = @MainActor () -> Bool
@@ -18,6 +35,13 @@ public final class SelectionClipboardReader {
     public typealias DelayProvider = @MainActor (UInt64) async -> Void
     public typealias ShortcutReadWrapper = @MainActor (@escaping @MainActor () async -> String?) async -> String?
     public typealias SourceProcessValidator = @MainActor @Sendable (pid_t) -> Bool
+
+    public static let syntheticCopyEventUserData: Int64 = 0x494E_4B4C_4554
+
+    struct CopyShortcutEvents {
+        let keyDown: CGEvent
+        let keyUp: CGEvent
+    }
 
     private struct ActiveRead {
         let token: UUID
@@ -28,6 +52,7 @@ public final class SelectionClipboardReader {
         let token: UUID
         let snapshot: PasteboardSnapshot
         let initialChangeCount: Int
+        var didDispatchCopyAction: Bool
         var observedCopyChangeCount: Int?
     }
 
@@ -51,6 +76,7 @@ public final class SelectionClipboardReader {
     private var activeRead: ActiveRead?
     private var pasteboardTransaction: PasteboardTransaction?
     private var latestReadRequestToken: UUID?
+    private var relinquishedTransactionTokens: Set<UUID> = []
 
     public init(
         pasteboard: NSPasteboard = .general,
@@ -215,6 +241,62 @@ public final class SelectionClipboardReader {
         }
     }
 
+    public func beginUserCopyHandoff() -> SelectionClipboardUserCopyHandoff {
+        latestReadRequestToken = nil
+        guard let activeRead else {
+            return SelectionClipboardUserCopyHandoff(
+                id: UUID(),
+                boundaryChangeCount: pasteboard.changeCount,
+                activeReadToken: nil,
+                activeReadTask: nil,
+                didRelinquishRestoration: false,
+                didCaptureUnobservedSyntheticAction: false
+            )
+        }
+
+        let transaction = pasteboardTransaction
+        let didCaptureUnobservedSyntheticAction = transaction?.token == activeRead.token
+            && transaction?.didDispatchCopyAction == true
+            && transaction?.observedCopyChangeCount == nil
+        let didRelinquishRestoration = transaction?.token == activeRead.token
+            && (transaction?.observedCopyChangeCount != nil
+                || transaction?.initialChangeCount != pasteboard.changeCount)
+        relinquishedTransactionTokens.insert(activeRead.token)
+        activeRead.task.cancel()
+
+        return SelectionClipboardUserCopyHandoff(
+            id: UUID(),
+            boundaryChangeCount: pasteboard.changeCount,
+            activeReadToken: activeRead.token,
+            activeReadTask: activeRead.task,
+            didRelinquishRestoration: didRelinquishRestoration,
+            didCaptureUnobservedSyntheticAction: didCaptureUnobservedSyntheticAction
+        )
+    }
+
+    public func finishUserCopyHandoff(
+        _ handoff: SelectionClipboardUserCopyHandoff
+    ) async -> SelectionClipboardUserCopyHandoffOutcome {
+        guard let activeReadToken = handoff.activeReadToken,
+              let activeReadTask = handoff.activeReadTask
+        else {
+            return .noActiveRead
+        }
+
+        _ = await activeReadTask.value
+        if activeRead?.token == activeReadToken {
+            activeRead = nil
+        }
+        relinquishedTransactionTokens.remove(activeReadToken)
+
+        if handoff.didCaptureUnobservedSyntheticAction {
+            return .unobservedSyntheticAction
+        }
+        return handoff.didRelinquishRestoration
+            ? .restorationRelinquished
+            : .completedWithoutPasteboardMutation
+    }
+
     private func readSelectedTextByMenuAction(
         token: UUID,
         sourceProcessIdentifier: pid_t,
@@ -282,6 +364,12 @@ public final class SelectionClipboardReader {
     }
 
     public static func systemSendCopyShortcut(eventSource: CGEventSource?) throws {
+        let events = try makeCopyShortcutEvents(eventSource: eventSource)
+        events.keyDown.post(tap: .cghidEventTap)
+        events.keyUp.post(tap: .cghidEventTap)
+    }
+
+    static func makeCopyShortcutEvents(eventSource: CGEventSource?) throws -> CopyShortcutEvents {
         guard let eventSource,
               let keyDown = CGEvent(
                 keyboardEventSource: eventSource,
@@ -299,8 +387,9 @@ public final class SelectionClipboardReader {
 
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
-        keyDown.post(tap: .cghidEventTap)
-        keyUp.post(tap: .cghidEventTap)
+        keyDown.setIntegerValueField(.eventSourceUserData, value: syntheticCopyEventUserData)
+        keyUp.setIntegerValueField(.eventSourceUserData, value: syntheticCopyEventUserData)
+        return CopyShortcutEvents(keyDown: keyDown, keyUp: keyUp)
     }
 
     private func readSelectedTextByShortcut(
@@ -365,10 +454,15 @@ public final class SelectionClipboardReader {
         sourceProcessIdentifier: pid_t,
         after action: @MainActor () throws -> Bool
     ) async -> PasteboardReadResult {
+        guard !Task.isCancelled else {
+            return .empty
+        }
+
         pasteboardTransaction = PasteboardTransaction(
             token: token,
             snapshot: clipboardService.save(),
             initialChangeCount: pasteboard.changeCount,
+            didDispatchCopyAction: false,
             observedCopyChangeCount: nil
         )
         defer {
@@ -385,6 +479,9 @@ public final class SelectionClipboardReader {
         } catch {
             recordObservedPasteboardChange(token: token)
             return .empty
+        }
+        if shouldPoll {
+            recordDispatchedCopyAction(token: token)
         }
         recordObservedPasteboardChange(token: token)
         guard shouldPoll else {
@@ -424,6 +521,16 @@ public final class SelectionClipboardReader {
         return .empty
     }
 
+    private func recordDispatchedCopyAction(token: UUID) {
+        guard var transaction = pasteboardTransaction,
+              transaction.token == token
+        else {
+            return
+        }
+        transaction.didDispatchCopyAction = true
+        pasteboardTransaction = transaction
+    }
+
     private func recordObservedPasteboardChange(token: UUID) {
         guard var transaction = pasteboardTransaction,
               transaction.token == token,
@@ -448,7 +555,8 @@ public final class SelectionClipboardReader {
             }
         }
 
-        guard activeRead?.token == token,
+        guard !relinquishedTransactionTokens.contains(token),
+              activeRead?.token == token,
               let observedCopyChangeCount = transaction.observedCopyChangeCount,
               pasteboard.changeCount == observedCopyChangeCount
         else {

@@ -315,6 +315,328 @@ final class SelectionClipboardReaderTests: XCTestCase {
     }
 
     @MainActor
+    func testUserCopyHandoffWithoutActiveReadCapturesBoundaryAndFinishesNoActiveRead() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("Existing clipboard", forType: .string))
+        let reader = SelectionClipboardReader(pasteboard: pasteboard)
+
+        let handoff = reader.beginUserCopyHandoff()
+        let outcome = await reader.finishUserCopyHandoff(handoff)
+
+        XCTAssertEqual(handoff.boundaryChangeCount, pasteboard.changeCount)
+        XCTAssertEqual(outcome, .noActiveRead)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Existing clipboard")
+    }
+
+    @MainActor
+    func testUserCopyBeforeHandoffFinishIsNeverOverwrittenByRestoration() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("Original clipboard", forType: .string))
+        let pollingStarted = expectation(description: "owned copy entered polling")
+        var didStartPolling = false
+        let reader = SelectionClipboardReader(
+            pasteboard: pasteboard,
+            pollIntervalNanoseconds: 1,
+            pollTimeoutNanoseconds: 100,
+            sourceProcessValidator: { _ in true },
+            isTrusted: { true },
+            copyMenuActionPerformer: { _ in
+                pasteboard.clearContents()
+                return .performed
+            },
+            delayProvider: { _ in
+                guard !didStartPolling else { return }
+                didStartPolling = true
+                pollingStarted.fulfill()
+                while !Task.isCancelled {
+                    await Task.yield()
+                }
+            },
+            shortcutReadWrapper: { operation in await operation() }
+        )
+        let readTask = Task { @MainActor in
+            await reader.readSelectedText(
+                sourceProcessIdentifier: 42,
+                forceSelectionMode: .menuCopyOnly
+            )
+        }
+        await fulfillment(of: [pollingStarted], timeout: 1)
+
+        let handoff = reader.beginUserCopyHandoff()
+        XCTAssertEqual(handoff.boundaryChangeCount, pasteboard.changeCount)
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("Physical user copy", forType: .string))
+        let outcome = await reader.finishUserCopyHandoff(handoff)
+        let readResult = await readTask.value
+
+        XCTAssertEqual(outcome, .restorationRelinquished)
+        XCTAssertEqual(readResult, .emptySelection)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Physical user copy")
+    }
+
+    @MainActor
+    func testUserCopyAfterHandoffFinishIsNeverOverwrittenByOldDefer() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("Original clipboard", forType: .string))
+        let pollingStarted = expectation(description: "owned copy entered polling")
+        var didStartPolling = false
+        let reader = SelectionClipboardReader(
+            pasteboard: pasteboard,
+            pollIntervalNanoseconds: 1,
+            pollTimeoutNanoseconds: 100,
+            sourceProcessValidator: { _ in true },
+            isTrusted: { true },
+            copyMenuActionPerformer: { _ in
+                pasteboard.clearContents()
+                return .performed
+            },
+            delayProvider: { _ in
+                guard !didStartPolling else { return }
+                didStartPolling = true
+                pollingStarted.fulfill()
+                while !Task.isCancelled {
+                    await Task.yield()
+                }
+            },
+            shortcutReadWrapper: { operation in await operation() }
+        )
+        let readTask = Task { @MainActor in
+            await reader.readSelectedText(
+                sourceProcessIdentifier: 42,
+                forceSelectionMode: .menuCopyOnly
+            )
+        }
+        await fulfillment(of: [pollingStarted], timeout: 1)
+
+        let handoff = reader.beginUserCopyHandoff()
+        let outcome = await reader.finishUserCopyHandoff(handoff)
+        let readResult = await readTask.value
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("Physical user copy", forType: .string))
+
+        XCTAssertEqual(outcome, .restorationRelinquished)
+        XCTAssertEqual(readResult, .emptySelection)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Physical user copy")
+    }
+
+    @MainActor
+    func testHandoffCompletesActiveReadThatHasNotMutatedPasteboard() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("Original clipboard", forType: .string))
+        let wrapperStarted = expectation(description: "shortcut wrapper started before transaction")
+        let state = PreTransactionHandoffTestState()
+        let reader = SelectionClipboardReader(
+            pasteboard: pasteboard,
+            sourceProcessValidator: { _ in true },
+            isTrusted: { true },
+            copyShortcutSender: { _ in
+                state.didSendShortcut = true
+                pasteboard.clearContents()
+                XCTAssertTrue(pasteboard.setString("Late synthetic copy", forType: .string))
+            },
+            shortcutReadWrapper: { operation in
+                wrapperStarted.fulfill()
+                while !state.releaseWrapper {
+                    await Task.yield()
+                }
+                return await operation()
+            }
+        )
+        let readTask = Task { @MainActor in
+            await reader.readSelectedText(
+                sourceProcessIdentifier: 42,
+                forceSelectionMode: .shortcutThenMenuCopy
+            )
+        }
+        await fulfillment(of: [wrapperStarted], timeout: 1)
+
+        let handoff = reader.beginUserCopyHandoff()
+        state.releaseWrapper = true
+        let outcome = await reader.finishUserCopyHandoff(handoff)
+        let readResult = await readTask.value
+
+        XCTAssertEqual(outcome, .completedWithoutPasteboardMutation)
+        XCTAssertEqual(readResult, .emptySelection)
+        XCTAssertFalse(state.didSendShortcut)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Original clipboard")
+    }
+
+    @MainActor
+    func testHandoffReportsUnobservedShortcutDispatchBeforeDelayedPasteboardMutation() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("Original clipboard", forType: .string))
+        let pollingStarted = expectation(description: "shortcut dispatch entered polling")
+        var didStartPolling = false
+        var didSendShortcut = false
+        let reader = SelectionClipboardReader(
+            pasteboard: pasteboard,
+            pollIntervalNanoseconds: 1,
+            pollTimeoutNanoseconds: 100,
+            sourceProcessValidator: { _ in true },
+            isTrusted: { true },
+            copyShortcutSender: { _ in
+                didSendShortcut = true
+            },
+            delayProvider: { _ in
+                guard !didStartPolling else { return }
+                didStartPolling = true
+                pollingStarted.fulfill()
+                while !Task.isCancelled {
+                    await Task.yield()
+                }
+            },
+            shortcutReadWrapper: { operation in await operation() }
+        )
+        let readTask = Task { @MainActor in
+            await reader.readSelectedText(
+                sourceProcessIdentifier: 42,
+                forceSelectionMode: .shortcutThenMenuCopy
+            )
+        }
+        await fulfillment(of: [pollingStarted], timeout: 1)
+
+        let handoff = reader.beginUserCopyHandoff()
+        let outcome = await reader.finishUserCopyHandoff(handoff)
+        let readResult = await readTask.value
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("Delayed synthetic copy", forType: .string))
+
+        XCTAssertTrue(didSendShortcut)
+        XCTAssertEqual(outcome, .unobservedSyntheticAction)
+        XCTAssertEqual(readResult, .emptySelection)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Delayed synthetic copy")
+    }
+
+    @MainActor
+    func testHandoffReportsUnobservedPerformedMenuActionBeforeDelayedPasteboardMutation() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("Original clipboard", forType: .string))
+        let pollingStarted = expectation(description: "menu action entered polling")
+        var didStartPolling = false
+        var didPerformMenuAction = false
+        let reader = SelectionClipboardReader(
+            pasteboard: pasteboard,
+            pollIntervalNanoseconds: 1,
+            pollTimeoutNanoseconds: 100,
+            sourceProcessValidator: { _ in true },
+            isTrusted: { true },
+            copyMenuActionPerformer: { _ in
+                didPerformMenuAction = true
+                return .performed
+            },
+            delayProvider: { _ in
+                guard !didStartPolling else { return }
+                didStartPolling = true
+                pollingStarted.fulfill()
+                while !Task.isCancelled {
+                    await Task.yield()
+                }
+            },
+            shortcutReadWrapper: { operation in await operation() }
+        )
+        let readTask = Task { @MainActor in
+            await reader.readSelectedText(
+                sourceProcessIdentifier: 42,
+                forceSelectionMode: .menuCopyOnly
+            )
+        }
+        await fulfillment(of: [pollingStarted], timeout: 1)
+
+        let handoff = reader.beginUserCopyHandoff()
+        let outcome = await reader.finishUserCopyHandoff(handoff)
+        let readResult = await readTask.value
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("Delayed synthetic copy", forType: .string))
+
+        XCTAssertTrue(didPerformMenuAction)
+        XCTAssertEqual(outcome, .unobservedSyntheticAction)
+        XCTAssertEqual(readResult, .emptySelection)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Delayed synthetic copy")
+    }
+
+    @MainActor
+    func testHandoffInvalidatesReadWaitingBehindActiveCleanup() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("Original clipboard", forType: .string))
+        let firstReadPolling = expectation(description: "first read entered polling")
+        let secondCallerStarted = expectation(description: "second caller started")
+        let state = PendingHandoffTestState()
+        let reader = SelectionClipboardReader(
+            pasteboard: pasteboard,
+            pollIntervalNanoseconds: 1,
+            pollTimeoutNanoseconds: 100,
+            sourceProcessValidator: { _ in true },
+            isTrusted: { true },
+            copyMenuActionPerformer: { processIdentifier in
+                state.actionProcessIdentifiers.append(processIdentifier)
+                pasteboard.clearContents()
+                return .performed
+            },
+            delayProvider: { _ in
+                firstReadPolling.fulfill()
+                while !state.releaseFirstRead {
+                    state.firstReadObservedCancellation = Task.isCancelled
+                    await Task.yield()
+                }
+            },
+            shortcutReadWrapper: { operation in await operation() }
+        )
+        let firstReadTask = Task { @MainActor in
+            await reader.readSelectedText(
+                sourceProcessIdentifier: 101,
+                forceSelectionMode: .menuCopyOnly
+            )
+        }
+        await fulfillment(of: [firstReadPolling], timeout: 1)
+        let secondReadTask = Task { @MainActor in
+            secondCallerStarted.fulfill()
+            return await reader.readSelectedText(
+                sourceProcessIdentifier: 202,
+                forceSelectionMode: .menuCopyOnly
+            )
+        }
+        await fulfillment(of: [secondCallerStarted], timeout: 1)
+        while !state.firstReadObservedCancellation {
+            await Task.yield()
+        }
+
+        let handoff = reader.beginUserCopyHandoff()
+        state.releaseFirstRead = true
+        let outcome = await reader.finishUserCopyHandoff(handoff)
+        let firstResult = await firstReadTask.value
+        let secondResult = await secondReadTask.value
+
+        XCTAssertEqual(outcome, .restorationRelinquished)
+        XCTAssertEqual(firstResult, .emptySelection)
+        XCTAssertEqual(secondResult, .emptySelection)
+        XCTAssertEqual(state.actionProcessIdentifiers, [101])
+    }
+
+    @MainActor
+    func testSyntheticCopyShortcutEventsCarryUserDataMarker() throws {
+        let eventSource = try XCTUnwrap(CGEventSource(stateID: .privateState))
+
+        let events = try SelectionClipboardReader.makeCopyShortcutEvents(eventSource: eventSource)
+
+        XCTAssertEqual(SelectionClipboardReader.syntheticCopyEventUserData, 0x494E_4B4C_4554)
+        XCTAssertEqual(
+            events.keyDown.getIntegerValueField(.eventSourceUserData),
+            SelectionClipboardReader.syntheticCopyEventUserData
+        )
+        XCTAssertEqual(
+            events.keyUp.getIntegerValueField(.eventSourceUserData),
+            SelectionClipboardReader.syntheticCopyEventUserData
+        )
+    }
+
+    @MainActor
     func testCancellationDuringFinalSourceValidationReturnsEmptyAfterCleanup() async {
         let pasteboard = NSPasteboard.withUniqueName()
         pasteboard.clearContents()
@@ -588,4 +910,17 @@ private final class ThreeReadTestState {
 private final class FinalValidationCancellationTestState {
     var validationCount = 0
     var cancelOuterRead: (() -> Void)?
+}
+
+@MainActor
+private final class PendingHandoffTestState {
+    var releaseFirstRead = false
+    var firstReadObservedCancellation = false
+    var actionProcessIdentifiers: [pid_t] = []
+}
+
+@MainActor
+private final class PreTransactionHandoffTestState {
+    var releaseWrapper = false
+    var didSendShortcut = false
 }

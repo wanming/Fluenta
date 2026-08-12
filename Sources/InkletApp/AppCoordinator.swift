@@ -38,6 +38,12 @@ private struct PendingSelectionRead {
     let location: SelectionPoint
 }
 
+private struct PendingUserCopyRead {
+    let sourceProcessIdentifier: pid_t
+    let location: SelectionPoint
+    let clipboardHandoff: SelectionClipboardUserCopyHandoff
+}
+
 @MainActor
 final class AppCoordinator: NSObject {
     private static let systemSettingsBundleIdentifier = "com.apple.systempreferences"
@@ -60,6 +66,9 @@ final class AppCoordinator: NSObject {
     private let apiKeyStore: LocalAPIKeyStore
     private let selectionActionMonitor: SelectionActionMonitor
     private let selectionActionWindowController: SelectionActionWindowController
+    private let selectionSourceValidator: SelectionSourceValidator
+    private let selectionClipboardReader: SelectionClipboardReader
+    private let selectionUserCopyReader: SelectionUserCopyReader
     private let selectionReadPipeline: SelectionReadPipeline
     private let selectionTranslationCache: JSONSelectionTranslationCache
     private let speechPlaybackService: SpeechPlaybackService
@@ -106,6 +115,9 @@ final class AppCoordinator: NSObject {
         let selectionClipboardReader = SelectionClipboardReader(
             sourceProcessValidator: sourceValidator
         )
+        let selectionUserCopyReader = SelectionUserCopyReader(
+            sourceProcessValidator: sourceValidator
+        )
 
         self.migrationOutcome = migrationOutcome
         self.migrator = migrator
@@ -129,6 +141,9 @@ final class AppCoordinator: NSObject {
         self.apiKeyStore = LocalAPIKeyStore()
         self.selectionActionMonitor = SelectionActionMonitor()
         self.selectionActionWindowController = SelectionActionWindowController()
+        self.selectionSourceValidator = selectionSourceValidator
+        self.selectionClipboardReader = selectionClipboardReader
+        self.selectionUserCopyReader = selectionUserCopyReader
         self.selectionReadPipeline = SelectionReadPipeline(
             sourceValidator: sourceValidator,
             accessibilityReader: { sourceProcessIdentifier, mouseLocation in
@@ -185,10 +200,22 @@ final class AppCoordinator: NSObject {
                 self?.handleSelectionActionCandidate(at: point)
             }
         }
-        self.selectionActionMonitor.onCopyTrigger = { [weak self] point in
-            Task { @MainActor in
-                self?.handleSelectionActionCopyTrigger(at: point)
+        self.selectionActionMonitor.onCopyTrigger = { [weak self] trigger in
+            guard let self,
+                  !isMigrationMaintenanceActive,
+                  trigger.sourceProcessIdentifier > 0,
+                  trigger.sourceProcessIdentifier != NSRunningApplication.current.processIdentifier,
+                  selectionSourceValidator.isCurrent(trigger.sourceProcessIdentifier)
+            else {
+                return
             }
+            let clipboardHandoff = selectionClipboardReader.beginUserCopyHandoff()
+            let pendingUserCopyRead = PendingUserCopyRead(
+                sourceProcessIdentifier: trigger.sourceProcessIdentifier,
+                location: trigger.point,
+                clipboardHandoff: clipboardHandoff
+            )
+            self.handleSelectionActionCopyTrigger(pendingUserCopyRead)
         }
         self.selectionActionMonitor.onDismiss = { [weak self] reason in
             Task { @MainActor in
@@ -734,15 +761,10 @@ final class AppCoordinator: NSObject {
         ), pendingSelectionRead: request)
     }
 
-    private func handleSelectionActionCopyTrigger(at point: SelectionPoint) {
+    private func handleSelectionActionCopyTrigger(_ pendingUserCopyRead: PendingUserCopyRead) {
         guard !isMigrationMaintenanceActive else { return }
-        guard let sourceApp = NSWorkspace.shared.frontmostApplication,
-              sourceApp.processIdentifier != NSRunningApplication.current.processIdentifier
-        else {
-            return
-        }
 
-        selectionReadTask?.cancel()
+        handleSelectionActionEffects(selectionActionCoordinator.handle(.dismiss))
         let taskID = UUID()
         selectionReadTaskID = taskID
         selectionReadTask = Task { [weak self] in
@@ -754,24 +776,40 @@ final class AppCoordinator: NSObject {
                     self.refreshMigrationImportEligibility()
                 }
             }
-            do {
-                try await Task.sleep(for: .milliseconds(120))
-            } catch {
+            let handoffOutcome = await selectionClipboardReader.finishUserCopyHandoff(
+                pendingUserCopyRead.clipboardHandoff
+            )
+            switch handoffOutcome {
+            case .unobservedSyntheticAction:
+                SelectionActionDiagnostics.log("copy trigger ignored unobserved synthetic action")
+                return
+            case .noActiveRead, .restorationRelinquished, .completedWithoutPasteboardMutation:
+                break
+            }
+            let result = await selectionUserCopyReader.readCopiedText(
+                sourceProcessIdentifier: pendingUserCopyRead.sourceProcessIdentifier,
+                after: pendingUserCopyRead.clipboardHandoff.boundaryChangeCount
+            )
+            guard !Task.isCancelled,
+                  !isMigrationMaintenanceActive,
+                  selectionReadTaskID == taskID,
+                  selectionSourceValidator.isCurrent(pendingUserCopyRead.sourceProcessIdentifier)
+            else {
                 return
             }
-            guard !Task.isCancelled, !isMigrationMaintenanceActive else { return }
-            let text = NSPasteboard.general.string(forType: .string)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !text.isEmpty else {
+            guard case .success(let text) = result, !text.isEmpty else {
                 SelectionActionDiagnostics.log("copy trigger empty clipboard")
                 return
             }
 
             SelectionActionDiagnostics.log("copy trigger showPanel length=\(text.count)")
+            panelDismissalPolicy.recordPanelShown(at: Date().timeIntervalSinceReferenceDate)
             selectionActionMonitor.recordPanelShown()
             currentSelectionText = text
             currentTranslationText = ""
-            selectionActionWindowController.showMenu(at: point)
+            selectionPronunciationReturnState = .menu
+            selectionCopyFeedbackTask?.cancel()
+            selectionActionWindowController.showMenu(at: pendingUserCopyRead.location)
         }
         refreshMigrationImportEligibility()
     }
