@@ -11,6 +11,16 @@ public struct WritingModePickerItem: Equatable, Identifiable, Sendable {
 }
 
 public struct WritingModePickerState: Equatable, Sendable {
+    private static let exactMatchBonus = 2_000
+    private static let prefixMatchBonus = 1_000
+    private static let matchedCharacterScore = 100
+    private static let consecutiveMatchBonus = 60
+    private static let wordStartBonus = 45
+    private static let maximumEarlyMatchBonus = 24
+    private static let nonconsecutiveGapPenalty = 6
+    private static let unmatchedTitleCharacterPenalty = 1
+    private static let unreachableScore = Int.min / 4
+
     public private(set) var items: [WritingModePickerItem]
     public private(set) var query: String
     public private(set) var highlightedModeID: String?
@@ -33,9 +43,21 @@ public struct WritingModePickerState: Equatable, Sendable {
         }
 
         let normalizedQuery = Self.normalizedForSearch(matchingQuery)
-        return items.filter {
-            Self.normalizedForSearch($0.title).contains(normalizedQuery)
+        let rankedItems: [(item: WritingModePickerItem, index: Int, score: Int)] = items.enumerated().compactMap { index, item in
+            let normalizedTitle = Self.normalizedForSearch(item.title)
+            guard let score = Self.fuzzyScore(
+                normalizedQuery: normalizedQuery,
+                normalizedTitle: normalizedTitle
+            ) else {
+                return nil
+            }
+
+            return (item: item, index: index, score: score)
         }
+        return rankedItems.sorted { lhs, rhs in
+            lhs.score == rhs.score ? lhs.index < rhs.index : lhs.score > rhs.score
+        }
+        .map(\.item)
     }
 
     public mutating func setQuery(_ query: String) {
@@ -94,5 +116,93 @@ public struct WritingModePickerState: Equatable, Sendable {
             options: [.caseInsensitive, .diacriticInsensitive],
             locale: Locale(identifier: "en_US_POSIX")
         )
+    }
+
+    private static func fuzzyScore(normalizedQuery: String, normalizedTitle: String) -> Int? {
+        let queryCharacters = Array(normalizedQuery)
+        let titleCharacters = Array(normalizedTitle)
+        guard
+            !queryCharacters.isEmpty,
+            !titleCharacters.isEmpty,
+            queryCharacters.count <= titleCharacters.count
+        else {
+            return nil
+        }
+
+        var previous = [Int](repeating: Self.unreachableScore, count: titleCharacters.count)
+
+        for titleIndex in titleCharacters.indices where titleCharacters[titleIndex] == queryCharacters[0] {
+            previous[titleIndex] = characterScore(
+                at: titleIndex,
+                in: titleCharacters
+            )
+        }
+        guard previous.contains(where: { $0 != Self.unreachableScore }) else {
+            return nil
+        }
+
+        for queryIndex in queryCharacters.indices.dropFirst() {
+            var current = [Int](repeating: Self.unreachableScore, count: titleCharacters.count)
+
+            for titleIndex in titleCharacters.indices where titleCharacters[titleIndex] == queryCharacters[queryIndex] {
+                var bestScore = Self.unreachableScore
+                for previousTitleIndex in 0..<titleIndex where previous[previousTitleIndex] != Self.unreachableScore {
+                    let skippedCharacters = titleIndex - previousTitleIndex - 1
+                    let transitionScore: Int
+                    if skippedCharacters == 0 {
+                        transitionScore = Self.consecutiveMatchBonus
+                    } else {
+                        transitionScore = -Self.nonconsecutiveGapPenalty * skippedCharacters
+                    }
+                    bestScore = max(bestScore, previous[previousTitleIndex] + transitionScore)
+                }
+
+                guard bestScore != Self.unreachableScore else {
+                    continue
+                }
+                current[titleIndex] = bestScore + characterScore(
+                    at: titleIndex,
+                    in: titleCharacters
+                )
+            }
+            guard current.contains(where: { $0 != Self.unreachableScore }) else {
+                return nil
+            }
+
+            previous = current
+        }
+
+        var bestScore = Self.unreachableScore
+        for titleIndex in titleCharacters.indices where previous[titleIndex] != Self.unreachableScore {
+            bestScore = max(bestScore, previous[titleIndex])
+        }
+        guard bestScore != Self.unreachableScore else {
+            return nil
+        }
+
+        bestScore -= (titleCharacters.count - queryCharacters.count) * Self.unmatchedTitleCharacterPenalty
+
+        if normalizedTitle == normalizedQuery {
+            bestScore += Self.exactMatchBonus
+        } else if normalizedTitle.hasPrefix(normalizedQuery) {
+            bestScore += Self.prefixMatchBonus
+        }
+        return bestScore
+    }
+
+    private static func characterScore(at index: Int, in title: [Character]) -> Int {
+        var score = Self.matchedCharacterScore + max(0, Self.maximumEarlyMatchBonus - index)
+        if isWordStart(at: index, in: title) {
+            score += Self.wordStartBonus
+        }
+        return score
+    }
+
+    private static func isWordStart(at index: Int, in title: [Character]) -> Bool {
+        index == 0 || (isWordCharacter(title[index]) && !isWordCharacter(title[index - 1]))
+    }
+
+    private static func isWordCharacter(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy(CharacterSet.alphanumerics.contains)
     }
 }

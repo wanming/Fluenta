@@ -125,4 +125,150 @@ final class WritingModePickerStateTests: XCTestCase {
         XCTAssertFalse(state.highlight(modeID: "missing"))
         XCTAssertEqual(state.highlightedModeID, "gamma")
     }
+
+    func testFuzzySearchRanksWritingModesForOrderedQuery() {
+        var state = WritingModePickerState(items: [
+            WritingModePickerItem(id: "chinese", title: "To Chinese Summary"),
+            WritingModePickerItem(id: "simple", title: "To Simple and Correct English")
+        ], query: "ts")
+
+        XCTAssertEqual(state.filteredItems.map(\.id), ["simple", "chinese"])
+
+        state.setQuery("tcs")
+        XCTAssertEqual(state.filteredItems.map(\.id), ["chinese", "simple"])
+    }
+
+    func testFuzzySearchRanksChineseSummaryForOrderedChineseQuery() {
+        let state = WritingModePickerState(items: [
+            WritingModePickerItem(id: "translate", title: "翻译为中文"),
+            WritingModePickerItem(id: "summary", title: "生成中文摘要")
+        ], query: "中摘")
+
+        XCTAssertEqual(state.filteredItems.map(\.id), ["summary"])
+    }
+
+    func testFuzzySearchPrefersLaterWordBoundaryOverEarlierInlineMatch() {
+        let state = WritingModePickerState(items: [
+            WritingModePickerItem(id: "inline", title: "abcdes"),
+            WritingModePickerItem(id: "boundary", title: "island Summary")
+        ], query: "s")
+
+        XCTAssertEqual(state.filteredItems.map(\.id), ["boundary", "inline"])
+    }
+
+    func testFuzzySearchUsesBestAlignmentBeforeRanking() {
+        let state = WritingModePickerState(items: [
+            WritingModePickerItem(id: "inline", title: "To xxxxxs"),
+            WritingModePickerItem(id: "summary", title: "To Chinese Summary")
+        ], query: "ts")
+
+        XCTAssertEqual(state.filteredItems.map(\.id), ["summary", "inline"])
+    }
+
+    func testFuzzySearchRanksExactPrefixAndFuzzyMatches() {
+        let state = WritingModePickerState(items: [
+            WritingModePickerItem(id: "fuzzy", title: "xsum"),
+            WritingModePickerItem(id: "prefix", title: "sum" + String(repeating: "z", count: 600)),
+            WritingModePickerItem(id: "exact", title: "sum")
+        ], query: "sum")
+
+        XCTAssertEqual(state.filteredItems.map(\.id), ["exact", "prefix", "fuzzy"])
+    }
+
+    func testFuzzySearchPrefersConsecutiveMatchesOverGappedMatches() {
+        let state = WritingModePickerState(items: [
+            WritingModePickerItem(id: "gapped", title: "xayczzzz"),
+            WritingModePickerItem(id: "consecutive", title: "zzzzzacx")
+        ], query: "ac")
+
+        XCTAssertEqual(state.filteredItems.map(\.id), ["consecutive", "gapped"])
+    }
+
+    func testFuzzySearchPrefersWordStartsOverInlineMatches() {
+        let state = WritingModePickerState(items: [
+            WritingModePickerItem(id: "inline", title: "xas"),
+            WritingModePickerItem(id: "wordStart", title: "a s")
+        ], query: "s")
+
+        XCTAssertEqual(state.filteredItems.map(\.id), ["wordStart", "inline"])
+    }
+
+    func testFuzzySearchPrefersEarlierMatches() {
+        let state = WritingModePickerState(items: [
+            WritingModePickerItem(id: "later", title: "xxxxqqxx"),
+            WritingModePickerItem(id: "earlier", title: "xxqqxxxx")
+        ], query: "qq")
+
+        XCTAssertEqual(state.filteredItems.map(\.id), ["earlier", "later"])
+    }
+
+    func testFuzzySearchPenalizesLongerNonconsecutiveGaps() {
+        let state = WritingModePickerState(items: [
+            WritingModePickerItem(id: "longGap", title: "xayyczz"),
+            WritingModePickerItem(id: "shortGap", title: "xxayczz")
+        ], query: "ac")
+
+        XCTAssertEqual(state.filteredItems.map(\.id), ["shortGap", "longGap"])
+    }
+
+    func testFuzzySearchPrefersShorterTitlesForSameAlignment() {
+        let state = WritingModePickerState(items: [
+            WritingModePickerItem(id: "long", title: "abxxx"),
+            WritingModePickerItem(id: "short", title: "abx")
+        ], query: "ab")
+
+        XCTAssertEqual(state.filteredItems.map(\.id), ["short", "long"])
+    }
+
+    func testFuzzySearchPenalizesAllUnmatchedTitleCharacters() {
+        let state = WritingModePickerState(items: [
+            WritingModePickerItem(id: "long", title: String(repeating: "z", count: 30) + " x"),
+            WritingModePickerItem(id: "short", title: String(repeating: "z", count: 25) + " x")
+        ], query: "x")
+
+        XCTAssertEqual(state.filteredItems.map(\.id), ["short", "long"])
+    }
+
+    func testFuzzySearchReturnsNoResultsWhenQueryIsLongerThanTitle() {
+        let state = WritingModePickerState(items: [
+            WritingModePickerItem(id: "short", title: "abc")
+        ], query: "abcd")
+
+        XCTAssertTrue(state.filteredItems.isEmpty)
+    }
+
+    func testFuzzySearchPreservesSettingsOrderForIdenticalScores() {
+        let state = WritingModePickerState(items: [
+            WritingModePickerItem(id: "first", title: "Alpha"),
+            WritingModePickerItem(id: "second", title: "Alpha")
+        ], query: "a")
+
+        XCTAssertEqual(state.filteredItems.map(\.id), ["first", "second"])
+    }
+
+    func testFuzzySearchKeepsVisiblePreferredHighlightOrUsesFirstRankedRow() {
+        var visiblePreferred = WritingModePickerState(
+            items: [
+                WritingModePickerItem(id: "summary", title: "To Chinese Summary"),
+                WritingModePickerItem(id: "simple", title: "To Simple and Correct English")
+            ],
+            preferredModeID: "summary"
+        )
+        visiblePreferred.setQuery("ts")
+
+        XCTAssertEqual(visiblePreferred.filteredItems.map(\.id), ["simple", "summary"])
+        XCTAssertEqual(visiblePreferred.highlightedModeID, "summary")
+
+        var hiddenPreferred = WritingModePickerState(
+            items: [
+                WritingModePickerItem(id: "summary", title: "To Chinese Summary"),
+                WritingModePickerItem(id: "simple", title: "To Simple and Correct English"),
+                WritingModePickerItem(id: "other", title: "Polish Writing")
+            ],
+            preferredModeID: "other"
+        )
+        hiddenPreferred.setQuery("ts")
+
+        XCTAssertEqual(hiddenPreferred.highlightedModeID, "simple")
+    }
 }
