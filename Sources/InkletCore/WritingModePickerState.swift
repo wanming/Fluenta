@@ -143,18 +143,33 @@ public struct WritingModePickerState: Equatable, Sendable {
 
         for queryIndex in queryCharacters.indices.dropFirst() {
             var current = [Int](repeating: Self.unreachableScore, count: titleCharacters.count)
+            var bestWeightedGappedPredecessor = Self.unreachableScore
 
-            for titleIndex in titleCharacters.indices where titleCharacters[titleIndex] == queryCharacters[queryIndex] {
-                var bestScore = Self.unreachableScore
-                for previousTitleIndex in 0..<titleIndex where previous[previousTitleIndex] != Self.unreachableScore {
-                    let skippedCharacters = titleIndex - previousTitleIndex - 1
-                    let transitionScore: Int
-                    if skippedCharacters == 0 {
-                        transitionScore = Self.consecutiveMatchBonus
-                    } else {
-                        transitionScore = -Self.nonconsecutiveGapPenalty * skippedCharacters
+            for titleIndex in titleCharacters.indices {
+                if titleIndex >= 2 {
+                    let gappedPredecessorIndex = titleIndex - 2
+                    let gappedPredecessorScore = previous[gappedPredecessorIndex]
+                    if gappedPredecessorScore != Self.unreachableScore {
+                        bestWeightedGappedPredecessor = max(
+                            bestWeightedGappedPredecessor,
+                            gappedPredecessorScore
+                                + Self.nonconsecutiveGapPenalty * gappedPredecessorIndex
+                        )
                     }
-                    bestScore = max(bestScore, previous[previousTitleIndex] + transitionScore)
+                }
+
+                guard titleCharacters[titleIndex] == queryCharacters[queryIndex] else {
+                    continue
+                }
+
+                var bestScore = Self.unreachableScore
+                if titleIndex > 0, previous[titleIndex - 1] != Self.unreachableScore {
+                    bestScore = previous[titleIndex - 1] + Self.consecutiveMatchBonus
+                }
+                if bestWeightedGappedPredecessor != Self.unreachableScore {
+                    let gappedScore = bestWeightedGappedPredecessor
+                        - Self.nonconsecutiveGapPenalty * (titleIndex - 1)
+                    bestScore = max(bestScore, gappedScore)
                 }
 
                 guard bestScore != Self.unreachableScore else {

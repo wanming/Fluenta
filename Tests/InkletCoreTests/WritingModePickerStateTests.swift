@@ -237,6 +237,24 @@ final class WritingModePickerStateTests: XCTestCase {
         XCTAssertTrue(state.filteredItems.isEmpty)
     }
 
+    func testFuzzySearchFiltersDenseLongTitleWithinInteractiveBudget() {
+        let title = String(repeating: "a", count: 4_000)
+        let query = String(repeating: "a", count: 8)
+        let budget = Duration.milliseconds(500)
+        let clock = ContinuousClock()
+
+        let start = clock.now
+        let state = WritingModePickerState(
+            items: [WritingModePickerItem(id: "dense", title: title)],
+            query: query
+        )
+        let resultIDs = state.filteredItems.map(\.id)
+        let elapsed = start.duration(to: clock.now)
+
+        XCTAssertEqual(resultIDs, ["dense"])
+        XCTAssertLessThan(elapsed, budget, "Dense fuzzy filtering took \(elapsed)")
+    }
+
     func testFuzzySearchPreservesSettingsOrderForIdenticalScores() {
         let state = WritingModePickerState(items: [
             WritingModePickerItem(id: "first", title: "Alpha"),
