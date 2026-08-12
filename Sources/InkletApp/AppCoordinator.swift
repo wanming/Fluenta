@@ -3,7 +3,20 @@ import InkletCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let coordinator = AppCoordinator()
+    private let coordinator: AppCoordinator
+
+    init(
+        migrationOutcome: LegacySandboxMigrationOutcome,
+        migrator: LegacySandboxDataMigrator,
+        storagePaths: InkletStoragePaths
+    ) {
+        self.coordinator = AppCoordinator(
+            migrationOutcome: migrationOutcome,
+            migrator: migrator,
+            storagePaths: storagePaths
+        )
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         coordinator.start()
@@ -24,6 +37,9 @@ private enum SelectionPronunciationReturnState: Equatable {
 final class AppCoordinator: NSObject {
     private static let systemSettingsBundleIdentifier = "com.apple.systempreferences"
 
+    private let migrationOutcome: LegacySandboxMigrationOutcome
+    private let migrator: LegacySandboxDataMigrator
+    private let storagePaths: InkletStoragePaths
     private let statusItem: NSStatusItem
     private let windowController: InkletPopoverWindowController
     private let settingsController: SettingsWindowController
@@ -68,9 +84,17 @@ final class AppCoordinator: NSObject {
     private var panelDismissalPolicy = SelectionPanelDismissalPolicy()
     private lazy var voiceCoordinator = makeVoiceInputCoordinator()
 
-    override init() {
-        let historyStore = JSONLHistoryStore()
+    init(
+        migrationOutcome: LegacySandboxMigrationOutcome,
+        migrator: LegacySandboxDataMigrator,
+        storagePaths: InkletStoragePaths
+    ) {
+        SelectionActionDiagnostics.configure(fileURL: storagePaths.selectionDiagnosticsFileURL)
+        let historyStore = JSONLHistoryStore(fileURL: storagePaths.historyFileURL)
 
+        self.migrationOutcome = migrationOutcome
+        self.migrator = migrator
+        self.storagePaths = storagePaths
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.historyStore = historyStore
         self.windowController = InkletPopoverWindowController(historyStore: historyStore)
@@ -89,7 +113,9 @@ final class AppCoordinator: NSObject {
         self.selectedTextReader = SelectedTextReader()
         self.selectionBrowserTextReader = SelectionBrowserTextReader()
         self.selectionClipboardReader = SelectionClipboardReader()
-        self.selectionTranslationCache = JSONSelectionTranslationCache()
+        self.selectionTranslationCache = JSONSelectionTranslationCache(
+            fileURL: storagePaths.translationCacheFileURL
+        )
         self.speechPlaybackService = SpeechPlaybackService()
         self.selectionActionCoordinator = SelectionActionCoordinator(
             config: ((try? UserDefaultsConfigStore().load()) ?? AppConfig.defaultConfig()).selectionActions

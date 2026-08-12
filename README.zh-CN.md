@@ -26,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install
 
 ## 首次设置
 
-1. 从 Applications 文件夹打开 Inklet，或者在源码目录运行 `swift run Inklet`。
+1. 从 Applications 文件夹打开 Inklet。需要运行源码构建时，请在仓库根目录执行 `scripts/run-local-app.sh`，然后使用 `/Applications/Inklet Local.app`。
 2. 点击菜单栏里的 Inklet 图标，打开 Settings。
 3. 按 macOS 提示授予 Accessibility 权限。Inklet 需要这个权限来回到上一个应用并粘贴结果。系统设置打开期间 Inklet 会留在后台；关闭系统设置后 Inklet 会返回 General 设置页。
 4. 在 General 中填写 OpenAI API key。Inklet 会用这一把 key 处理写作、语音转写、选区翻译和发音。
@@ -137,7 +137,7 @@ docs/                    手动测试说明和隐私政策
 
 - Provider 行为应保持有聚焦的单元测试覆盖。
 - 发布用户可见的 app 改动前，请使用 [docs/manual-test-checklist.md](docs/manual-test-checklist.md)。
-- 日常手动测试 app 时使用 `scripts/run-local-app.sh`，不要用 `swift run Inklet` 或 `open dist/...`，这样本机 Accessibility 和 Keychain 授权会绑定到同一个稳定 app 身份。
+- 日常手动测试 app 时使用 `scripts/run-local-app.sh`，不要直接运行 SwiftPM 可执行文件或 `open dist/...`，这样本机 Accessibility 和 Keychain 授权会绑定到同一个稳定 app 身份。
 - 剪贴板和 Accessibility 流程是核心体验，需要谨慎处理。
 - 项目仍处于 MVP 阶段，README 应描述当前代码已经支持的能力，而不是未来计划。
 

@@ -1,10 +1,19 @@
 import Foundation
-import InkletCore
 
+@MainActor
 enum SelectionActionDiagnostics {
+    private static var fileURL: URL?
+
+    static func configure(fileURL: URL) {
+        self.fileURL = fileURL
+    }
+
     static func log(_ message: String) {
+        guard let url = fileURL else {
+            return
+        }
+
         let line = "\(Date()) \(message)\n"
-        let url = InkletStoragePaths.currentOrLocalDevelopment().selectionDiagnosticsFileURL
         guard let data = line.data(using: .utf8) else {
             return
         }

@@ -26,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install
 
 ## First-Time Setup
 
-1. Open Inklet from your Applications folder, or start it from source with `swift run Inklet`.
+1. Open Inklet from your Applications folder. For a source build, run `scripts/run-local-app.sh` from the repository root, then use `/Applications/Inklet Local.app`.
 2. Click the Inklet menu bar icon and open Settings.
 3. Grant Accessibility permission when macOS asks. Inklet needs this to return focus to the previous app and paste the result. Inklet stays in the background while System Settings is open and returns to General settings when you close it.
 4. Enter your OpenAI API key in General. Inklet uses this one key for writing, voice transcription, selection translation, and pronunciation.
@@ -137,7 +137,7 @@ docs/                           manual QA and privacy policy
 
 - Keep provider behavior covered by focused unit tests.
 - Use [docs/manual-test-checklist.md](docs/manual-test-checklist.md) before shipping user-facing app changes.
-- Use `scripts/run-local-app.sh` instead of `swift run Inklet` or `open dist/...` for routine app hand-testing, so local Accessibility and Keychain approvals stay attached to one stable app identity.
+- Use `scripts/run-local-app.sh` instead of a bare SwiftPM executable or `open dist/...` for routine app hand-testing, so local Accessibility and Keychain approvals stay attached to one stable app identity.
 - Treat the clipboard and Accessibility flows carefully; they are central to the app experience.
 - The project is still MVP-stage, so README details should track the code rather than future plans.
 

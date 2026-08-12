@@ -2,7 +2,7 @@
 
 ## Preparation
 
-- Launch Inklet from Xcode, `swift run Inklet`, or the installed app bundle.
+- Launch the installed release app bundle. For source or local testing, run `scripts/run-local-app.sh` and use `/Applications/Inklet Local.app` so Accessibility and Keychain approvals stay attached to its stable identity.
 - Configure an LLM provider and API key in Settings.
 - Configure Voice settings with a speech API key if testing dictation.
 - Grant Accessibility permission in macOS System Settings.

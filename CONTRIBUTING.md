@@ -10,12 +10,19 @@ Requirements:
 - Swift 6 toolchain.
 - Full Xcode is recommended for XCTest support.
 
-Build and run:
+Build:
 
 ```bash
 swift build
-swift run Inklet
 ```
+
+Build, install, and run the local app:
+
+```bash
+scripts/run-local-app.sh
+```
+
+Use the installed `/Applications/Inklet Local.app` for local testing.
 
 Run tests:
 
