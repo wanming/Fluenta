@@ -1,6 +1,6 @@
 # Inklet Privacy Policy
 
-Last updated: June 26, 2026
+Last updated: August 12, 2026
 
 ## Overview
 
@@ -45,19 +45,40 @@ Inklet may fetch the public model catalog from `models.dev` periodically, curren
 
 ## Selection Actions
 
-When Selection Actions are enabled, Inklet watches for selection-related mouse and keyboard events, captures the source app and selection location, validates that source, and then uses macOS Accessibility to read the current selection after a short pause. If Accessibility does not return selected text, the configured Force Selection mode may briefly invoke menu Copy and/or `Command+C` and read the changed clipboard text. Inklet restores the previous clipboard only if its temporary copied value is still current; a later external clipboard change is left untouched. You can turn Force Selection off in Settings. This selection-reading path does not send browser-targeted Apple Events and does not require browser Automation permission. Pressing `Command+C` twice quickly after selecting text explicitly reads the copied clipboard text. Inklet does not store merely selected text unless a successful action is saved in local History.
+When Selection Actions are enabled, Inklet watches for selection-related mouse and keyboard events. It captures the source app's process identifier and selection location, confirms that the captured source process is still running and frontmost, and then uses macOS Accessibility to read the current selection after a short pause. A focus change, cancellation, timeout, protected field, or source-process mismatch produces no selection result.
+
+If Accessibility does not return selected text, the configured Force Selection mode may use a temporary clipboard transaction to invoke menu Copy and/or `Command+C`. Inklet allows only one such transaction at a time, snapshots the pasteboard, and restores that snapshot only if the same transaction still owns the observed copy-result change count. If you or another app changes the pasteboard, newer clipboard contents win and Inklet leaves them untouched. You can turn Force Selection off in Settings.
+
+The double-copy trigger reads the copy you made by pressing `Command+C` twice quickly; it does not issue another synthetic copy or restore older clipboard data. Right-click remains the source application's native context-menu action and does not start a selection read. The generic path sends no browser-targeted Apple Events and does not request Automation permission.
+
+Mere selection or copying does not persist text to disk. A selection result may remain in process memory as Inklet's current selection state until it is replaced or cleared, or until Inklet exits. Only successful Selection actions are saved in local History; successful translations may also be stored in the 7-day local translation cache.
 
 If you choose Translate, Inklet first checks for a local cached translation. When no cached translation is available, the selected text and your custom Translate instructions are sent to your configured LLM provider. If you choose Pronounce, the selected text is sent to OpenAI text-to-speech using your OpenAI API key. Some apps may still block Accessibility and Force Selection reads; in those apps the floating menu may not appear automatically.
 
 ## Local Storage
 
-Inklet stores API keys locally in macOS Keychain. Inklet stores app preferences locally on your Mac.
+Production and local QA builds use separate bundle-qualified local stores:
 
-Inklet stores successful Write, Voice, and Selection source/result text locally in History until you clear it in Settings.
+- Production preferences: `~/Library/Preferences/com.tomwan.inklet.plist`
+- Local preferences: `~/Library/Preferences/com.tomwan.inklet.local.plist`
+- Production Application Support: `~/Library/Application Support/com.tomwan.inklet/`
+- Local Application Support: `~/Library/Application Support/com.tomwan.inklet.local/`
+- Production Keychain service: `Inklet.ProviderAPIKey`
+- Local Keychain service: `Inklet.Local.ProviderAPIKey`
 
-Inklet caches successful Selection translation results locally for 7 days using hashed cache keys, so repeated translations can return faster without another provider call.
+Within each Application Support root, Inklet stores successful Write, Voice, and Selection source/result text in `history.jsonl` until you clear History in Settings. It stores successful Selection translations in `selection-translation-cache.json` for 7 days using hashed cache keys.
 
-Inklet temporarily uses the clipboard to insert text into the active app and for configured Force Selection fallback reads, then attempts to restore the previous clipboard contents.
+Selection diagnostics use the bundle-qualified temporary filename `$TMPDIR/InkletSelectionActions.<bundle-identifier>.log`. Diagnostics may include event type, source app bundle identifier or process identifier, read status, character count, and window geometry. They do not include selected-text contents, provider keys, prompt text, generated text, or audio.
+
+Provider API keys are stored as generic-password items in macOS Keychain, using the production or local service above and the provider identifier as the account. Inklet does not intentionally store active provider credentials in plaintext preferences.
+
+## Legacy Data Migration
+
+On launch, Inklet checks the matching legacy source at `~/Library/Containers/<bundle-identifier>/Data/`. It automatically copies recognized Inklet preferences, legacy provider credentials into the matching Keychain service when no destination credential exists, and History into the bundle-qualified destination. It does not delete or modify the legacy source. The disposable legacy translation cache is not migrated.
+
+Migration is versioned and retry-safe. If both old and new History exist, Inklet merges records by identifier and keeps the destination record on a duplicate. Existing destination Keychain items are not overwritten. Delayed preference import preserves settings changed after the upgrade attempt.
+
+If macOS blocks automatic source access, Settings offers **Import Old Data…**. The file panel accepts only the canonical legacy `Data` folder for the running production or local bundle. Inklet uses that file-panel access only for the in-process import, stops accessing it when the import finishes, and does not save a persistent bookmark. Import pauses active selection, voice, and settings work; if destination data changes, Inklet relaunches before normal work resumes.
 
 ## Permissions
 
@@ -66,13 +87,13 @@ Inklet requests the following macOS permissions:
 - Accessibility: used to return focus to the previous app, insert text after you confirm insertion, inspect focused controls, invoke menu Copy when Force Selection is enabled, and read selected text for Selection Actions after you select text.
 - Microphone: used only while recording voice dictation that you start.
 
-Inklet does not use these permissions to collect text from other apps in the background.
+Accessibility is the generic permission used for selection reading and simulated input. Inklet does not request browser-specific permissions or Automation permission. Inklet does not use Accessibility or Microphone permission to collect text or audio from other apps in the background.
 
 ## Analytics And Tracking
 
 Inklet does not include third-party advertising, tracking, or analytics in the current app.
 
-If this changes, this policy and App Store privacy details must be updated before release.
+If this changes, this policy must be updated before release.
 
 ## Data Retention
 
@@ -80,7 +101,7 @@ Inklet does not operate a server that stores your text, audio, API keys, or sett
 
 Data sent to your configured providers may be retained according to those providers' own policies.
 
-Local History stays on your Mac until you clear it in Settings or remove the local app data. Local Selection translation cache entries expire after 7 days.
+Local History stays on your Mac until you clear it in Settings or remove the corresponding bundle's local app data. Local Selection translation cache entries expire after 7 days. Legacy source data remains in its original container unless you remove it separately.
 
 ## Contact
 

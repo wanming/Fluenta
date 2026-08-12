@@ -54,6 +54,522 @@ for retired_name in "${retired_names[@]}"; do
   fi
 done
 
+public_documentation_files=(
+  "${repo_root}/README.md"
+  "${repo_root}/README.zh-CN.md"
+  "${repo_root}/CONTRIBUTING.md"
+  "${repo_root}/docs/privacy-policy.md"
+  "${repo_root}/docs/manual-test-checklist.md"
+  "${repo_root}/SECURITY.md"
+)
+active_guidance_files=(
+  "${public_documentation_files[@]}"
+  "${script_dir}/README.md"
+  "${repo_root}/.github/workflows/build-dmg.yml"
+)
+active_guidance_files+=("${active_contract_files[@]}")
+
+documentation_contract_failures=()
+
+record_documentation_failure() {
+  documentation_contract_failures+=("$1")
+}
+
+reject_active_guidance_text() {
+  local stale_text="$1"
+  local description="$2"
+
+  if grep -Fiq -- "$stale_text" "${active_guidance_files[@]}"; then
+    record_documentation_failure "Active guidance must not contain ${description}."
+  fi
+}
+
+reject_active_guidance_pattern() {
+  local stale_pattern="$1"
+  local description="$2"
+
+  if grep -Eiq -- "$stale_pattern" "${active_guidance_files[@]}"; then
+    record_documentation_failure "Active guidance must not contain ${description}."
+  fi
+}
+
+reject_active_guidance_text "Mac App Store" "Mac App Store release guidance"
+reject_active_guidance_text "window.getSelection" "browser window-selection instructions"
+reject_active_guidance_text "Allow JavaScript from Apple Events" "Chrome JavaScript setup"
+reject_active_guidance_text "browser JavaScript" "browser JavaScript selection claims"
+reject_active_guidance_text "per-browser permission" "per-browser permission setup"
+reject_active_guidance_text "Automation setup" "Automation setup instructions"
+reject_active_guidance_text \
+  "Selected text is kept in memory while the floating action is active" \
+  "the obsolete selection-memory lifetime claim"
+reject_active_guidance_pattern \
+  '(grant|enable|turn on|allow|configure)[^.!]*(browser|Chrome|Safari|Edge)[^.!]*Automation' \
+  "browser Automation setup instructions"
+reject_active_guidance_text "swift run Inklet" "swift run Inklet as a QA workflow"
+for retired_script in "${retired_scripts[@]}"; do
+  reject_active_guidance_text "$retired_script" "obsolete script ${retired_script}"
+done
+
+markdown_prose_path() {
+  local document_path="$1"
+  local path_key
+
+  path_key="$(printf '%s' "$document_path" | tr '/ ' '__')"
+  printf '%s/documentation-prose-%s\n' "$temp_dir" "$path_key"
+}
+
+extract_markdown_prose() {
+  local document_path="$1"
+  local prose_path
+
+  prose_path="$(markdown_prose_path "$document_path")"
+  /usr/bin/ruby - "$document_path" >"$prose_path" <<'RUBY'
+path = ARGV.fetch(0)
+fence_character = nil
+fence_length = 0
+in_comment = false
+in_indented_code = false
+can_start_indented_code = true
+
+def leading_indentation_columns(line)
+  columns = 0
+  line.each_char do |character|
+    case character
+    when " "
+      columns += 1
+    when "\t"
+      columns += 4 - (columns % 4)
+    else
+      break
+    end
+  end
+  columns
+end
+
+File.foreach(path, chomp: true) do |line|
+  if fence_character
+    closing_fence = Regexp.new(
+      "\\A {0,3}#{Regexp.escape(fence_character)}{#{fence_length},}[ \\t]*\\z"
+    )
+    if line.match?(closing_fence)
+      fence_character = nil
+      fence_length = 0
+    end
+    next
+  end
+
+  unless in_comment
+    if in_indented_code
+      if line.strip.empty? || leading_indentation_columns(line) >= 4
+        next
+      end
+      in_indented_code = false
+    end
+
+    if line.strip.empty?
+      can_start_indented_code = true
+      next
+    end
+
+    # The public-guidance contract handles top-level indented code. A four-column
+    # indent cannot interrupt a paragraph, so only document start or a blank line
+    # permits this block state.
+    if can_start_indented_code && leading_indentation_columns(line) >= 4
+      in_indented_code = true
+      can_start_indented_code = false
+      next
+    end
+    can_start_indented_code = false
+
+    if (opening_fence = line.match(/\A {0,3}(`{3,}|~{3,})(.*)\z/))
+      marker = opening_fence[1]
+      info_string = opening_fence[2]
+      unless marker[0] == "`" && info_string.include?("`")
+        fence_character = marker[0]
+        fence_length = marker.length
+        next
+      end
+    end
+  end
+
+  text = line.dup
+  loop do
+    if in_comment
+      comment_end = text.index("-->")
+      unless comment_end
+        text = ""
+        break
+      end
+      text = text[(comment_end + 3), text.length] || ""
+      in_comment = false
+      next
+    end
+
+    comment_start = text.index("<!--")
+    break unless comment_start
+
+    prefix = text[0, comment_start] || ""
+    remainder = text[(comment_start + 4), text.length] || ""
+    comment_end = remainder.index("-->")
+    if comment_end
+      text = prefix + (remainder[(comment_end + 3), remainder.length] || "")
+    else
+      text = prefix
+      in_comment = true
+      break
+    end
+  end
+
+  puts text unless text.strip.empty?
+end
+RUBY
+}
+
+fence_fixture="${temp_dir}/documentation-fence-fixture.md"
+cat >"$fence_fixture" <<'EOF'
+visible before tilde fence
+~~~text
+GitHub Releases is Inklet's only supported distribution channel
+~~~
+visible after tilde fence
+
+````markdown
+hidden before shorter backtick marker
+~~~
+hidden after mixed fence marker
+```
+hidden after shorter backtick marker
+`````
+visible after longer backtick close
+EOF
+extract_markdown_prose "$fence_fixture"
+fence_fixture_prose="$(markdown_prose_path "$fence_fixture")"
+for hidden_fence_text in \
+  "GitHub Releases is Inklet's only supported distribution channel" \
+  "hidden before shorter backtick marker" \
+  "hidden after mixed fence marker" \
+  "hidden after shorter backtick marker"; do
+  if grep -Fq -- "$hidden_fence_text" "$fence_fixture_prose"; then
+    record_documentation_failure \
+      "Markdown prose extraction must exclude CommonMark fenced code contents."
+    break
+  fi
+done
+for visible_fence_text in \
+  "visible before tilde fence" \
+  "visible after tilde fence" \
+  "visible after longer backtick close"; do
+  if ! grep -Fq -- "$visible_fence_text" "$fence_fixture_prose"; then
+    record_documentation_failure \
+      "Markdown prose extraction must resume after a valid closing fence."
+    break
+  fi
+done
+
+marker_info_fence_fixture="${temp_dir}/documentation-marker-info-fence-fixture.md"
+cat >"$marker_info_fence_fixture" <<'EOF'
+```~~~text
+hidden in backtick fence with tilde-prefixed info
+```
+visible after backtick fence with tilde-prefixed info
+~~~```text
+hidden in tilde fence with backtick-prefixed info
+~~~
+visible after tilde fence with backtick-prefixed info
+EOF
+extract_markdown_prose "$marker_info_fence_fixture"
+marker_info_fence_prose="$(markdown_prose_path "$marker_info_fence_fixture")"
+for hidden_marker_info_text in \
+  "hidden in backtick fence with tilde-prefixed info" \
+  "hidden in tilde fence with backtick-prefixed info"; do
+  if grep -Fq -- "$hidden_marker_info_text" "$marker_info_fence_prose"; then
+    record_documentation_failure \
+      "Markdown prose extraction must accept marker-prefixed CommonMark fence info strings."
+    break
+  fi
+done
+for visible_marker_info_text in \
+  "visible after backtick fence with tilde-prefixed info" \
+  "visible after tilde fence with backtick-prefixed info"; do
+  if ! grep -Fq -- "$visible_marker_info_text" "$marker_info_fence_prose"; then
+    record_documentation_failure \
+      "Markdown prose extraction must close marker-prefixed info fences correctly."
+    break
+  fi
+done
+
+invalid_backtick_info_fixture="${temp_dir}/documentation-invalid-backtick-info-fixture.md"
+cat >"$invalid_backtick_info_fixture" <<'EOF'
+```lang`bad
+visible after invalid backtick fence info
+EOF
+extract_markdown_prose "$invalid_backtick_info_fixture"
+invalid_backtick_info_prose="$(markdown_prose_path "$invalid_backtick_info_fixture")"
+for invalid_backtick_info_text in \
+  '```lang`bad' \
+  "visible after invalid backtick fence info"; do
+  if ! grep -Fq -- "$invalid_backtick_info_text" "$invalid_backtick_info_prose"; then
+    record_documentation_failure \
+      "Markdown prose extraction must preserve a backtick fence line whose info contains a backtick."
+    break
+  fi
+done
+
+indented_code_fixture="${temp_dir}/documentation-indented-code-fixture.md"
+printf '%s\n' \
+  "    GitHub Releases is Inklet's only supported distribution channel" \
+  "    hidden second space-indented code line" \
+  "" \
+  "    hidden space-indented code after internal blank" \
+  "visible after space-indented code" \
+  "" \
+  $'\tGitHub Releases is Inklet\047s only supported distribution channel' \
+  $'\thidden second tab-indented code line' \
+  "" \
+  $'\thidden tab-indented code after internal blank' \
+  "visible after tab-indented code" \
+  "paragraph continues directly" \
+  "    visible indented paragraph continuation" \
+  >"$indented_code_fixture"
+extract_markdown_prose "$indented_code_fixture"
+indented_code_prose="$(markdown_prose_path "$indented_code_fixture")"
+for hidden_indented_code_text in \
+  "GitHub Releases is Inklet's only supported distribution channel" \
+  "hidden second space-indented code line" \
+  "hidden space-indented code after internal blank" \
+  "hidden second tab-indented code line" \
+  "hidden tab-indented code after internal blank"; do
+  if grep -Fq -- "$hidden_indented_code_text" "$indented_code_prose"; then
+    record_documentation_failure \
+      "Markdown prose extraction must exclude top-level CommonMark indented code blocks."
+    break
+  fi
+done
+for visible_after_indented_code_text in \
+  "visible after space-indented code" \
+  "visible after tab-indented code" \
+  "paragraph continues directly" \
+  "visible indented paragraph continuation"; do
+  if ! grep -Fq -- "$visible_after_indented_code_text" "$indented_code_prose"; then
+    record_documentation_failure \
+      "Markdown prose extraction must preserve prose around top-level indented code blocks."
+    break
+  fi
+done
+
+require_documentation_prose() {
+  local document_path="$1"
+  local required_text="$2"
+  local description="$3"
+  local prose_path
+
+  prose_path="$(markdown_prose_path "$document_path")"
+  if ! grep -Fiq -- "$required_text" "$prose_path"; then
+    record_documentation_failure "$(basename "$document_path") must document ${description}."
+  fi
+}
+
+for documentation_file in "${public_documentation_files[@]}"; do
+  extract_markdown_prose "$documentation_file"
+done
+
+english_readme="${repo_root}/README.md"
+require_documentation_prose "$english_readme" \
+  "GitHub Releases is Inklet's only supported distribution channel" \
+  "GitHub Releases as the sole distribution channel"
+require_documentation_prose "$english_readme" \
+  "signed and notarized DMG" \
+  "the signed and notarized DMG"
+require_documentation_prose "$english_readme" \
+  "install script" \
+  "the verified installer workflow"
+require_documentation_prose "$english_readme" \
+  "Accessibility-first" \
+  "the generic Accessibility-first selection path"
+require_documentation_prose "$english_readme" \
+  "configured temporary clipboard fallback" \
+  "the configured temporary clipboard fallback"
+require_documentation_prose "$english_readme" \
+  "captured source process" \
+  "source-process validation and cancellation"
+require_documentation_prose "$english_readme" \
+  "newer clipboard contents win" \
+  "conditional clipboard restoration"
+require_documentation_prose "$english_readme" \
+  "double-copy trigger is passive" \
+  "the passive double-copy trigger"
+require_documentation_prose "$english_readme" \
+  "Right-click remains native" \
+  "native right-click behavior"
+require_documentation_prose "$english_readme" \
+  "does not request browser Automation" \
+  "the absence of browser Automation"
+require_documentation_prose "$english_readme" \
+  "~/Library/Application Support/com.tomwan.inklet/" \
+  "the production bundle-qualified Application Support root"
+require_documentation_prose "$english_readme" \
+  "~/Library/Application Support/com.tomwan.inklet.local/" \
+  "the local bundle-qualified Application Support root"
+require_documentation_prose "$english_readme" \
+  "automatically copies recognized legacy preferences" \
+  "automatic recognized-data migration"
+require_documentation_prose "$english_readme" \
+  "does not delete or modify the legacy source" \
+  "copy-not-delete legacy migration"
+require_documentation_prose "$english_readme" \
+  "Import Old Data" \
+  "the Settings assisted-import fallback"
+
+chinese_readme="${repo_root}/README.zh-CN.md"
+require_documentation_prose "$chinese_readme" \
+  "GitHub Releases 是 Inklet 唯一支持的发布渠道" \
+  "GitHub Releases 作为唯一发布渠道"
+require_documentation_prose "$chinese_readme" \
+  "已签名并完成 Apple 公证的 DMG" \
+  "已签名和公证的 DMG"
+require_documentation_prose "$chinese_readme" \
+  "安装脚本" \
+  "已验证的安装脚本流程"
+require_documentation_prose "$chinese_readme" \
+  "Accessibility 优先" \
+  "通用的 Accessibility 优先选区流程"
+require_documentation_prose "$chinese_readme" \
+  "按设置启用的临时剪贴板备用读取" \
+  "按设置启用的临时剪贴板备用流程"
+require_documentation_prose "$chinese_readme" \
+  "捕获的来源进程" \
+  "来源进程验证和取消"
+require_documentation_prose "$chinese_readme" \
+  "较新的剪贴板内容优先" \
+  "有条件的剪贴板恢复"
+require_documentation_prose "$chinese_readme" \
+  "双击复制触发是被动流程" \
+  "被动的双击复制触发"
+require_documentation_prose "$chinese_readme" \
+  "右键点击保留原生行为" \
+  "原生右键行为"
+require_documentation_prose "$chinese_readme" \
+  "不会请求浏览器 Automation" \
+  "不需要浏览器 Automation"
+require_documentation_prose "$chinese_readme" \
+  "~/Library/Application Support/com.tomwan.inklet/" \
+  "正式版按 bundle 隔离的 Application Support 根目录"
+require_documentation_prose "$chinese_readme" \
+  "~/Library/Application Support/com.tomwan.inklet.local/" \
+  "本地版按 bundle 隔离的 Application Support 根目录"
+require_documentation_prose "$chinese_readme" \
+  "自动复制已识别的旧版偏好设置" \
+  "自动迁移已识别的数据"
+require_documentation_prose "$chinese_readme" \
+  "不会删除或修改旧版来源" \
+  "复制而不删除的旧版迁移"
+require_documentation_prose "$chinese_readme" \
+  "导入旧数据" \
+  "Settings 中的辅助导入备用流程"
+
+contributing="${repo_root}/CONTRIBUTING.md"
+require_documentation_prose "$contributing" \
+  "scripts/run-local-app.sh" \
+  "the stable routine local-app workflow"
+require_documentation_prose "$contributing" \
+  "/Applications/Inklet Local.app" \
+  "the stable installed local app"
+require_documentation_prose "$contributing" \
+  "Do not use an ad-hoc-signed or worktree-local app for routine QA" \
+  "the routine-QA signing and path restriction"
+require_documentation_prose "$contributing" \
+  ".github/workflows/build-dmg.yml" \
+  "the direct release workflow"
+require_documentation_prose "$contributing" \
+  "scripts/README.md" \
+  "the distribution-script reference"
+
+privacy_policy="${repo_root}/docs/privacy-policy.md"
+require_documentation_prose "$privacy_policy" \
+  "Last updated: August 12, 2026" \
+  "the current policy date"
+for privacy_text in \
+  "~/Library/Application Support/com.tomwan.inklet/" \
+  "~/Library/Application Support/com.tomwan.inklet.local/" \
+  "~/Library/Preferences/com.tomwan.inklet.plist" \
+  "~/Library/Preferences/com.tomwan.inklet.local.plist" \
+  'InkletSelectionActions.<bundle-identifier>.log' \
+  "Inklet.ProviderAPIKey" \
+  "Inklet.Local.ProviderAPIKey" \
+  "history.jsonl" \
+  "selection-translation-cache.json" \
+  "does not delete or modify the legacy source" \
+  "does not save a persistent bookmark" \
+  "newer clipboard contents win" \
+  "does not request Automation permission" \
+  "Mere selection or copying does not persist text to disk." \
+  "A selection result may remain in process memory as Inklet's current selection state until it is replaced or cleared, or until Inklet exits." \
+  "Only successful Selection actions are saved in local History; successful translations may also be stored in the 7-day local translation cache." \
+  "Accessibility" \
+  "Microphone" \
+  "models.dev"; do
+  require_documentation_prose "$privacy_policy" "$privacy_text" "${privacy_text}"
+done
+
+security_policy="${repo_root}/SECURITY.md"
+for security_text in \
+  "Keychain" \
+  "bundle-qualified storage" \
+  "legacy migration" \
+  "captured source process" \
+  "clipboard transaction serialization" \
+  "conditional clipboard restoration" \
+  "signed and notarized direct releases" \
+  "release verifier"; do
+  require_documentation_prose "$security_policy" "$security_text" "${security_text}"
+done
+
+manual_checklist="${repo_root}/docs/manual-test-checklist.md"
+for checklist_text in \
+  "This checklist defines required manual verification; it does not claim that any item has been run." \
+  "scripts/run-local-app.sh" \
+  "/Applications/Inklet Local.app" \
+  "fresh install" \
+  "signed in-place upgrade" \
+  "automatic migration" \
+  "assisted import" \
+  "legacy source remains unchanged" \
+  "idempotent" \
+  "production and local builds concurrently" \
+  "settings, History, translation cache, diagnostics, defaults, and Keychain" \
+  "Accessibility trust" \
+  "Keychain access" \
+  "Deny Accessibility" \
+  "Deny Microphone" \
+  "macOS 14.x" \
+  "macOS 15.x" \
+  "macOS 26.x" \
+  "Chrome, Safari, Edge, and a native AppKit text view" \
+  "drag selection" \
+  "double-click" \
+  "triple-click" \
+  "Shift-modified keyboard selection" \
+  "double-copy" \
+  "right-click" \
+  "protected" \
+  "focus change" \
+  "clipboard race" \
+  "No browser Automation prompt" \
+  "hdiutil verify" \
+  "stapler validate" \
+  "Gatekeeper" \
+  "effective entitlements" \
+  "first voice use" \
+  "rebuild and reinstall the local app twice"; do
+  require_documentation_prose "$manual_checklist" "$checklist_text" "${checklist_text}"
+done
+
+if ((${#documentation_contract_failures[@]} > 0)); then
+  printf 'Documentation contract failures:\n' >&2
+  printf '  - %s\n' "${documentation_contract_failures[@]}" >&2
+  fail "Active public documentation does not satisfy the direct-distribution contract."
+fi
+
 expected_local_signing_setting='INKLET_LOCAL_SIGN_IDENTITY="<code-signing-identity-hash>"'
 configured_example_lines="$(grep -Ev '^[[:space:]]*(#|$)' "${repo_root}/.env.local.example" || true)"
 if [[ "$configured_example_lines" != "$expected_local_signing_setting" ]]; then
