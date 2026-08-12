@@ -15,6 +15,87 @@ fail() {
   exit 1
 }
 
+retired_scripts=(
+  "build-app-store-release.sh"
+  "build-app-store-spike.sh"
+  "rebuild-sandbox-app.sh"
+)
+for retired_script in "${retired_scripts[@]}"; do
+  if [[ -e "${script_dir}/${retired_script}" ]]; then
+    fail "${retired_script} must be retired."
+  fi
+done
+
+active_contract_files=(
+  "${script_dir}/README.md"
+  "${repo_root}/.env.local.example"
+  "${repo_root}/.gitignore"
+)
+for active_script in "${script_dir}"/*.sh; do
+  case "$(basename "$active_script")" in
+    test-*.sh)
+      continue
+      ;;
+  esac
+  active_contract_files+=("$active_script")
+done
+
+retired_names=(
+  "app-store-spike"
+  "build-app-store"
+  "rebuild-sandbox"
+  "INKLET_APP_STORE_"
+  "ASC_EMAIL"
+  "ASC_PASSWORD"
+)
+for retired_name in "${retired_names[@]}"; do
+  if grep -Fiq -- "$retired_name" "${active_contract_files[@]}"; then
+    fail "Active tooling and documentation must not reference ${retired_name}."
+  fi
+done
+
+expected_local_signing_setting='INKLET_LOCAL_SIGN_IDENTITY="<code-signing-identity-hash>"'
+configured_example_lines="$(grep -Ev '^[[:space:]]*(#|$)' "${repo_root}/.env.local.example" || true)"
+if [[ "$configured_example_lines" != "$expected_local_signing_setting" ]]; then
+  fail ".env.local.example must contain only the local signing identity setting and comments."
+fi
+
+for stale_ignore in docs/app-store-submission.md docs/mac-app-store-spike.md; do
+  if grep -Fxq "$stale_ignore" "${repo_root}/.gitignore"; then
+    fail ".gitignore must not retain ${stale_ignore}."
+  fi
+done
+
+ignored_private_paths=(
+  ".private/example"
+  ".env.local"
+  "example.p8"
+  "example.p12"
+  "example.mobileprovision"
+  "example.provisionprofile"
+)
+for ignored_private_path in "${ignored_private_paths[@]}"; do
+  if ! git -C "$repo_root" check-ignore -q --no-index "$ignored_private_path"; then
+    fail ".gitignore must keep ${ignored_private_path} ignored."
+  fi
+done
+
+documented_scripts=(
+  "build-macos-app-bundle.sh"
+  "install.sh"
+  "reset-local-state.sh"
+  "run-local-app.sh"
+  "verify-direct-app.sh"
+)
+for documented_script in "${documented_scripts[@]}"; do
+  if ! grep -Fq -- "$documented_script" "${script_dir}/README.md"; then
+    fail "scripts/README.md must document ${documented_script}."
+  fi
+done
+if ! grep -Fq -- '--scope local|production|all' "${script_dir}/README.md"; then
+  fail "scripts/README.md must document the destructive reset scopes."
+fi
+
 assert_safe_output() {
   local output_path="$1"
 

@@ -2,28 +2,27 @@
 
 This directory is split by workflow. Prefer the smallest script that matches the job.
 
-## Release
+## Direct Bundle
 
-- `build-app-store-release.sh` builds, signs, validates, and optionally uploads a Mac App Store `.pkg`.
-- `build-macos-app-bundle.sh` builds a signed `.app` bundle in `dist/app-store-spike/` or the output directory you pass with `INKLET_OUTPUT_DIR`.
-- `build-app-store-spike.sh` is a backwards-compatible wrapper for `build-macos-app-bundle.sh`.
+- `build-macos-app-bundle.sh` builds and signs an Inklet `.app` in `dist/direct/` by default. Pass `INKLET_OUTPUT_DIR` to select another output directory.
+- `verify-direct-app.sh` checks a direct-distribution bundle's identifier, signature, Hardened Runtime, entitlements, privacy metadata, and release signing policy.
 
 ## Public Install
 
-- `install.sh` downloads the latest notarized GitHub Releases DMG, verifies checksum, checks Gatekeeper and app signature, then installs Inklet.
+- `install.sh` downloads the latest notarized GitHub Releases DMG, verifies its checksum, Gatekeeper acceptance, and app signature, then installs Inklet.
 
 ## Local QA
 
-- `rebuild-sandbox-app.sh` builds, verifies, installs to `/Applications/Inklet.app`, and opens the app. It preserves local Inklet preferences and Keychain data.
-- `run-local-app.sh` is the default routine hand-testing path for agents and worktrees. It builds, verifies, installs, and opens `/Applications/Inklet Local.app` with the `com.tomwan.inklet.local` bundle identifier. It requires a stable signing identity by default so macOS can preserve Accessibility permission across rebuilds.
-- `reset-local-state.sh` resets preferences, Accessibility and Microphone permissions, Keychain API keys, and temporary voice recordings.
-- `reset-rebuild-install.sh` runs the full destructive first-launch flow: reset local state, remove `/Applications/Inklet.app`, rebuild, reinstall, and open.
+- `run-local-app.sh` is the routine hand-testing path for agents and worktrees. It builds, verifies, installs, and opens `/Applications/Inklet Local.app` with the `com.tomwan.inklet.local` bundle identifier. It uses a stable signing identity so macOS can preserve Accessibility permission across rebuilds.
+- `reset-local-state.sh --scope local|production|all` performs an explicitly scoped destructive reset of preferences, Accessibility and Microphone permissions, the matching Keychain API key, app data, and selection diagnostics. Add `--remove-installed-app` to remove only the app selected by the scope, or `--dry-run` to inspect every exact target without changing state.
+- `reset-rebuild-install.sh` runs the destructive local first-launch flow: reset only local state, remove `/Applications/Inklet Local.app`, then rebuild, reinstall, and open it through `run-local-app.sh`.
 
 ## Checks
 
+- `test-direct-distribution.sh` checks the direct-distribution bundle and verifier contracts.
 - `test-install-security.sh` checks safety invariants in `install.sh`.
 - `test-run-local-app.sh` checks that local app runs use stable signing, local bundle settings, and redacted signing logs.
-- `test-reset-local-state.sh` checks that local reset covers current Keychain API keys.
+- `test-reset-local-state.sh` checks exact reset scopes, targets, and destructive-command safety.
 
 ## Assets
 
