@@ -29,6 +29,99 @@ final class WritingModeLauncherSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("controlTextDidChange"))
     }
 
+    func testPickerSearchFieldAlignsNativeTextEditingWithPlaceholder() throws {
+        let source = try pickerSource()
+        let cellStart = try XCTUnwrap(source.range(
+            of: "private final class WritingModeSearchFieldCell: NSSearchFieldCell"
+        ))
+        let controlStart = try XCTUnwrap(source.range(
+            of: "private final class WritingModeSearchFieldControl: NSSearchField",
+            range: cellStart.upperBound..<source.endIndex
+        ))
+        let searchFieldStart = try XCTUnwrap(source.range(
+            of: "private struct WritingModeSearchField",
+            range: controlStart.upperBound..<source.endIndex
+        ))
+        let cellSource = source[cellStart.lowerBound..<controlStart.lowerBound]
+        let controlSource = source[controlStart.lowerBound..<searchFieldStart.lowerBound]
+        let searchFieldSource = source[searchFieldStart.lowerBound...]
+        let cellText = String(cellSource)
+        let editStart = try XCTUnwrap(cellSource.range(of: "override func edit("))
+        let selectStart = try XCTUnwrap(cellSource.range(
+            of: "override func select(",
+            range: editStart.upperBound..<cellSource.endIndex
+        ))
+        let editBlock = cellSource[editStart.lowerBound..<selectStart.lowerBound]
+        let selectBlock = cellSource[selectStart.lowerBound...]
+        let makeNSViewStart = try XCTUnwrap(searchFieldSource.range(of: "func makeNSView"))
+        let updateNSViewStart = try XCTUnwrap(searchFieldSource.range(
+            of: "func updateNSView",
+            range: makeNSViewStart.upperBound..<searchFieldSource.endIndex
+        ))
+        let makeNSViewBlock = searchFieldSource[makeNSViewStart.lowerBound..<updateNSViewStart.lowerBound]
+
+        XCTAssertTrue(cellSource.contains("override func searchTextRect(forBounds rect: NSRect) -> NSRect"))
+        XCTAssertTrue(cellSource.contains("super.searchTextRect(forBounds: rect).insetBy(dx: 4, dy: 0)"))
+        for parameter in [
+            "withFrame rect: NSRect",
+            "in controlView: NSView",
+            "editor textObj: NSText",
+            "delegate: Any?",
+            "event: NSEvent?"
+        ] {
+            XCTAssertTrue(editBlock.contains(parameter))
+        }
+        for parameter in [
+            "withFrame rect: NSRect",
+            "in controlView: NSView",
+            "editor textObj: NSText",
+            "delegate: Any?",
+            "start selStart: Int",
+            "length selLength: Int"
+        ] {
+            XCTAssertTrue(selectBlock.contains(parameter))
+        }
+        XCTAssertTrue(editBlock.contains("super.edit("))
+        XCTAssertTrue(editBlock.contains("withFrame: searchTextRect(forBounds: rect)"))
+        XCTAssertTrue(selectBlock.contains("super.select("))
+        XCTAssertTrue(selectBlock.contains("withFrame: searchTextRect(forBounds: rect)"))
+        XCTAssertEqual(
+            cellText.components(separatedBy: "withFrame: searchTextRect(forBounds: rect)").count - 1,
+            2
+        )
+        for forwardedArgument in ["in: controlView", "editor: textObj", "delegate: delegate"] {
+            XCTAssertTrue(editBlock.contains(forwardedArgument))
+            XCTAssertTrue(selectBlock.contains(forwardedArgument))
+            XCTAssertEqual(
+                cellText.components(separatedBy: forwardedArgument).count - 1,
+                2
+            )
+        }
+        XCTAssertTrue(editBlock.contains("event: event"))
+        XCTAssertEqual(cellText.components(separatedBy: "event: event").count - 1, 1)
+        XCTAssertTrue(selectBlock.contains("start: selStart"))
+        XCTAssertEqual(cellText.components(separatedBy: "start: selStart").count - 1, 1)
+        XCTAssertTrue(selectBlock.contains("length: selLength"))
+        XCTAssertEqual(cellText.components(separatedBy: "length: selLength").count - 1, 1)
+        XCTAssertTrue(controlSource.contains("override class var cellClass: AnyClass?"))
+        XCTAssertTrue(controlSource.contains("get { WritingModeSearchFieldCell.self }"))
+        XCTAssertTrue(controlSource.contains("set {}"))
+        XCTAssertTrue(makeNSViewBlock.contains(
+            "let searchField = WritingModeSearchFieldControl(frame: .zero)"
+        ))
+        XCTAssertFalse(makeNSViewBlock.contains(".cell ="))
+        XCTAssertFalse(makeNSViewBlock.contains("searchField.cell ="))
+        XCTAssertFalse(source.range(
+            of: #"searchButtonCell\s*=\s*nil"#,
+            options: .regularExpression
+        ) != nil)
+        XCTAssertFalse(source.range(
+            of: #"cancelButtonCell\s*=\s*nil"#,
+            options: .regularExpression
+        ) != nil)
+        XCTAssertFalse(source.contains("textContainerInset"))
+    }
+
     func testPickerSearchFocusRetriesOnlyCurrentRevisionAndDeactivatesOnDismantle() throws {
         let source = try pickerSource()
         let searchFieldStart = try XCTUnwrap(source.range(of: "private struct WritingModeSearchField"))

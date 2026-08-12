@@ -281,6 +281,53 @@ private struct SelectedWritingModeAccessibilityModifier: ViewModifier {
     }
 }
 
+private final class WritingModeSearchFieldCell: NSSearchFieldCell {
+    override func searchTextRect(forBounds rect: NSRect) -> NSRect {
+        super.searchTextRect(forBounds: rect).insetBy(dx: 4, dy: 0)
+    }
+
+    override func edit(
+        withFrame rect: NSRect,
+        in controlView: NSView,
+        editor textObj: NSText,
+        delegate: Any?,
+        event: NSEvent?
+    ) {
+        super.edit(
+            withFrame: searchTextRect(forBounds: rect),
+            in: controlView,
+            editor: textObj,
+            delegate: delegate,
+            event: event
+        )
+    }
+
+    override func select(
+        withFrame rect: NSRect,
+        in controlView: NSView,
+        editor textObj: NSText,
+        delegate: Any?,
+        start selStart: Int,
+        length selLength: Int
+    ) {
+        super.select(
+            withFrame: searchTextRect(forBounds: rect),
+            in: controlView,
+            editor: textObj,
+            delegate: delegate,
+            start: selStart,
+            length: selLength
+        )
+    }
+}
+
+private final class WritingModeSearchFieldControl: NSSearchField {
+    override class var cellClass: AnyClass? {
+        get { WritingModeSearchFieldCell.self }
+        set {}
+    }
+}
+
 private struct WritingModeSearchField: NSViewRepresentable {
     @Binding var text: String
     let placeholder: String
@@ -292,7 +339,7 @@ private struct WritingModeSearchField: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSSearchField {
-        let searchField = NSSearchField(frame: .zero)
+        let searchField = WritingModeSearchFieldControl(frame: .zero)
         searchField.delegate = context.coordinator
         searchField.stringValue = text
         searchField.placeholderString = placeholder
