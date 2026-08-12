@@ -17,7 +17,8 @@
 - Notes: repeat the transform and insert flow.
 - Safari or Chrome: repeat the flow in a web text field.
 - Initial focus: each time the popover opens, confirm the mode search field is focused and the source editor is not focused yet.
-- Filtering: configure English, Chinese, mixed-case, and diacritic-bearing mode names; confirm search is case- and diacritic-insensitive, matches Chinese text, and preserves the visible mode order from Settings.
+- Search field layout: at the actual 600-point popover width, confirm the magnifier never overlaps the empty placeholder, caret, typed query, or Chinese IME marked text; clear a query and confirm the native clear button works without overlap.
+- Fuzzy ranking: configure `To Simple and Correct English`, `To Chinese Summary`, mixed-case, diacritic-bearing, and Chinese mode names; confirm `ts` finds both built-in modes with Simple first, `tcs` ranks the Chinese mode first, and search supports case-insensitive, diacritic-insensitive, Chinese substring, and Chinese ordered-character matching.
 - Arrow navigation: press `Up` / `Down` through filtered modes and confirm the highlight clamps at the first and last result instead of wrapping.
 - `Tab` in the launcher: confirm it commits the highlighted mode and focuses the source editor.
 - `Return` in the launcher: outside active IME composition, confirm it is consumed, performs no action, and leaves the launcher open. During Chinese IME composition, confirm it accepts the text or candidate normally without unexpectedly entering the source editor.
