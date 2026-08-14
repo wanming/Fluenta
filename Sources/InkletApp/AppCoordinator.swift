@@ -109,9 +109,14 @@ final class AppCoordinator: NSObject {
                 self?.handleSelectionActionCandidate(at: point)
             }
         }
-        self.selectionActionMonitor.onCopyTrigger = { [weak self] point in
+        self.selectionActionMonitor.onCopyTrigger = {
+            [weak self] point, initialPasteboardChangeCount, sourceProcessIdentifier in
             Task { @MainActor in
-                self?.handleSelectionActionCopyTrigger(at: point)
+                self?.handleSelectionActionCopyTrigger(
+                    at: point,
+                    initialPasteboardChangeCount: initialPasteboardChangeCount,
+                    sourceProcessIdentifier: sourceProcessIdentifier
+                )
             }
         }
         self.selectionActionMonitor.onDismiss = { [weak self] reason in
@@ -491,10 +496,12 @@ final class AppCoordinator: NSObject {
         ))
     }
 
-    private func handleSelectionActionCopyTrigger(at point: SelectionPoint) {
-        guard let sourceApp = NSWorkspace.shared.frontmostApplication,
-              sourceApp.processIdentifier != NSRunningApplication.current.processIdentifier
-        else {
+    private func handleSelectionActionCopyTrigger(
+        at point: SelectionPoint,
+        initialPasteboardChangeCount: Int,
+        sourceProcessIdentifier: pid_t
+    ) {
+        guard sourceProcessIdentifier != NSRunningApplication.current.processIdentifier else {
             return
         }
 
@@ -502,14 +509,24 @@ final class AppCoordinator: NSObject {
             try? await Task.sleep(for: .milliseconds(120))
             await MainActor.run {
                 guard let self else { return }
-                let text = NSPasteboard.general.string(forType: .string)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                guard !text.isEmpty else {
-                    SelectionActionDiagnostics.log("copy trigger empty clipboard")
+                guard NSWorkspace.shared.frontmostApplication?.processIdentifier
+                    == sourceProcessIdentifier
+                else {
+                    SelectionActionDiagnostics.log("copy trigger source changed")
                     return
                 }
 
-                SelectionActionDiagnostics.log("copy trigger showPanel length=\(text.count)")
+                let pasteboard = NSPasteboard.general
+                guard let text = SelectionCopyTriggerPolicy.validatedClipboardText(
+                    initialChangeCount: initialPasteboardChangeCount,
+                    currentChangeCount: pasteboard.changeCount,
+                    text: pasteboard.string(forType: .string)
+                ) else {
+                    SelectionActionDiagnostics.log("copy trigger clipboard unchanged or empty")
+                    return
+                }
+
+                SelectionActionDiagnostics.log("copy trigger showPanel")
                 self.selectionActionMonitor.recordPanelShown()
                 self.currentSelectionText = text
                 self.currentTranslationText = ""
@@ -635,9 +652,17 @@ final class AppCoordinator: NSObject {
         }
 
         let config = (try? configStore.load()) ?? AppConfig.defaultConfig()
+        if config.selectionActions.forceSelectionMode != .disabled,
+           !config.selectionActions.allowsSimulatedCopyFallback {
+            let bundleID = pendingSelectionSourceBundleIdentifier
+                ?? sourceProcessIdentifier.map { "pid-\($0)" }
+                ?? "unknown"
+            SelectionActionDiagnostics.log("simulated copy skipped sourceApp=\(bundleID)")
+        }
         let clipboardResult = await selectionClipboardReader.readSelectedText(
             sourceProcessIdentifier: sourceProcessIdentifier,
-            forceSelectionMode: config.selectionActions.forceSelectionMode
+            forceSelectionMode: config.selectionActions.forceSelectionMode,
+            allowsSimulatedCopyFallback: config.selectionActions.allowsSimulatedCopyFallback
         )
         if case .success = clipboardResult {
             SelectionActionDiagnostics.log("force selection fallback success")

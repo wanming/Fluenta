@@ -44,6 +44,9 @@ final class AppCoordinatorSourceTests: XCTestCase {
         XCTAssertTrue(automaticReadBlock.contains("selectionBrowserTextReader.readSelectedText"))
         XCTAssertTrue(automaticReadBlock.contains("selectionClipboardReader.readSelectedText"))
         XCTAssertTrue(automaticReadBlock.contains("forceSelectionMode: config.selectionActions.forceSelectionMode"))
+        XCTAssertTrue(automaticReadBlock.contains(
+            "allowsSimulatedCopyFallback: config.selectionActions.allowsSimulatedCopyFallback"
+        ))
 
         let copyTriggerRange = try XCTUnwrap(source.range(of: "private func handleSelectionActionCopyTrigger"))
         let effectsRange = try XCTUnwrap(source.range(
@@ -51,7 +54,27 @@ final class AppCoordinatorSourceTests: XCTestCase {
             range: copyTriggerRange.upperBound..<source.endIndex
         ))
         let copyTriggerBlock = source[copyTriggerRange.lowerBound..<effectsRange.lowerBound]
-        XCTAssertTrue(copyTriggerBlock.contains("NSPasteboard.general.string"))
+        XCTAssertTrue(copyTriggerBlock.contains("pasteboard.string"))
+    }
+
+    func testManualDoubleCopyValidatesClipboardChangeForSameSourceApp() throws {
+        let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let sourceURL = packageRoot.appendingPathComponent("Sources/InkletApp/AppCoordinator.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let triggerRange = try XCTUnwrap(source.range(of: "private func handleSelectionActionCopyTrigger"))
+        let effectsRange = try XCTUnwrap(source.range(
+            of: "\n    private func handleSelectionActionEffects",
+            range: triggerRange.upperBound..<source.endIndex
+        ))
+        let triggerBlock = source[triggerRange.lowerBound..<effectsRange.lowerBound]
+
+        XCTAssertTrue(triggerBlock.contains("initialPasteboardChangeCount"))
+        XCTAssertTrue(triggerBlock.contains("sourceProcessIdentifier"))
+        XCTAssertTrue(triggerBlock.contains("NSWorkspace.shared.frontmostApplication?.processIdentifier"))
+        XCTAssertTrue(triggerBlock.contains("SelectionCopyTriggerPolicy.validatedClipboardText"))
+        XCTAssertTrue(triggerBlock.contains("currentChangeCount: pasteboard.changeCount"))
+        XCTAssertTrue(triggerBlock.contains("initialChangeCount: initialPasteboardChangeCount"))
+        XCTAssertTrue(triggerBlock.contains("selectionActionWindowController.showMenu"))
     }
 
     func testSelectionActionsDoNotHardcodeIgnoredAppBundleIDs() throws {

@@ -76,20 +76,6 @@ public struct SelectionCopyTriggerPolicy: Equatable, Sendable {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    public mutating func recordCopy(at time: TimeInterval) -> Bool {
-        let decision = recordKeyDown(
-            at: time,
-            pasteboardChangeCount: 0,
-            isRepeat: false,
-            isInkletGenerated: false
-        )
-        recordKeyUp(isInkletGenerated: false)
-        if case .triggered = decision {
-            return true
-        }
-        return false
-    }
-
     private mutating func arm(at time: TimeInterval, pasteboardChangeCount: Int) {
         firstCopyTime = time
         firstPasteboardChangeCount = pasteboardChangeCount
