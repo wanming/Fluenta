@@ -1006,7 +1006,6 @@ final class AppCoordinator: NSObject {
                     systemPrompt: systemPrompt,
                     model: config.model,
                     providerID: providerID,
-                    temperature: config.temperature,
                     timeoutSeconds: config.timeoutSeconds
                 )
                 guard !Task.isCancelled, !isMigrationMaintenanceActive else { return }
@@ -1256,7 +1255,6 @@ final class AppCoordinator: NSObject {
                     sourceText: source,
                     mode: mode,
                     model: config.model,
-                    temperature: config.temperature,
                     timeoutSeconds: config.timeoutSeconds
                 )
                 return result.outputText

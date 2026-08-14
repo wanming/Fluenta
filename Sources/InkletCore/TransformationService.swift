@@ -11,7 +11,6 @@ public struct TransformationService: Sendable {
         sourceText: String,
         mode: PromptMode,
         model: String,
-        temperature: Double,
         timeoutSeconds: TimeInterval
     ) async throws -> TransformationResult {
         let trimmedSource = sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -25,7 +24,6 @@ public struct TransformationService: Sendable {
             modeID: mode.id,
             modeName: mode.name,
             model: model,
-            temperature: temperature,
             timeoutSeconds: timeoutSeconds
         )
 

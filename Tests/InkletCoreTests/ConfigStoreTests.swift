@@ -135,7 +135,6 @@ final class ConfigStoreTests: XCTestCase {
 
         XCTAssertEqual(config.providerID, LLMProviderPreset.openAI.id)
         XCTAssertEqual(config.model, LLMProviderPreset.openAI.defaultModel)
-        XCTAssertEqual(config.temperature, 0.2)
         XCTAssertEqual(config.timeoutSeconds, 20)
         XCTAssertEqual(config.hotkey, "⌥Space")
         XCTAssertEqual(config.appearance, .system)
@@ -157,7 +156,6 @@ final class ConfigStoreTests: XCTestCase {
         var config = AppConfig.defaultConfig()
         config.providerID = LLMProviderPreset.openAI.id
         config.model = "test-model"
-        config.temperature = 0.7
         config.timeoutSeconds = 9
         config.hotkey = "⌘Space"
         config.appearance = .dark
@@ -196,7 +194,6 @@ final class ConfigStoreTests: XCTestCase {
 
         XCTAssertEqual(config.model, "saved-model")
         XCTAssertEqual(config.providerID, AppConfig.defaultConfig().providerID)
-        XCTAssertEqual(config.temperature, AppConfig.defaultConfig().temperature)
         XCTAssertEqual(config.timeoutSeconds, AppConfig.defaultConfig().timeoutSeconds)
         XCTAssertEqual(config.hotkey, AppConfig.defaultConfig().hotkey)
         XCTAssertEqual(config.appearance, AppConfig.defaultConfig().appearance)
@@ -207,6 +204,19 @@ final class ConfigStoreTests: XCTestCase {
             AppConfig.defaultConfig().customOpenAICompatibleEndpoint
         )
         XCTAssertEqual(config.selectionActions, AppConfig.defaultConfig().selectionActions)
+    }
+
+    func testLegacyTemperatureIsIgnoredWhenConfigurationIsResaved() throws {
+        let data = #"{"model":"saved-model","temperature":0.8}"#.data(using: .utf8)!
+
+        let config = try JSONDecoder().decode(AppConfig.self, from: data)
+        let encodedData = try JSONEncoder().encode(config)
+        let encodedJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encodedData) as? [String: Any]
+        )
+
+        XCTAssertEqual(config.model, "saved-model")
+        XCTAssertNil(encodedJSON["temperature"])
     }
 
     func testConfigDecodeMigratesLegacyTapToToggleVoiceRecordingModeToPressAndHold() throws {

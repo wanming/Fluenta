@@ -96,7 +96,7 @@ Run every item below in Chrome, Safari, Edge, and a native AppKit text view. Rep
 ## Settings And History
 
 - `Command+,`: open Settings while Inklet is active.
-- General: change hotkey, timeout, temperature, language, and appearance.
+- General: change hotkey, timeout, language, and appearance.
 - Providers: configure one provider, API key, model, and custom OpenAI-compatible endpoint when needed.
 - Voice: configure shortcut, microphone, speech API key, endpoint, model, auto-processing, and cleanup prompt mode.
 - Selection: configure translation language, Translate prompt, Force Selection mode, pronunciation voice, and speed; preview the voice.

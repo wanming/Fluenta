@@ -14,14 +14,12 @@ public struct AnthropicProvider: LLMProvider {
 
         public var model: String
         public var maxTokens: Int
-        public var temperature: Double
         public var system: String
         public var messages: [Message]
 
         enum CodingKeys: String, CodingKey {
             case model
             case maxTokens = "max_tokens"
-            case temperature
             case system
             case messages
         }
@@ -96,7 +94,6 @@ public struct AnthropicProvider: LLMProvider {
         RequestBody(
             model: request.model,
             maxTokens: 4096,
-            temperature: request.temperature,
             system: request.systemPrompt,
             messages: [
                 RequestBody.Message(
