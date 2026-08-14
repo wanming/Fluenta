@@ -32,7 +32,8 @@ final class SelectionClipboardReaderTests: XCTestCase {
 
         let result = await reader.readSelectedText(
             sourceProcessIdentifier: 42,
-            forceSelectionMode: .menuCopyThenShortcut
+            forceSelectionMode: .menuCopyThenShortcut,
+            allowsSimulatedCopyFallback: true
         )
 
         XCTAssertEqual(result, .success("copied selection"))
@@ -54,6 +55,7 @@ final class SelectionClipboardReaderTests: XCTestCase {
         var didSendShortcut = false
         let reader = SelectionClipboardReader(
             pasteboard: pasteboard,
+            activeProcessIdentifierProvider: { 42 },
             isTrusted: { true },
             copyMenuActionPerformer: { _ in .noMenuItem },
             copyShortcutSender: { _ in
@@ -67,7 +69,8 @@ final class SelectionClipboardReaderTests: XCTestCase {
 
         let result = await reader.readSelectedText(
             sourceProcessIdentifier: 42,
-            forceSelectionMode: .menuCopyThenShortcut
+            forceSelectionMode: .menuCopyThenShortcut,
+            allowsSimulatedCopyFallback: true
         )
 
         XCTAssertEqual(result, .success("Shortcut selection"))
@@ -159,7 +162,7 @@ final class SelectionClipboardReaderTests: XCTestCase {
     }
 
     @MainActor
-    func testShortcutFirstFallsBackToMenuActionWhenShortcutDoesNotProduceText() async {
+    func testLegacyShortcutFirstModeUsesMenuBeforeSimulatedShortcut() async {
         let pasteboard = NSPasteboard.withUniqueName()
         pasteboard.clearContents()
         pasteboard.setString("Original clipboard", forType: .string)
@@ -182,12 +185,110 @@ final class SelectionClipboardReaderTests: XCTestCase {
 
         let result = await reader.readSelectedText(
             sourceProcessIdentifier: 42,
-            forceSelectionMode: .shortcutThenMenuCopy
+            forceSelectionMode: .shortcutThenMenuCopy,
+            allowsSimulatedCopyFallback: true
         )
 
         XCTAssertEqual(result, .success("Menu selection"))
-        XCTAssertTrue(didSendShortcut)
+        XCTAssertFalse(didSendShortcut)
         XCTAssertTrue(didRequestMenu)
         XCTAssertEqual(pasteboard.string(forType: .string), "Original clipboard")
+    }
+
+    @MainActor
+    func testShortcutCapableModeCannotSendShortcutWithoutExplicitPermission() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("Original clipboard", forType: .string)
+        var didSendShortcut = false
+        let reader = SelectionClipboardReader(
+            pasteboard: pasteboard,
+            activeProcessIdentifierProvider: { 42 },
+            copyMenuActionPerformer: { _ in .noMenuItem },
+            copyShortcutSender: { _ in didSendShortcut = true },
+            delayProvider: { _ in },
+            shortcutReadWrapper: { operation in await operation() }
+        )
+
+        let result = await reader.readSelectedText(
+            sourceProcessIdentifier: 42,
+            forceSelectionMode: .menuCopyThenShortcut,
+            allowsSimulatedCopyFallback: false
+        )
+
+        XCTAssertEqual(result, .unsupported)
+        XCTAssertFalse(didSendShortcut)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Original clipboard")
+    }
+
+    @MainActor
+    func testExplicitPermissionUsesMenuThenShortcutForOriginalForegroundProcess() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("Original clipboard", forType: .string)
+        var didSendShortcut = false
+        let reader = SelectionClipboardReader(
+            pasteboard: pasteboard,
+            activeProcessIdentifierProvider: { 42 },
+            copyMenuActionPerformer: { _ in .noMenuItem },
+            copyShortcutSender: { _ in
+                didSendShortcut = true
+                pasteboard.clearContents()
+                pasteboard.setString("selection", forType: .string)
+            },
+            delayProvider: { _ in },
+            shortcutReadWrapper: { operation in await operation() }
+        )
+
+        let result = await reader.readSelectedText(
+            sourceProcessIdentifier: 42,
+            forceSelectionMode: .menuCopyOnly,
+            allowsSimulatedCopyFallback: true
+        )
+
+        XCTAssertEqual(result, .success("selection"))
+        XCTAssertTrue(didSendShortcut)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Original clipboard")
+    }
+
+    @MainActor
+    func testAppSwitchPreventsOptionalShortcut() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("Original clipboard", forType: .string)
+        var didSendShortcut = false
+        let reader = SelectionClipboardReader(
+            pasteboard: pasteboard,
+            activeProcessIdentifierProvider: { 99 },
+            copyMenuActionPerformer: { _ in .noMenuItem },
+            copyShortcutSender: { _ in didSendShortcut = true },
+            delayProvider: { _ in },
+            shortcutReadWrapper: { operation in await operation() }
+        )
+
+        let result = await reader.readSelectedText(
+            sourceProcessIdentifier: 42,
+            forceSelectionMode: .menuCopyOnly,
+            allowsSimulatedCopyFallback: true
+        )
+
+        XCTAssertEqual(result, .unsupported)
+        XCTAssertFalse(didSendShortcut)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Original clipboard")
+    }
+
+    @MainActor
+    func testGeneratedCopyEventsCarryInkletMarker() throws {
+        let source = try XCTUnwrap(CGEventSource(stateID: .hidSystemState))
+        let events = try SelectionClipboardReader.makeCopyShortcutEvents(eventSource: source)
+
+        XCTAssertEqual(
+            events.keyDown.getIntegerValueField(.eventSourceUserData),
+            SelectionClipboardReader.generatedCopyEventUserData
+        )
+        XCTAssertEqual(
+            events.keyUp.getIntegerValueField(.eventSourceUserData),
+            SelectionClipboardReader.generatedCopyEventUserData
+        )
     }
 }

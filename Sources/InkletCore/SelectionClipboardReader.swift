@@ -12,15 +12,19 @@ public enum SelectionCopyMenuActionResult: Equatable, Sendable {
 
 @MainActor
 public final class SelectionClipboardReader {
+    public static let generatedCopyEventUserData: Int64 = 0x494E4B4C45544350
+
     public typealias TrustChecker = @MainActor () -> Bool
     public typealias CopyMenuActionPerformer = @MainActor (pid_t) -> SelectionCopyMenuActionResult
     public typealias CopyShortcutSender = @MainActor (CGEventSource?) throws -> Void
     public typealias DelayProvider = @MainActor (UInt64) async -> Void
     public typealias ShortcutReadWrapper = @MainActor (@escaping @MainActor () async -> String?) async -> String?
+    public typealias ActiveProcessIdentifierProvider = @MainActor () -> pid_t?
 
     private let pasteboard: NSPasteboard
     private let clipboardService: ClipboardService
     private let eventSource: CGEventSource?
+    private let activeProcessIdentifierProvider: ActiveProcessIdentifierProvider
     private let pollIntervalNanoseconds: UInt64
     private let pollTimeoutNanoseconds: UInt64
     private let isTrusted: TrustChecker
@@ -32,6 +36,9 @@ public final class SelectionClipboardReader {
     public init(
         pasteboard: NSPasteboard = .general,
         eventSource: CGEventSource? = CGEventSource(stateID: .hidSystemState),
+        activeProcessIdentifierProvider: @escaping ActiveProcessIdentifierProvider = {
+            NSWorkspace.shared.frontmostApplication?.processIdentifier
+        },
         pollIntervalNanoseconds: UInt64 = 5_000_000,
         pollTimeoutNanoseconds: UInt64 = 400_000_000,
         isTrusted: @escaping TrustChecker = { AXIsProcessTrusted() },
@@ -51,6 +58,7 @@ public final class SelectionClipboardReader {
         self.pasteboard = pasteboard
         self.clipboardService = ClipboardService(pasteboard: pasteboard)
         self.eventSource = eventSource
+        self.activeProcessIdentifierProvider = activeProcessIdentifierProvider
         self.pollIntervalNanoseconds = pollIntervalNanoseconds
         self.pollTimeoutNanoseconds = pollTimeoutNanoseconds
         self.isTrusted = isTrusted
@@ -62,36 +70,21 @@ public final class SelectionClipboardReader {
 
     public func readSelectedText(
         sourceProcessIdentifier: pid_t?,
-        forceSelectionMode: SelectionForceSelectionMode = .menuCopyThenShortcut
+        forceSelectionMode: SelectionForceSelectionMode = .menuCopyOnly,
+        allowsSimulatedCopyFallback: Bool = false
     ) async -> SelectedTextReadResult {
         guard let sourceProcessIdentifier else {
             return .unsupported
         }
 
-        switch forceSelectionMode {
-        case .disabled:
+        guard forceSelectionMode != .disabled else {
             return .unsupported
-        case .menuCopyOnly:
-            return await readSelectedTextByMenuAction(
-                sourceProcessIdentifier: sourceProcessIdentifier,
-                fallbackToShortcut: false
-            )
-        case .menuCopyThenShortcut:
-            return await readSelectedTextByMenuAction(
-                sourceProcessIdentifier: sourceProcessIdentifier,
-                fallbackToShortcut: true
-            )
-        case .shortcutThenMenuCopy:
-            let shortcutResult = await readSelectedTextByShortcut()
-            if case .success = shortcutResult {
-                return shortcutResult
-            }
-            let menuResult = await readSelectedTextByMenuAction(
-                sourceProcessIdentifier: sourceProcessIdentifier,
-                fallbackToShortcut: false
-            )
-            return preferredFallbackResult(primary: shortcutResult, secondary: menuResult)
         }
+
+        return await readSelectedTextByMenuAction(
+            sourceProcessIdentifier: sourceProcessIdentifier,
+            fallbackToShortcut: allowsSimulatedCopyFallback
+        )
     }
 
     private func readSelectedTextByMenuAction(
@@ -110,7 +103,9 @@ public final class SelectionClipboardReader {
             }
             return .emptySelection
         case .noMenuItem:
-            return fallbackToShortcut ? await readSelectedTextByShortcut() : .unsupported
+            return fallbackToShortcut
+                ? await readSelectedTextByShortcut(sourceProcessIdentifier: sourceProcessIdentifier)
+                : .unsupported
         case .disabled:
             return .emptySelection
         case .failed(let message):
@@ -148,62 +143,66 @@ public final class SelectionClipboardReader {
     }
 
     public static func systemSendCopyShortcut(eventSource: CGEventSource?) throws {
-        guard let eventSource,
-              let keyDown = CGEvent(
-                keyboardEventSource: eventSource,
-                virtualKey: 0x08,
-                keyDown: true
-              ),
-              let keyUp = CGEvent(
-                keyboardEventSource: eventSource,
-                virtualKey: 0x08,
-                keyDown: false
-              )
-        else {
+        guard let eventSource else {
             throw SelectionClipboardReaderError.cannotCreateCopyEvent
         }
 
-        keyDown.flags = .maskCommand
-        keyUp.flags = .maskCommand
-        keyDown.post(tap: .cghidEventTap)
-        keyUp.post(tap: .cghidEventTap)
+        let events = try makeCopyShortcutEvents(eventSource: eventSource)
+        events.keyDown.post(tap: .cghidEventTap)
+        events.keyUp.post(tap: .cghidEventTap)
     }
 
-    private func readSelectedTextByShortcut() async -> SelectedTextReadResult {
+    static func makeCopyShortcutEvents(
+        eventSource: CGEventSource
+    ) throws -> (keyDown: CGEvent, keyUp: CGEvent) {
+        guard let keyDown = CGEvent(
+            keyboardEventSource: eventSource,
+            virtualKey: 0x08,
+            keyDown: true
+        ), let keyUp = CGEvent(
+            keyboardEventSource: eventSource,
+            virtualKey: 0x08,
+            keyDown: false
+        ) else {
+            throw SelectionClipboardReaderError.cannotCreateCopyEvent
+        }
+
+        for event in [keyDown, keyUp] {
+            event.flags = .maskCommand
+            event.setIntegerValueField(
+                .eventSourceUserData,
+                value: generatedCopyEventUserData
+            )
+        }
+        return (keyDown, keyUp)
+    }
+
+    private func readSelectedTextByShortcut(
+        sourceProcessIdentifier: pid_t
+    ) async -> SelectedTextReadResult {
         guard isTrusted() else {
             return .permissionDenied
         }
 
+        var sourceWasActive = true
         let text = await shortcutReadWrapper {
             await self.readPasteboardText {
+                guard self.activeProcessIdentifierProvider() == sourceProcessIdentifier else {
+                    sourceWasActive = false
+                    return false
+                }
                 try self.copyShortcutSender(self.eventSource)
                 return true
             }
         }
 
+        guard sourceWasActive else {
+            return .unsupported
+        }
         guard let text else {
             return .emptySelection
         }
         return .success(text)
-    }
-
-    private func preferredFallbackResult(
-        primary: SelectedTextReadResult,
-        secondary: SelectedTextReadResult
-    ) -> SelectedTextReadResult {
-        if case .success = secondary {
-            return secondary
-        }
-        if case .success = primary {
-            return primary
-        }
-        if secondary == .emptySelection {
-            return secondary
-        }
-        if primary == .permissionDenied {
-            return primary
-        }
-        return secondary
     }
 
     private func readPasteboardText(after action: @MainActor () throws -> Bool) async -> String? {
