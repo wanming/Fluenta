@@ -153,6 +153,20 @@ final class SelectedTextReaderTests: XCTestCase {
         XCTAssertFalse(reader.isFocusedSelectableTextElement())
     }
 
+    func testFocusedSelectableElementRejectsGenericContainerRolesWithoutTextCapabilities() {
+        for role in ["AXGroup", "AXMenu", "AXPopUpButton"] {
+            let reader = SelectedTextReader(
+                isTrusted: { true },
+                focusedElementProvider: { SelectedTextElement(rawValue: role) },
+                focusedElementRoleProvider: { _ in role },
+                selectedTextRangeProvider: { _ in .failure(.unsupported) },
+                selectedTextMarkerRangeProvider: { _ in .failure(.unsupported) }
+            )
+
+            XCTAssertFalse(reader.isFocusedSelectableTextElement(), "Unexpected selectable role: \(role)")
+        }
+    }
+
     func testFocusedSelectableElementRejectsNonTextElementWithoutTextSignals() {
         let reader = SelectedTextReader(
             isTrusted: { true },

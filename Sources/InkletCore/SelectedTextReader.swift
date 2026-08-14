@@ -683,10 +683,7 @@ public struct SelectedTextReader: Sendable {
         kAXTextAreaRole,
         kAXComboBoxRole,
         kAXSearchFieldSubrole,
-        kAXPopUpButtonRole,
-        kAXMenuRole,
         kAXStaticTextRole,
-        kAXGroupRole,
         "AXWebArea"
     ]
 
