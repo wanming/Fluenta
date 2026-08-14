@@ -39,11 +39,21 @@ final class VoiceSettingsLocalizationTests: XCTestCase {
         let source = try String(contentsOf: localizationURL, encoding: .utf8)
 
         XCTAssertTrue(source.contains(#""settings.row.forceSelectionMode": "Force Selection""#))
+        XCTAssertTrue(source.contains(
+            #""settings.help.forceSelectionMode": "Fallback used when Accessibility cannot read selected text. Menu Copy does not synthesize keyboard input.""#
+        ))
+        XCTAssertTrue(source.contains(#""settings.row.allowSimulatedCopyFallback": "Allow Simulated Cmd+C""#))
         XCTAssertTrue(source.contains(#""settings.forceSelection.menuCopyThenShortcut": "Menu Copy, then Cmd+C""#))
         XCTAssertTrue(source.contains(#""settings.row.forceSelectionMode": "强制取词""#))
+        XCTAssertTrue(source.contains(
+            #""settings.help.forceSelectionMode": "辅助功能无法读取选中文本时使用此备用方式。菜单复制不会模拟键盘输入。""#
+        ))
+        XCTAssertTrue(source.contains(#""settings.row.allowSimulatedCopyFallback": "允许模拟 Cmd+C""#))
         XCTAssertTrue(source.contains(#""settings.forceSelection.menuCopyThenShortcut": "先菜单复制，再 Cmd+C""#))
         XCTAssertEqual(countDictionaryEntries("settings.row.forceSelectionMode", in: source), 10)
         XCTAssertEqual(countDictionaryEntries("settings.help.forceSelectionMode", in: source), 10)
+        XCTAssertEqual(countDictionaryEntries("settings.row.allowSimulatedCopyFallback", in: source), 10)
+        XCTAssertEqual(countDictionaryEntries("settings.help.allowSimulatedCopyFallback", in: source), 10)
         XCTAssertEqual(countDictionaryEntries("settings.forceSelection.disabled", in: source), 10)
         XCTAssertEqual(countDictionaryEntries("settings.forceSelection.menuCopyOnly", in: source), 10)
         XCTAssertEqual(countDictionaryEntries("settings.forceSelection.menuCopyThenShortcut", in: source), 10)

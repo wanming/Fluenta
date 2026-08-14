@@ -1074,12 +1074,21 @@ struct SettingsView: View {
                 help: L10n.text("settings.help.forceSelectionMode")
             ) {
                 Picker("", selection: $model.config.selectionActions.forceSelectionMode) {
-                    ForEach(SelectionForceSelectionMode.allCases) { mode in
+                    ForEach(SelectionForceSelectionMode.settingsCases) { mode in
                         Text(mode.localizedDisplayName).tag(mode)
                     }
                 }
                 .labelsHidden()
                 .frame(maxWidth: 320, alignment: .leading)
+            }
+
+            settingsRow(
+                L10n.text("settings.row.allowSimulatedCopyFallback"),
+                help: L10n.text("settings.help.allowSimulatedCopyFallback")
+            ) {
+                Toggle("", isOn: $model.config.selectionActions.allowsSimulatedCopyFallback)
+                    .labelsHidden()
+                    .disabled(model.config.selectionActions.forceSelectionMode == .disabled)
             }
 
             settingsRow(

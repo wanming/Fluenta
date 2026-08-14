@@ -1,6 +1,27 @@
 import XCTest
 
 final class SettingsViewSourceTests: XCTestCase {
+    func testSelectionActionsExposeSafeForceSelectionChoicesAndCopyOptIn() throws {
+        let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let sourceURL = packageRoot.appendingPathComponent("Sources/InkletApp/SettingsView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let panelRange = try XCTUnwrap(source.range(of: "private var selectionActionsPanel"))
+        let historyRange = try XCTUnwrap(source.range(
+            of: "\n    private var historyPanel",
+            range: panelRange.upperBound..<source.endIndex
+        ))
+        let panelBlock = source[panelRange.lowerBound..<historyRange.lowerBound]
+
+        XCTAssertTrue(panelBlock.contains("ForEach(SelectionForceSelectionMode.settingsCases)"))
+        XCTAssertFalse(panelBlock.contains("ForEach(SelectionForceSelectionMode.allCases)"))
+        XCTAssertTrue(panelBlock.contains("settings.row.allowSimulatedCopyFallback"))
+        XCTAssertTrue(panelBlock.contains("settings.help.allowSimulatedCopyFallback"))
+        XCTAssertTrue(panelBlock.contains("$model.config.selectionActions.allowsSimulatedCopyFallback"))
+        XCTAssertTrue(panelBlock.contains(
+            ".disabled(model.config.selectionActions.forceSelectionMode == .disabled)"
+        ))
+    }
+
     func testHistoryRowsExposeSingleCopyResultAction() throws {
         let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let sourceURL = packageRoot.appendingPathComponent("Sources/InkletApp/SettingsView.swift")
