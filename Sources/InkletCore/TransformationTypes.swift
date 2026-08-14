@@ -6,7 +6,6 @@ public struct TransformationRequest: Equatable, Sendable {
     public var modeID: String
     public var modeName: String
     public var model: String
-    public var temperature: Double
     public var timeoutSeconds: TimeInterval
 
     public init(
@@ -15,7 +14,6 @@ public struct TransformationRequest: Equatable, Sendable {
         modeID: String,
         modeName: String,
         model: String,
-        temperature: Double,
         timeoutSeconds: TimeInterval
     ) {
         self.sourceText = sourceText
@@ -23,7 +21,6 @@ public struct TransformationRequest: Equatable, Sendable {
         self.modeID = modeID
         self.modeName = modeName
         self.model = model
-        self.temperature = temperature
         self.timeoutSeconds = timeoutSeconds
     }
 }

@@ -7,22 +7,19 @@ public struct SelectionTranslationCacheKey: Codable, Equatable, Sendable {
     public var systemPrompt: String
     public var model: String
     public var providerID: String
-    public var temperature: Double
 
     public init(
         sourceText: String,
         targetLanguageName: String,
         systemPrompt: String,
         model: String,
-        providerID: String,
-        temperature: Double
+        providerID: String
     ) {
         self.sourceText = sourceText
         self.targetLanguageName = targetLanguageName
         self.systemPrompt = systemPrompt
         self.model = model
         self.providerID = providerID
-        self.temperature = temperature
     }
 }
 

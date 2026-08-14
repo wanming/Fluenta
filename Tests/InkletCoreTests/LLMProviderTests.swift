@@ -117,7 +117,6 @@ final class LLMProviderTests: XCTestCase {
             modeID: "polish",
             modeName: "Polish",
             model: "test-model",
-            temperature: 0.2,
             timeoutSeconds: 10
         )
     }

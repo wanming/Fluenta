@@ -267,7 +267,6 @@ final class InkletPopoverViewModel: ObservableObject {
         let promptModeStore = config.promptModeStore
         let mode = promptModeStore.resolve(modeID: selectedModeID, sourceText: source)
         let model = config.model
-        let temperature = config.temperature
         let timeoutSeconds = config.timeoutSeconds
         let providerPreset = config.resolvedProviderPreset
         let providerID = config.providerID
@@ -288,7 +287,6 @@ final class InkletPopoverViewModel: ObservableObject {
                     sourceText: source,
                     mode: mode,
                     model: model,
-                    temperature: temperature,
                     timeoutSeconds: timeoutSeconds
                 )
                 guard !Task.isCancelled else { return }

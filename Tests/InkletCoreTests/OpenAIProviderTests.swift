@@ -9,7 +9,6 @@ final class OpenAIProviderTests: XCTestCase {
             modeID: "polish",
             modeName: "Polish",
             model: "gpt-4.1-mini",
-            temperature: 0.2,
             timeoutSeconds: 10
         )
 
@@ -143,7 +142,6 @@ final class OpenAIProviderTests: XCTestCase {
             modeID: "polish",
             modeName: "Polish",
             model: "gpt-4.1-mini",
-            temperature: 0.2,
             timeoutSeconds: 10
         )
 

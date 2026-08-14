@@ -9,7 +9,6 @@ final class TransformationServiceTests: XCTestCase {
             sourceText: "  hello  ",
             mode: mode,
             model: "test-model",
-            temperature: 0.2,
             timeoutSeconds: 1
         )
 
@@ -24,7 +23,6 @@ final class TransformationServiceTests: XCTestCase {
                 sourceText: "hello",
                 mode: mode,
                 model: "test-model",
-                temperature: 0.2,
                 timeoutSeconds: 1
             )
             XCTFail("Expected emptyResponse")
@@ -44,7 +42,6 @@ final class TransformationServiceTests: XCTestCase {
                 sourceText: "hello",
                 mode: mode,
                 model: "test-model",
-                temperature: 0.2,
                 timeoutSeconds: 0.01
             )
             XCTFail("Expected timeout")
@@ -66,7 +63,6 @@ final class TransformationServiceTests: XCTestCase {
                 sourceText: "hello",
                 mode: mode,
                 model: "test-model",
-                temperature: 0.2,
                 timeoutSeconds: 0.01
             )
             XCTFail("Expected timeout")
@@ -88,7 +84,6 @@ final class TransformationServiceTests: XCTestCase {
                 sourceText: "hello",
                 mode: mode,
                 model: "test-model",
-                temperature: 0.2,
                 timeoutSeconds: 10
             )
         }
