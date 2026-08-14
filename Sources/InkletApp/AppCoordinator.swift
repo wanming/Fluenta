@@ -619,11 +619,13 @@ final class AppCoordinator: NSObject {
 
     private func completeScheduledSelectionRead() async {
         let result = await readSelectedTextForAutomaticSelection()
+        guard !Task.isCancelled else { return }
         SelectionActionDiagnostics.log("read result \(diagnosticSummary(for: result))")
         handleSelectionActionEffects(selectionActionCoordinator.handle(.readCompleted(result)))
     }
 
     private func readSelectedTextForAutomaticSelection() async -> SelectedTextReadResult {
+        guard !Task.isCancelled else { return .unsupported }
         let sourceProcessIdentifier = pendingSelectionSourceProcessIdentifier
         guard selectedTextReader.isFocusedSelectableTextElement(
             sourceProcessIdentifier: sourceProcessIdentifier
@@ -646,12 +648,14 @@ final class AppCoordinator: NSObject {
         let browserResult = await selectionBrowserTextReader.readSelectedText(
             bundleIdentifier: pendingSelectionSourceBundleIdentifier
         )
+        guard !Task.isCancelled else { return .unsupported }
         if case .success = browserResult {
             SelectionActionDiagnostics.log("browser selection fallback success")
             return browserResult
         }
 
         let config = (try? configStore.load()) ?? AppConfig.defaultConfig()
+        guard config.selectionActions.isEnabled else { return .unsupported }
         if config.selectionActions.forceSelectionMode != .disabled,
            !config.selectionActions.allowsSimulatedCopyFallback {
             let bundleID = pendingSelectionSourceBundleIdentifier
@@ -664,6 +668,7 @@ final class AppCoordinator: NSObject {
             forceSelectionMode: config.selectionActions.forceSelectionMode,
             allowsSimulatedCopyFallback: config.selectionActions.allowsSimulatedCopyFallback
         )
+        guard !Task.isCancelled else { return .unsupported }
         if case .success = clipboardResult {
             SelectionActionDiagnostics.log("force selection fallback success")
             return clipboardResult

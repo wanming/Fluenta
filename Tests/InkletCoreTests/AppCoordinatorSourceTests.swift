@@ -77,6 +77,47 @@ final class AppCoordinatorSourceTests: XCTestCase {
         XCTAssertTrue(triggerBlock.contains("selectionActionWindowController.showMenu"))
     }
 
+    func testCancelledAutomaticReadCannotContinueToFallbackOrShowPanel() throws {
+        let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let sourceURL = packageRoot.appendingPathComponent("Sources/InkletApp/AppCoordinator.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let completionRange = try XCTUnwrap(source.range(of: "private func completeScheduledSelectionRead"))
+        let automaticReadRange = try XCTUnwrap(source.range(
+            of: "\n    private func readSelectedTextForAutomaticSelection",
+            range: completionRange.upperBound..<source.endIndex
+        ))
+        let completionBlock = source[completionRange.lowerBound..<automaticReadRange.lowerBound]
+        let completionAwait = try XCTUnwrap(completionBlock.range(
+            of: "await readSelectedTextForAutomaticSelection()"
+        ))
+        let completionCancellation = try XCTUnwrap(completionBlock.range(
+            of: "guard !Task.isCancelled else { return }"
+        ))
+        let completionEffect = try XCTUnwrap(completionBlock.range(
+            of: "handleSelectionActionEffects"
+        ))
+
+        XCTAssertLessThan(completionAwait.lowerBound, completionCancellation.lowerBound)
+        XCTAssertLessThan(completionCancellation.lowerBound, completionEffect.lowerBound)
+
+        let noticeRange = try XCTUnwrap(source.range(
+            of: "\n    private func showSelectionUnsupportedNotice",
+            range: automaticReadRange.upperBound..<source.endIndex
+        ))
+        let automaticReadBlock = source[automaticReadRange.lowerBound..<noticeRange.lowerBound]
+        let browserRead = try XCTUnwrap(automaticReadBlock.range(of: "selectionBrowserTextReader.readSelectedText"))
+        let postBrowserCancellation = try XCTUnwrap(automaticReadBlock.range(
+            of: "guard !Task.isCancelled else { return .unsupported }",
+            range: browserRead.upperBound..<automaticReadBlock.endIndex
+        ))
+        let clipboardRead = try XCTUnwrap(automaticReadBlock.range(
+            of: "selectionClipboardReader.readSelectedText"
+        ))
+
+        XCTAssertLessThan(postBrowserCancellation.lowerBound, clipboardRead.lowerBound)
+        XCTAssertTrue(automaticReadBlock.contains("guard config.selectionActions.isEnabled else"))
+    }
+
     func testSelectionActionsDoNotHardcodeIgnoredAppBundleIDs() throws {
         let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let sourceURL = packageRoot.appendingPathComponent("Sources/InkletCore/SelectionActionCoordinator.swift")

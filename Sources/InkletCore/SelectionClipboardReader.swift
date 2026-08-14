@@ -73,6 +73,10 @@ public final class SelectionClipboardReader {
         forceSelectionMode: SelectionForceSelectionMode = .menuCopyOnly,
         allowsSimulatedCopyFallback: Bool = false
     ) async -> SelectedTextReadResult {
+        guard !Task.isCancelled else {
+            return .unsupported
+        }
+
         guard let sourceProcessIdentifier else {
             return .unsupported
         }
@@ -206,6 +210,10 @@ public final class SelectionClipboardReader {
     }
 
     private func readPasteboardText(after action: @MainActor () throws -> Bool) async -> String? {
+        guard !Task.isCancelled else {
+            return nil
+        }
+
         let snapshot = clipboardService.save()
         let initialChangeCount = pasteboard.changeCount
 

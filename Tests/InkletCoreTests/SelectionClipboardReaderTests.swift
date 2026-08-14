@@ -278,6 +278,41 @@ final class SelectionClipboardReaderTests: XCTestCase {
     }
 
     @MainActor
+    func testCancelledReadDoesNotInvokeMenuOrShortcutCopy() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("Original clipboard", forType: .string)
+        var didRequestMenu = false
+        var didSendShortcut = false
+        let reader = SelectionClipboardReader(
+            pasteboard: pasteboard,
+            activeProcessIdentifierProvider: { 42 },
+            copyMenuActionPerformer: { _ in
+                didRequestMenu = true
+                return .noMenuItem
+            },
+            copyShortcutSender: { _ in didSendShortcut = true },
+            delayProvider: { _ in },
+            shortcutReadWrapper: { operation in await operation() }
+        )
+
+        let task = Task { @MainActor in
+            await reader.readSelectedText(
+                sourceProcessIdentifier: 42,
+                forceSelectionMode: .menuCopyOnly,
+                allowsSimulatedCopyFallback: true
+            )
+        }
+        task.cancel()
+        let result = await task.value
+
+        XCTAssertEqual(result, .unsupported)
+        XCTAssertFalse(didRequestMenu)
+        XCTAssertFalse(didSendShortcut)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Original clipboard")
+    }
+
+    @MainActor
     func testGeneratedCopyEventsCarryInkletMarker() throws {
         let source = try XCTUnwrap(CGEventSource(stateID: .hidSystemState))
         let events = try SelectionClipboardReader.makeCopyShortcutEvents(eventSource: source)
