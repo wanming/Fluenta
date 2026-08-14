@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import InkletCore
 
@@ -98,24 +99,40 @@ private final class RoundedSettingsHostingView<Content: View>: NSHostingView<Con
 
 @MainActor
 final class SettingsWindowController: NSWindowController {
-    private static let didCompleteOnboardingKey = "didCompleteOnboarding"
     private static let systemSettingsBundleIdentifier = "com.apple.systempreferences"
 
     private let configStore: UserDefaultsConfigStore
     private let apiKeyStore: LocalAPIKeyStore
     private let userDefaults: UserDefaults
     private let historyStore: any HistoryStore
+    private let model: SettingsViewModel
+    private let migrationPresentationModel: LegacyMigrationPresentationModel
     private var permissionSettingsObserver: NSObjectProtocol?
     private var settingsWindowCloseObserver: NSObjectProtocol?
     private var permissionMonitorTask: Task<Void, Never>?
     private var systemSettingsReturnTask: Task<Void, Never>?
+    private var cancellables = Set<AnyCancellable>()
     private var didOpenAccessibilitySettings = false
 
-    init(historyStore: any HistoryStore = JSONLHistoryStore()) {
+    var onRequestMigrationImport: (() -> Void)?
+    var onRetryMigrationRelaunch: (() -> Void)?
+    var onQuitForMigration: (() -> Void)?
+    var onMigrationWorkflowIdleChange: ((Bool) -> Void)?
+
+    var isMigrationWorkflowIdle: Bool {
+        model.isMigrationWorkflowIdle
+    }
+
+    init(
+        historyStore: any HistoryStore = JSONLHistoryStore(),
+        migrationPresentationModel: LegacyMigrationPresentationModel
+    ) {
         self.configStore = UserDefaultsConfigStore()
         self.apiKeyStore = LocalAPIKeyStore()
         self.userDefaults = .standard
         self.historyStore = historyStore
+        self.model = SettingsViewModel(historyStore: historyStore)
+        self.migrationPresentationModel = migrationPresentationModel
         let window = SettingsWindow(
             contentRect: NSRect(x: 0, y: 0, width: 860, height: 560),
             styleMask: [.borderless],
@@ -133,6 +150,13 @@ final class SettingsWindowController: NSWindowController {
 
         super.init(window: window)
         shouldCascadeWindows = false
+
+        model.$isMigrationWorkflowIdle
+            .removeDuplicates()
+            .sink { [weak self] isIdle in
+                self?.onMigrationWorkflowIdleChange?(isIdle)
+            }
+            .store(in: &cancellables)
 
         permissionSettingsObserver = NotificationCenter.default.addObserver(
             forName: .inkletDidOpenPermissionSettings,
@@ -172,13 +196,44 @@ final class SettingsWindowController: NSWindowController {
         let config = (try? configStore.load()) ?? AppConfig.defaultConfig()
         window?.appearance = config.appearance.nsAppearance
         window?.contentView = RoundedSettingsHostingView(
-            rootView: SettingsView(initialSection: section, historyStore: historyStore) { [weak window] appearance in
-                window?.appearance = appearance.nsAppearance
-            }
+            rootView: SettingsView(
+                model: model,
+                migrationPresentationModel: migrationPresentationModel,
+                initialSection: section,
+                onAppearanceChange: { [weak window] appearance in
+                    window?.appearance = appearance.nsAppearance
+                },
+                onRequestMigrationImport: { [weak self] in
+                    self?.onRequestMigrationImport?()
+                },
+                onRetryMigrationRelaunch: { [weak self] in
+                    self?.onRetryMigrationRelaunch?()
+                },
+                onQuitForMigration: { [weak self] in
+                    self?.onQuitForMigration?()
+                }
+            )
         )
         window?.center()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    func flushPendingEdits() -> Bool {
+        model.flushPendingEdits()
+    }
+
+    func setMigrationMaintenanceActive(_ isActive: Bool) {
+        model.setMigrationMaintenanceActive(isActive)
+    }
+
+    func waitForMigrationMaintenanceQuiescence() async {
+        await model.waitForMigrationMaintenanceQuiescence()
+    }
+
+    func showMigrationNotice() {
+        guard migrationPresentationModel.phase != .hidden else { return }
+        show(section: .general)
     }
 
     private func scheduleSystemSettingsReturn() {
@@ -261,12 +316,12 @@ final class SettingsWindowController: NSWindowController {
             didOpenAccessibilitySettings: didOpenAccessibilitySettings,
             isAccessibilityTrusted: AccessibilityPermissionService().isTrusted,
             providerAPIKey: providerAPIKey,
-            didCompleteOnboarding: userDefaults.bool(forKey: Self.didCompleteOnboardingKey)
+            didCompleteOnboarding: userDefaults.bool(forKey: InkletPreferenceKeys.didCompleteOnboarding)
         ) else {
             return
         }
 
-        userDefaults.set(true, forKey: Self.didCompleteOnboardingKey)
+        userDefaults.set(true, forKey: InkletPreferenceKeys.didCompleteOnboarding)
         NotificationCenter.default.post(name: .inkletDidCompleteOnboarding, object: nil)
     }
 }

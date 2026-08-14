@@ -20,13 +20,17 @@ enum SelectionActionDismissReason {
 @MainActor
 final class SelectionActionMonitor {
     var onCandidateSelection: ((SelectionPoint) -> Void)?
-    var onCopyTrigger: ((SelectionPoint) -> Void)?
+    var onCopyTrigger: ((SelectionCopyEventTap.Trigger) -> Void)?
     var onDismiss: ((SelectionActionDismissReason) -> Void)?
 
     private var monitors: [Any] = []
     private var dismissalPolicy = SelectionDismissalPolicy()
-    private var copyTriggerPolicy = SelectionCopyTriggerPolicy()
     private var dragPolicy = SelectionDragPolicy()
+    private let copyEventTap: SelectionCopyEventTap
+
+    init(copyEventTap: SelectionCopyEventTap = SelectionCopyEventTap()) {
+        self.copyEventTap = copyEventTap
+    }
 
     func start() {
         guard monitors.isEmpty else {
@@ -34,7 +38,10 @@ final class SelectionActionMonitor {
         }
 
         SelectionActionDiagnostics.log("starting global monitors")
-        monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp, .rightMouseUp]) { [weak self] event in
+        copyEventTap.start { [weak self] trigger in
+            self?.onCopyTrigger?(trigger)
+        }
+        monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp]) { [weak self] event in
             Task { @MainActor in
                 guard let self else { return }
                 let point = SelectionPoint(x: NSEvent.mouseLocation.x, y: NSEvent.mouseLocation.y)
@@ -43,7 +50,7 @@ final class SelectionActionMonitor {
                     case .candidateSelection:
                         break
                     case .dismiss:
-                        SelectionActionDiagnostics.log("dismiss from mouse click")
+                        SelectionActionDiagnostics.logRateLimited("dismiss from mouse click")
                         self.onDismiss?(.mouseClick)
                         return
                     case .ignore:
@@ -51,7 +58,7 @@ final class SelectionActionMonitor {
                     }
                 }
 
-                SelectionActionDiagnostics.log("candidate mouse selection")
+                SelectionActionDiagnostics.logRateLimited("candidate mouse selection")
                 self.dismissalPolicy.recordCandidate(at: Date().timeIntervalSinceReferenceDate)
                 self.onCandidateSelection?(point)
             }
@@ -63,27 +70,23 @@ final class SelectionActionMonitor {
                 return
             }
             Task { @MainActor in
-                SelectionActionDiagnostics.log("candidate keyboard selection")
+                SelectionActionDiagnostics.logRateLimited("candidate keyboard selection")
                 self?.dismissalPolicy.recordCandidate(at: Date().timeIntervalSinceReferenceDate)
                 self?.onCandidateSelection?(SelectionPoint(x: NSEvent.mouseLocation.x, y: NSEvent.mouseLocation.y))
             }
         } as Any)
 
         monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+            guard !Self.isCopyShortcut(event) else {
+                return
+            }
             Task { @MainActor in
                 guard let self else { return }
-                if self.isCopyShortcut(event),
-                   self.copyTriggerPolicy.recordCopy(at: Date().timeIntervalSinceReferenceDate) {
-                    SelectionActionDiagnostics.log("copy trigger")
-                    self.onCopyTrigger?(SelectionPoint(x: NSEvent.mouseLocation.x, y: NSEvent.mouseLocation.y))
-                    return
-                }
-
                 guard self.dismissalPolicy.shouldDismiss(at: Date().timeIntervalSinceReferenceDate) else {
-                    SelectionActionDiagnostics.log("dismiss suppressed during selection grace")
+                    SelectionActionDiagnostics.logRateLimited("dismiss suppressed during selection grace")
                     return
                 }
-                SelectionActionDiagnostics.log("dismiss from keyDown")
+                SelectionActionDiagnostics.logRateLimited("dismiss from keyDown")
                 self.onDismiss?(.keyboard)
             }
         } as Any)
@@ -93,30 +96,34 @@ final class SelectionActionMonitor {
                 guard let self else { return }
                 if event.type == .leftMouseDown {
                     self.dragPolicy.recordMouseDown(at: SelectionPoint(x: NSEvent.mouseLocation.x, y: NSEvent.mouseLocation.y))
-                    SelectionActionDiagnostics.log("mouse down recorded for selection drag")
+                    SelectionActionDiagnostics.logRateLimited("mouse down recorded for selection drag")
                     return
                 }
                 guard self.dismissalPolicy.shouldDismiss(at: Date().timeIntervalSinceReferenceDate) else {
-                    SelectionActionDiagnostics.log("dismiss suppressed during selection grace")
+                    SelectionActionDiagnostics.logRateLimited("dismiss suppressed during selection grace")
                     return
                 }
-                SelectionActionDiagnostics.log("dismiss from \(event.type)")
+                SelectionActionDiagnostics.logRateLimited("dismiss from \(event.type)")
                 self.onDismiss?(.pointerEvent(event.type))
             }
         } as Any)
     }
 
     func stop() {
+        copyEventTap.stop()
         monitors.forEach { NSEvent.removeMonitor($0) }
         monitors.removeAll()
+        SelectionActionDiagnostics.resetEventAggregation()
     }
 
     func recordPanelShown() {
         dismissalPolicy.recordPanelShown()
     }
 
-    private func isCopyShortcut(_ event: NSEvent) -> Bool {
-        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    private nonisolated static func isCopyShortcut(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags
+            .intersection(.deviceIndependentFlagsMask)
+            .subtracting(.capsLock)
         return event.keyCode == 8 && modifiers == .command
     }
 }

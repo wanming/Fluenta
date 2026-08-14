@@ -130,8 +130,8 @@ run "env INKLET_APP_NAME=${app_name} INKLET_BUNDLE_ID=${bundle_id} INKLET_OUTPUT
   INKLET_SIGN_IDENTITY="$sign_identity" \
   "${repo_root}/scripts/build-macos-app-bundle.sh"
 
-run "codesign --verify --deep --strict --verbose=2 ${app_path}" \
-  codesign --verify --deep --strict --verbose=2 "$app_path"
+run "${repo_root}/scripts/verify-direct-app.sh ${app_path} ${bundle_id}" \
+  "${repo_root}/scripts/verify-direct-app.sh" "$app_path" "$bundle_id"
 
 run "osascript -e 'tell application \"${app_name}\" to quit'" \
   osascript -e "tell application \"${app_name}\" to quit" >/dev/null 2>&1 || true
@@ -147,5 +147,8 @@ else
   run "sudo rm -rf ${install_path}" sudo rm -rf "$install_path"
   run "sudo ditto ${app_path} ${install_path}" sudo ditto "$app_path" "$install_path"
 fi
+
+run "${repo_root}/scripts/verify-direct-app.sh ${install_path} ${bundle_id}" \
+  "${repo_root}/scripts/verify-direct-app.sh" "$install_path" "$bundle_id"
 
 run "open -n ${install_path}" open -n "$install_path"

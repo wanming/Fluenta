@@ -73,6 +73,21 @@ public struct KeychainStore {
         }
     }
 
+    public func insertAPIKeyIfAbsent(_ apiKey: String) throws -> Bool {
+        var query = baseQuery()
+        query[kSecValueData as String] = Data(apiKey.utf8)
+
+        let status = client.add(query, result: nil)
+        switch status {
+        case errSecSuccess:
+            return true
+        case errSecDuplicateItem:
+            return false
+        default:
+            throw KeychainStoreError.unexpectedStatus(status)
+        }
+    }
+
     public func loadAPIKey() throws -> String? {
         var query = baseQuery()
         query[kSecReturnData as String] = true

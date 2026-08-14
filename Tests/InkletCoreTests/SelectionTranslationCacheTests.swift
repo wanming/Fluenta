@@ -13,16 +13,27 @@ final class SelectionTranslationCacheTests: XCTestCase {
         targetLanguageName: String = "Simplified Chinese",
         systemPrompt: String = "Translate into Simplified Chinese.",
         model: String = "gpt-test",
-        providerID: String = "openai",
-        temperature: Double = 0.2
+        providerID: String = "openai"
     ) -> SelectionTranslationCacheKey {
         SelectionTranslationCacheKey(
             sourceText: sourceText,
             targetLanguageName: targetLanguageName,
             systemPrompt: systemPrompt,
             model: model,
-            providerID: providerID,
-            temperature: temperature
+            providerID: providerID
+        )
+    }
+
+    func testDefaultFileURLUsesQualifiedStoragePath() {
+        let paths = InkletStoragePaths(
+            bundleIdentifier: "com.tomwan.inklet.local",
+            applicationSupportDirectory: URL(fileURLWithPath: "/Users/test/Library/Application Support"),
+            temporaryDirectory: URL(fileURLWithPath: "/tmp/test")
+        )
+
+        XCTAssertEqual(
+            JSONSelectionTranslationCache.defaultFileURL(storagePaths: paths),
+            paths.translationCacheFileURL
         )
     }
 
@@ -61,7 +72,13 @@ final class SelectionTranslationCacheTests: XCTestCase {
         XCTAssertNil(try cache.translation(for: cacheKey(systemPrompt: "Translate casually."), now: createdAt))
         XCTAssertNil(try cache.translation(for: cacheKey(model: "other-model"), now: createdAt))
         XCTAssertNil(try cache.translation(for: cacheKey(providerID: "other-provider"), now: createdAt))
-        XCTAssertNil(try cache.translation(for: cacheKey(temperature: 0.8), now: createdAt))
+    }
+
+    func testCacheKeyDoesNotEncodeTemperature() throws {
+        let data = try JSONEncoder().encode(cacheKey())
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        XCTAssertNil(json["temperature"])
     }
 
     func testCacheFileDoesNotStoreSourceTextInPlaintext() throws {

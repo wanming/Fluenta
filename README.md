@@ -16,9 +16,9 @@ Watch the demo video: [Inklet on YouTube](https://www.youtube.com/watch?v=F5wmFr
 
 ## Install
 
-Mac App Store: coming soon.
+GitHub Releases is Inklet's only supported distribution channel. Download the latest signed and notarized DMG from [GitHub Releases](https://github.com/wanming/Inklet/releases), open it, and copy Inklet to `/Applications`.
 
-Alternatively, download the latest signed and notarized DMG from [GitHub Releases](https://github.com/wanming/Inklet/releases), or use the install script below. The script downloads the latest DMG, verifies its checksum, checks Gatekeeper and the app signature, and copies Inklet to `/Applications`.
+Alternatively, use the install script below. The install script downloads the latest GitHub Releases DMG and checksum, verifies the DMG structure, checksum, Gatekeeper acceptance, bundle identifier, Hardened Runtime, effective entitlements, and app signature, and then copies Inklet to `/Applications`.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install.sh | bash
@@ -26,13 +26,13 @@ curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install
 
 ## First-Time Setup
 
-1. Open Inklet from your Applications folder. When running from source, use `scripts/run-local-app.sh` to build, install, and launch the stable `/Applications/Inklet Local.app` bundle.
+1. Open Inklet from your Applications folder. For a source build, run `scripts/run-local-app.sh` from the repository root, then use `/Applications/Inklet Local.app`.
 2. Click the Inklet menu bar icon and open Settings.
-3. Grant Accessibility permission when macOS asks. Inklet needs this to return focus to the previous app and paste the result. Inklet stays in the background while System Settings is open and returns to General settings when you close it.
+3. Grant Accessibility permission when macOS asks. Inklet uses this one generic permission to read selections, perform a configured copy fallback, return focus to the previous app, and paste confirmed results. Inklet stays in the background while System Settings is open and returns to General settings when you close it.
 4. Enter your OpenAI API key in General. Inklet uses this one key for writing, voice transcription, selection translation, and pronunciation.
 5. Configure Write Assistant with the model, writing shortcut, generation settings, and prompt modes you want to use.
 6. Optional: configure Voice Write Assistant with a microphone, speech preset, voice shortcut, recording mode, and what happens after transcription.
-7. Optional: configure Selection Assistant with a translation language, AI pronunciation voice, and pronunciation speed, then preview the voice in Settings.
+7. Optional: configure Selection Assistant with a translation language, Force Selection mode, AI pronunciation voice, and pronunciation speed, then preview the voice in Settings.
 8. Grant Microphone permission the first time you use voice dictation.
 
 ## Everyday Use
@@ -68,8 +68,11 @@ The default voice shortcut is Right Option with press-and-hold recording. In Set
   - To Chinese Summary
   - Voice Cleanup
 - Inserts generated text back into the previously focused app.
-- Restores your clipboard after insertion and force-selection reads. Automatic Selection Actions use Accessibility first, browser JavaScript where supported, then the configured Force Selection fallback; pressing `Command+C` twice quickly can explicitly trigger Selection Actions from the copied clipboard text.
-- Lets you edit prompt modes, OpenAI model, timeout, temperature, writing shortcut, voice shortcut, voice recording mode, microphone, speech preset, speech endpoint, speech model, post-transcription handling, selection translation language, selection Translate prompt, Force Selection mode, AI pronunciation voice, and AI pronunciation speed.
+- Uses one application-agnostic, Accessibility-first selection path. Automatic Selection Actions first ask macOS Accessibility for the selection, then use the configured temporary clipboard fallback only when Force Selection permits it. Each read stays bound to the captured source process and cancels if that process exits or loses focus.
+- Keeps simulated `Command+C` off by default. Menu Copy remains the safe Force Selection fallback; you can explicitly enable simulated copy as an advanced fallback for apps without a usable Copy menu, but it may interfere with games, remote desktops, or virtual machines.
+- Serializes temporary clipboard reads and restores the prior snapshot only while the same read still owns the observed copy result; newer clipboard contents win. The double-copy trigger is passive: it consumes the copy the user already made without issuing another synthetic copy or restoring older clipboard data. Right-click remains native and never starts a selection read.
+- Does not use browser-specific selection code and does not request browser Automation. Chrome, Safari, Edge, and native apps use the same generic path.
+- Lets you edit prompt modes, OpenAI model, timeout, writing shortcut, voice shortcut, voice recording mode, microphone, speech preset, speech endpoint, speech model, post-transcription handling, selection translation language, selection Translate prompt, Force Selection mode, simulated-copy permission, AI pronunciation voice, and AI pronunciation speed.
 - Shows local History for successful Write, Voice, and Selection results, with consecutive duplicate entries collapsed, selectable source/result text, a result copy control, and a clear-all action.
 - Uses one shared OpenAI API key for writing, voice transcription, selection translation, and pronunciation.
 - Provides English and Chinese app UI localization.
@@ -89,7 +92,7 @@ Inklet is an early MVP. The repository currently includes:
 - macOS 14 or newer.
 - Swift 6 toolchain.
 - Full Xcode is recommended for XCTest support.
-- Accessibility permission for Inklet, required for returning focus to the previous app and pasting the generated result.
+- Accessibility permission for Inklet, required for generic selection reading, configured copy fallback, returning focus to the previous app, and pasting the generated result.
 - Microphone permission for voice dictation.
 - An OpenAI API key.
 
@@ -141,20 +144,35 @@ docs/                           manual QA and privacy policy
 
 - Keep provider behavior covered by focused unit tests.
 - Use [docs/manual-test-checklist.md](docs/manual-test-checklist.md) before shipping user-facing app changes.
-- Use `scripts/run-local-app.sh` for routine app hand-testing rather than opening worktree-local `dist/...` bundles, so local Accessibility and Keychain approvals stay attached to one stable app identity.
+- Use `scripts/run-local-app.sh` instead of a bare SwiftPM executable or `open dist/...` for routine app hand-testing, so local Accessibility and Keychain approvals stay attached to one stable app identity.
 - Treat the clipboard and Accessibility flows carefully; they are central to the app experience.
 - The project is still MVP-stage, so README details should track the code rather than future plans.
+
+## Local Storage And Upgrades
+
+Production and local QA builds use bundle-qualified storage and do not share settings, History, translation cache, diagnostics, or Keychain credentials:
+
+- Production Application Support: `~/Library/Application Support/com.tomwan.inklet/`
+- Local Application Support: `~/Library/Application Support/com.tomwan.inklet.local/`
+- Production preferences: `~/Library/Preferences/com.tomwan.inklet.plist`
+- Local preferences: `~/Library/Preferences/com.tomwan.inklet.local.plist`
+- Production Keychain service: `Inklet.ProviderAPIKey`
+- Local Keychain service: `Inklet.Local.ProviderAPIKey`
+
+On first launch after upgrading from the legacy sandboxed build, Inklet automatically copies recognized legacy preferences, provider API keys into the matching Keychain service, and History into the current bundle's storage. It does not delete or modify the legacy source, so the old data remains available for rollback or recovery. The disposable translation cache is not migrated.
+
+If macOS blocks automatic access to the matching legacy container, Settings keeps an **Import Old Data…** action available. The assisted import validates the exact legacy `Data` folder for the running production or local bundle, reads it only while the current file-panel grant is valid, and does not save a persistent access bookmark.
 
 ## Privacy
 
 - Inklet uses your configured OpenAI API key to call OpenAI for writing, voice transcription, selection translation, and pronunciation.
 - Voice dictation sends temporary audio to OpenAI transcription.
 - Your OpenAI API key is stored locally on your Mac.
-- Inklet uses Accessibility permission to return focus to the previous app and paste text.
+- Inklet uses Accessibility permission for generic selection reading, configured copy fallback, returning focus to the previous app, and pasting text.
 - Inklet uses Microphone permission only while recording voice dictation.
-- Inklet temporarily uses the clipboard for insertion and configured Force Selection fallback reads, then restores the previous clipboard contents.
+- Inklet temporarily uses the clipboard for insertion and configured Force Selection fallback reads. A Force Selection read restores the previous clipboard only if Inklet's temporary copied value is still current, and does not overwrite a later external clipboard change.
 - Inklet saves successful Write, Voice, and Selection source/result text locally in History until you clear it in Settings, while skipping consecutive duplicate entries.
-- Selection Actions use Accessibility to read the current selection after you select text in another app. For supported browsers, Inklet can use browser JavaScript to read `window.getSelection()`. If Accessibility and browser reading fail, the configured Force Selection mode can briefly invoke menu Copy and/or `Command+C`, restore the previous clipboard, and use the copied text. You can turn Force Selection off in Settings. Pressing `Command+C` twice quickly after selecting text explicitly reads the copied clipboard text. Inklet does not save merely selected text unless a successful action is recorded in local History.
+- Selection Actions capture the source app and selection location, validate that source before and during the read, and use Accessibility to read its current selection. If Accessibility does not return selected text, the configured Force Selection mode can briefly invoke menu Copy and read the resulting clipboard text through the protected transaction described above. Simulated `Command+C` is off by default and runs only after an explicit advanced opt-in. You can turn Force Selection off in Settings. This path sends no browser-targeted Apple Events and does not request browser Automation. Pressing `Command+C` twice quickly after selecting text explicitly reads the copy you already made. Inklet does not save merely selected text unless a successful action is recorded in local History.
 - Selection Assistant caches successful translation results locally for 7 days using hashed cache keys to speed repeated translations.
 - Selection Assistant translation sends selected text and your custom Translate instructions to OpenAI when no local cached translation is available; AI pronunciation sends selected text to OpenAI.
 - Inklet fetches the public model catalog from `models.dev` at most once per day. This request does not include your text, audio, API keys, or app settings.

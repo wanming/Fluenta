@@ -11,13 +11,8 @@ public struct GeminiProvider: LLMProvider {
             public var parts: [Part]
         }
 
-        public struct GenerationConfig: Codable, Equatable {
-            public var temperature: Double
-        }
-
         public var systemInstruction: Content
         public var contents: [Content]
-        public var generationConfig: GenerationConfig
     }
 
     private struct ResponseBody: Decodable {
@@ -107,8 +102,7 @@ public struct GeminiProvider: LLMProvider {
             systemInstruction: .init(role: nil, parts: [.init(text: request.systemPrompt)]),
             contents: [
                 .init(role: "user", parts: [.init(text: request.sourceText)])
-            ],
-            generationConfig: .init(temperature: request.temperature)
+            ]
         )
     }
 

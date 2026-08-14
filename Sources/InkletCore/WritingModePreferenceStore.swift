@@ -1,7 +1,7 @@
 import Foundation
 
 public struct WritingModePreferenceStore: @unchecked Sendable {
-    public static let defaultKey = "lastWritingPromptModeID"
+    public static let defaultKey = InkletPreferenceKeys.lastWritingPromptModeID
 
     private let userDefaults: UserDefaults
     private let key: String

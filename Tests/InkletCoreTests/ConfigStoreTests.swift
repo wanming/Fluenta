@@ -3,40 +3,88 @@ import Security
 @testable import InkletCore
 
 final class ConfigStoreTests: XCTestCase {
-    private final class FakeKeychainClient: KeychainClient {
-        enum Call: Equatable {
+    private final class FakeKeychainClient: KeychainClient, @unchecked Sendable {
+        enum Call: Equatable, Sendable {
             case copyMatching
             case update
             case add
             case delete
         }
 
-        var calls: [Call] = []
-        var copyMatchingStatus: OSStatus = errSecItemNotFound
-        var updateStatus: OSStatus = errSecItemNotFound
-        var addStatus: OSStatus = errSecSuccess
-        var deleteStatus: OSStatus = errSecSuccess
-        var copyMatchingResult: CFTypeRef?
+        private struct State {
+            var calls: [Call] = []
+            var copyMatchingStatus: OSStatus = errSecItemNotFound
+            var updateStatus: OSStatus = errSecItemNotFound
+            var addStatus: OSStatus = errSecSuccess
+            var deleteStatus: OSStatus = errSecSuccess
+            var copyMatchingResult: Data?
+        }
+
+        private let lock = NSLock()
+        private var state = State()
+
+        var calls: [Call] {
+            withState { $0.calls }
+        }
+
+        var copyMatchingStatus: OSStatus {
+            get { withState { $0.copyMatchingStatus } }
+            set { withState { $0.copyMatchingStatus = newValue } }
+        }
+
+        var updateStatus: OSStatus {
+            get { withState { $0.updateStatus } }
+            set { withState { $0.updateStatus = newValue } }
+        }
+
+        var addStatus: OSStatus {
+            get { withState { $0.addStatus } }
+            set { withState { $0.addStatus = newValue } }
+        }
+
+        var deleteStatus: OSStatus {
+            get { withState { $0.deleteStatus } }
+            set { withState { $0.deleteStatus = newValue } }
+        }
+
+        var copyMatchingResult: Data? {
+            get { withState { $0.copyMatchingResult } }
+            set { withState { $0.copyMatchingResult = newValue } }
+        }
 
         func copyMatching(_ query: [String: Any], result: UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus {
-            calls.append(.copyMatching)
-            result?.pointee = copyMatchingResult
-            return copyMatchingStatus
+            withState { state in
+                state.calls.append(.copyMatching)
+                result?.pointee = state.copyMatchingResult as CFData?
+                return state.copyMatchingStatus
+            }
         }
 
         func update(_ query: [String: Any], attributes: [String: Any]) -> OSStatus {
-            calls.append(.update)
-            return updateStatus
+            withState { state in
+                state.calls.append(.update)
+                return state.updateStatus
+            }
         }
 
         func add(_ query: [String: Any], result: UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus {
-            calls.append(.add)
-            return addStatus
+            withState { state in
+                state.calls.append(.add)
+                return state.addStatus
+            }
         }
 
         func delete(_ query: [String: Any]) -> OSStatus {
-            calls.append(.delete)
-            return deleteStatus
+            withState { state in
+                state.calls.append(.delete)
+                return state.deleteStatus
+            }
+        }
+
+        private func withState<T>(_ body: (inout State) throws -> T) rethrows -> T {
+            lock.lock()
+            defer { lock.unlock() }
+            return try body(&state)
         }
     }
 
@@ -59,12 +107,35 @@ final class ConfigStoreTests: XCTestCase {
         )
     }
 
+    func testRecognizedLegacyPreferenceKeysMatchRegistry() {
+        XCTAssertEqual(InkletPreferenceKeys.recognizedLegacyKeys, [
+            "appConfig",
+            "modelCatalogSnapshot",
+            "InkletInterfaceLanguage",
+            "didCompleteOnboarding",
+            "SelectionActionWindowController.translationPanelSize",
+            "lastWritingPromptModeID"
+        ])
+    }
+
+    func testProviderIDFromLegacyPreferenceKeyRequiresExactPrefixAndNonemptySuffix() {
+        XCTAssertEqual(
+            InkletPreferenceKeys.providerID(fromLegacyKey: "providerAPIKey.openai"),
+            "openai"
+        )
+        XCTAssertEqual(
+            InkletPreferenceKeys.providerID(fromLegacyKey: "providerAPIKey.openai.compatible"),
+            "openai.compatible"
+        )
+        XCTAssertNil(InkletPreferenceKeys.providerID(fromLegacyKey: "providerAPIKey."))
+        XCTAssertNil(InkletPreferenceKeys.providerID(fromLegacyKey: "other.openai"))
+    }
+
     func testDefaultConfigMatchesSpec() {
         let config = AppConfig.defaultConfig()
 
         XCTAssertEqual(config.providerID, LLMProviderPreset.openAI.id)
         XCTAssertEqual(config.model, LLMProviderPreset.openAI.defaultModel)
-        XCTAssertEqual(config.temperature, 0.2)
         XCTAssertEqual(config.timeoutSeconds, 20)
         XCTAssertEqual(config.hotkey, "⌥Space")
         XCTAssertEqual(config.appearance, .system)
@@ -86,7 +157,6 @@ final class ConfigStoreTests: XCTestCase {
         var config = AppConfig.defaultConfig()
         config.providerID = LLMProviderPreset.openAI.id
         config.model = "test-model"
-        config.temperature = 0.7
         config.timeoutSeconds = 9
         config.hotkey = "⌘Space"
         config.appearance = .dark
@@ -95,7 +165,8 @@ final class ConfigStoreTests: XCTestCase {
             isEnabled: false,
             translationLanguage: .japanese,
             pronunciationVoice: .cedar,
-            translationPrompt: "Translate into {targetLanguage} with short wording."
+            translationPrompt: "Translate into {targetLanguage} with short wording.",
+            allowsSimulatedCopyFallback: true
         )
         config.promptModes = [
             PromptMode(
@@ -124,7 +195,6 @@ final class ConfigStoreTests: XCTestCase {
 
         XCTAssertEqual(config.model, "saved-model")
         XCTAssertEqual(config.providerID, AppConfig.defaultConfig().providerID)
-        XCTAssertEqual(config.temperature, AppConfig.defaultConfig().temperature)
         XCTAssertEqual(config.timeoutSeconds, AppConfig.defaultConfig().timeoutSeconds)
         XCTAssertEqual(config.hotkey, AppConfig.defaultConfig().hotkey)
         XCTAssertEqual(config.appearance, AppConfig.defaultConfig().appearance)
@@ -135,6 +205,19 @@ final class ConfigStoreTests: XCTestCase {
             AppConfig.defaultConfig().customOpenAICompatibleEndpoint
         )
         XCTAssertEqual(config.selectionActions, AppConfig.defaultConfig().selectionActions)
+    }
+
+    func testLegacyTemperatureIsIgnoredWhenConfigurationIsResaved() throws {
+        let data = #"{"model":"saved-model","temperature":0.8}"#.data(using: .utf8)!
+
+        let config = try JSONDecoder().decode(AppConfig.self, from: data)
+        let encodedData = try JSONEncoder().encode(config)
+        let encodedJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encodedData) as? [String: Any]
+        )
+
+        XCTAssertEqual(config.model, "saved-model")
+        XCTAssertNil(encodedJSON["temperature"])
     }
 
     func testConfigDecodeMigratesLegacyTapToToggleVoiceRecordingModeToPressAndHold() throws {
@@ -438,24 +521,13 @@ final class ConfigStoreTests: XCTestCase {
     }
 
     func testLocalAPIKeyStoreSavesAndDeletesProviderKeyInKeychain() throws {
-        let suiteName = "LocalAPIKeyStoreTests-\(UUID().uuidString)"
-        let userDefaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer {
-            userDefaults.removePersistentDomain(forName: suiteName)
-        }
-        userDefaults.set("legacy-key", forKey: "testAPIKey.openai")
         let client = FakeKeychainClient()
         client.updateStatus = errSecSuccess
         let store = LocalAPIKeyStore(
-            userDefaults: userDefaults,
-            keyPrefix: "testAPIKey",
-            keychainStore: { _ in KeychainStore(client: client) }
+            keychainStore: { @Sendable _ in KeychainStore(client: client) }
         )
 
         try store.saveAPIKey("local-key", forProviderID: "openai")
-
-        XCTAssertNil(userDefaults.string(forKey: "testAPIKey.openai"))
-
         try store.deleteAPIKey(forProviderID: "openai")
 
         XCTAssertEqual(client.calls, [.update, .delete])
@@ -470,44 +542,53 @@ final class ConfigStoreTests: XCTestCase {
     func testLocalAPIKeyStoreUsesLocalKeychainServiceForLocalBundle() {
         let service = LocalAPIKeyStore.resolvedKeychainService(bundleIdentifier: "com.tomwan.inklet.local")
 
+        XCTAssertEqual(LocalAPIKeyStore.localBundleIdentifier, InkletStoragePaths.localBundleIdentifier)
         XCTAssertEqual(service, LocalAPIKeyStore.localKeychainService)
     }
 
-    func testLocalAPIKeyStoreDoesNotSavePlaintextFallbackWhenKeychainSaveFails() throws {
-        let suiteName = "LocalAPIKeyStoreSaveFailureTests-\(UUID().uuidString)"
-        let userDefaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer {
-            userDefaults.removePersistentDomain(forName: suiteName)
-        }
+    func testLocalAPIKeyStorePropagatesKeychainSaveFailure() {
         let client = FakeKeychainClient()
         client.updateStatus = errSecAuthFailed
         let store = LocalAPIKeyStore(
-            userDefaults: userDefaults,
-            keyPrefix: "testAPIKey",
-            keychainStore: { _ in KeychainStore(client: client) }
+            keychainStore: { @Sendable _ in KeychainStore(client: client) }
         )
 
         XCTAssertThrowsError(try store.saveAPIKey("local-key", forProviderID: "openai"))
-        XCTAssertNil(userDefaults.string(forKey: "testAPIKey.openai"))
+        XCTAssertEqual(client.calls, [.update])
     }
 
-    func testLocalAPIKeyStoreMigratesLegacyUserDefaultsKeyToKeychain() throws {
-        let suiteName = "LocalAPIKeyStoreMigrationTests-\(UUID().uuidString)"
-        let userDefaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    func testLocalAPIKeyStoreLeavesStalePlaintextUserDefaultsKeyUntouchedDuringAllOperations() throws {
+        let providerID = "stale-\(UUID().uuidString)"
+        let legacyKey = "providerAPIKey.\(providerID)"
+        let userDefaults = UserDefaults.standard
+        let previousValue = userDefaults.object(forKey: legacyKey)
+        userDefaults.set("stale-key", forKey: legacyKey)
         defer {
-            userDefaults.removePersistentDomain(forName: suiteName)
+            if let previousValue {
+                userDefaults.set(previousValue, forKey: legacyKey)
+            } else {
+                userDefaults.removeObject(forKey: legacyKey)
+            }
         }
-        userDefaults.set("legacy-key", forKey: "testAPIKey.openai")
+
         let client = FakeKeychainClient()
+        client.copyMatchingStatus = errSecItemNotFound
+        client.updateStatus = errSecSuccess
+        client.deleteStatus = errSecSuccess
         let store = LocalAPIKeyStore(
-            userDefaults: userDefaults,
-            keyPrefix: "testAPIKey",
-            keychainStore: { _ in KeychainStore(client: client) }
+            keychainStore: { @Sendable _ in KeychainStore(client: client) }
         )
 
-        XCTAssertEqual(store.loadAPIKey(forProviderID: "openai"), "legacy-key")
-        XCTAssertNil(userDefaults.string(forKey: "testAPIKey.openai"))
-        XCTAssertEqual(client.calls, [.copyMatching, .update, .add])
+        XCTAssertEqual(userDefaults.string(forKey: legacyKey), "stale-key")
+        XCTAssertNil(store.loadAPIKey(forProviderID: providerID))
+        XCTAssertEqual(userDefaults.string(forKey: legacyKey), "stale-key")
+
+        try store.saveAPIKey("fresh-key", forProviderID: providerID)
+        XCTAssertEqual(userDefaults.string(forKey: legacyKey), "stale-key")
+
+        try store.deleteAPIKey(forProviderID: providerID)
+        XCTAssertEqual(userDefaults.string(forKey: legacyKey), "stale-key")
+        XCTAssertEqual(client.calls, [.copyMatching, .update, .delete])
     }
 
     func testSaveAPIKeyUpdatesExistingKeyWithoutAdding() throws {
@@ -531,6 +612,40 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(client.calls, [.update, .add])
     }
 
+    func testInsertAPIKeyIfAbsentAddsWithoutUpdatingAndReturnsTrue() throws {
+        let client = FakeKeychainClient()
+        client.addStatus = errSecSuccess
+        let store = KeychainStore(client: client)
+
+        XCTAssertTrue(try store.insertAPIKeyIfAbsent("new-key"))
+
+        XCTAssertEqual(client.calls, [.add])
+    }
+
+    func testInsertAPIKeyIfAbsentPreservesDuplicateAndReturnsFalse() throws {
+        let client = FakeKeychainClient()
+        client.addStatus = errSecDuplicateItem
+        let store = KeychainStore(client: client)
+
+        XCTAssertFalse(try store.insertAPIKeyIfAbsent("must-not-overwrite"))
+
+        XCTAssertEqual(client.calls, [.add])
+    }
+
+    func testInsertAPIKeyIfAbsentPropagatesUnexpectedAddFailure() {
+        let client = FakeKeychainClient()
+        client.addStatus = errSecAuthFailed
+        let store = KeychainStore(client: client)
+
+        XCTAssertThrowsError(try store.insertAPIKeyIfAbsent("private-value")) { error in
+            XCTAssertEqual(
+                error as? KeychainStoreError,
+                .unexpectedStatus(errSecAuthFailed)
+            )
+        }
+        XCTAssertEqual(client.calls, [.add])
+    }
+
     func testLoadAPIKeyReturnsNilWhenItemNotFound() throws {
         let client = FakeKeychainClient()
         client.copyMatchingStatus = errSecItemNotFound
@@ -545,7 +660,7 @@ final class ConfigStoreTests: XCTestCase {
     func testLoadAPIKeyThrowsInvalidData() {
         let client = FakeKeychainClient()
         client.copyMatchingStatus = errSecSuccess
-        client.copyMatchingResult = Data([0xFF]) as CFData
+        client.copyMatchingResult = Data([0xFF])
         let store = KeychainStore(client: client)
 
         XCTAssertThrowsError(try store.loadAPIKey()) { error in

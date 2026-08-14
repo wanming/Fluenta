@@ -27,12 +27,12 @@ public struct SelectionDragPolicy: Equatable, Sendable {
             startPoint = nil
         }
 
-        guard let startPoint else {
-            return .ignore
-        }
-
         if clickCount >= 2 {
             return .candidateSelection
+        }
+
+        guard let startPoint else {
+            return .ignore
         }
 
         let dx = point.x - startPoint.x

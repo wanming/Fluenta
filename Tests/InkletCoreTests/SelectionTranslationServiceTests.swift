@@ -12,11 +12,10 @@ final class SelectionTranslationServiceTests: XCTestCase {
 
     func testTranslatesWithInjectedService() async throws {
         let service = SelectionTranslationService(
-            transform: { source, systemPrompt, model, temperature, timeoutSeconds in
+            transform: { source, systemPrompt, model, timeoutSeconds in
                 XCTAssertEqual(source, "hello")
                 XCTAssertEqual(systemPrompt, "Translate into Japanese.")
                 XCTAssertEqual(model, "test-model")
-                XCTAssertEqual(temperature, 0.2)
                 XCTAssertEqual(timeoutSeconds, 3)
                 return "こんにちは"
             }
@@ -26,7 +25,6 @@ final class SelectionTranslationServiceTests: XCTestCase {
             sourceText: "hello",
             systemPrompt: "Translate into Japanese.",
             model: "test-model",
-            temperature: 0.2,
             timeoutSeconds: 3
         )
 
@@ -43,12 +41,11 @@ final class SelectionTranslationServiceTests: XCTestCase {
             targetLanguageName: "Japanese",
             systemPrompt: "Translate into Japanese.",
             model: "test-model",
-            providerID: "openai",
-            temperature: 0.2
+            providerID: "openai"
         )
         try cache.storeTranslation("こんにちは", for: key, now: Date(timeIntervalSince1970: 100))
         let service = CachedSelectionTranslationService(
-            service: SelectionTranslationService { _, _, _, _, _ in
+            service: SelectionTranslationService { _, _, _, _ in
                 XCTFail("Provider should not be called for cached translations.")
                 return "network"
             },
@@ -61,7 +58,6 @@ final class SelectionTranslationServiceTests: XCTestCase {
             systemPrompt: "Translate into Japanese.",
             model: "test-model",
             providerID: "openai",
-            temperature: 0.2,
             timeoutSeconds: 3,
             now: Date(timeIntervalSince1970: 101)
         )
@@ -75,7 +71,7 @@ final class SelectionTranslationServiceTests: XCTestCase {
             .appendingPathComponent("cache.json")
         let cache = JSONSelectionTranslationCache(fileURL: cacheURL)
         let service = CachedSelectionTranslationService(
-            service: SelectionTranslationService { _, _, _, _, _ in
+            service: SelectionTranslationService { _, _, _, _ in
                 "こんにちは"
             },
             cache: cache
@@ -87,7 +83,6 @@ final class SelectionTranslationServiceTests: XCTestCase {
             systemPrompt: "Translate into Japanese.",
             model: "test-model",
             providerID: "openai",
-            temperature: 0.2,
             timeoutSeconds: 3,
             now: Date(timeIntervalSince1970: 100)
         )
@@ -95,7 +90,7 @@ final class SelectionTranslationServiceTests: XCTestCase {
         XCTAssertEqual(result, "こんにちは")
 
         let cachedOnlyService = CachedSelectionTranslationService(
-            service: SelectionTranslationService { _, _, _, _, _ in
+            service: SelectionTranslationService { _, _, _, _ in
                 XCTFail("Provider should not be called after the translation is cached.")
                 return "network"
             },
@@ -107,7 +102,6 @@ final class SelectionTranslationServiceTests: XCTestCase {
             systemPrompt: "Translate into Japanese.",
             model: "test-model",
             providerID: "openai",
-            temperature: 0.2,
             timeoutSeconds: 3,
             now: Date(timeIntervalSince1970: 101)
         )

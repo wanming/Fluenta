@@ -10,14 +10,21 @@ Requirements:
 - Swift 6 toolchain.
 - Full Xcode is recommended for XCTest support.
 
-Build and run:
+Build:
 
 ```bash
 swift build
+```
+
+Build, install, and run the local app:
+
+```bash
 scripts/run-local-app.sh
 ```
 
-The local runner installs and launches the stable `/Applications/Inklet Local.app` identity so Accessibility and Keychain approvals can be reused across rebuilds.
+Use the installed `/Applications/Inklet Local.app` for local testing.
+
+This is the routine QA workflow from every worktree. `scripts/run-local-app.sh` builds and verifies the local bundle, installs it at the stable path, and uses the configured stable signing identity so macOS can retain Accessibility and Keychain trust. Do not use an ad-hoc-signed or worktree-local app for routine QA. Use `scripts/reset-rebuild-install.sh` only for intentional first-launch or permission-reset testing because it removes local state by design.
 
 Run tests:
 
@@ -39,6 +46,12 @@ swift build -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
 - Do not commit local build output, `.dmg` files, `.worktrees/`, `.build/`, API keys, tokens, or personal configuration.
 - Update documentation when changing install, setup, provider, or release behavior.
 - Use English for documentation and project-facing prose.
+
+## Distribution And Release Changes
+
+Inklet ships directly as a signed and notarized GitHub Releases DMG. Keep distribution changes aligned with the active scripts documented in [scripts/README.md](scripts/README.md), the standalone installer contract, and the release workflow in [.github/workflows/build-dmg.yml](.github/workflows/build-dmg.yml).
+
+Before proposing a release-sensitive change, run the focused shell contracts, `swift test`, the strict build above, and `git diff --check`. Do not publish or claim a release from local QA results; the release workflow must still complete signing, notarization, stapling, Gatekeeper, mounted-app, and checksum verification for the final artifact.
 
 ## Security and Privacy Expectations
 

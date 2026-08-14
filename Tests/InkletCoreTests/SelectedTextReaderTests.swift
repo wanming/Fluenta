@@ -27,11 +27,13 @@ final class SelectedTextReaderTests: XCTestCase {
         let reader = SelectedTextReader(
             isTrusted: { true },
             focusedElementProvider: { nil },
+            applicationAccessibilityEnabler: { _ in },
             applicationFocusedElementProvider: { processIdentifier in
                 requestedProcessIdentifier.value = processIdentifier
                 return SelectedTextElement(rawValue: "app-field")
             },
             elementAtPositionProvider: { _ in nil },
+            elementProcessIdentifierProvider: { _ in 42 },
             selectedTextProvider: { element in
                 element.rawValue == AnyHashable("app-field") ? .success("hello") : .success("")
             }
@@ -55,6 +57,7 @@ final class SelectedTextReaderTests: XCTestCase {
                 return SelectedTextElement(rawValue: "app-field")
             },
             elementAtPositionProvider: { _ in nil },
+            elementProcessIdentifierProvider: { _ in 42 },
             selectedTextProvider: { element in
                 element.rawValue == AnyHashable("app-field") ? .success("hello") : .success("")
             }
@@ -70,12 +73,14 @@ final class SelectedTextReaderTests: XCTestCase {
         let reader = SelectedTextReader(
             isTrusted: { true },
             focusedElementProvider: { nil },
+            applicationAccessibilityEnabler: { _ in },
             applicationFocusedElementProvider: { _ in nil },
             applicationFocusedWindowProvider: { processIdentifier in
                 requestedProcessIdentifier.value = processIdentifier
                 return SelectedTextElement(rawValue: "app-window")
             },
             elementAtPositionProvider: { _ in nil },
+            elementProcessIdentifierProvider: { _ in 42 },
             selectedTextProvider: { element in
                 element.rawValue == AnyHashable("app-window") ? .success("window selection") : .success("")
             }
@@ -90,6 +95,7 @@ final class SelectedTextReaderTests: XCTestCase {
         let reader = SelectedTextReader(
             isTrusted: { true },
             focusedElementProvider: { nil },
+            applicationAccessibilityEnabler: { _ in },
             applicationElementProvider: { processIdentifier in
                 requestedProcessIdentifier.value = processIdentifier
                 return SelectedTextElement(rawValue: "app")
@@ -97,6 +103,7 @@ final class SelectedTextReaderTests: XCTestCase {
             applicationFocusedElementProvider: { _ in nil },
             applicationFocusedWindowProvider: { _ in nil },
             elementAtPositionProvider: { _ in nil },
+            elementProcessIdentifierProvider: { _ in 42 },
             childElementsProvider: { element in
                 element.rawValue == AnyHashable("app") ? [SelectedTextElement(rawValue: "app-window")] : []
             },
@@ -109,59 +116,128 @@ final class SelectedTextReaderTests: XCTestCase {
         XCTAssertEqual(requestedProcessIdentifier.value, 42)
     }
 
-    func testFocusedSelectableElementAllowsMissingFocusedElement() {
+    func testIgnoresSystemFocusedElementOwnedByAnotherProcess() {
+        let reader = SelectedTextReader(
+            isTrusted: { true },
+            focusedElementProvider: { SelectedTextElement(rawValue: "foreign-field") },
+            applicationAccessibilityEnabler: { _ in },
+            applicationElementProvider: { _ in nil },
+            applicationFocusedElementProvider: { _ in SelectedTextElement(rawValue: "source-field") },
+            applicationFocusedWindowProvider: { _ in nil },
+            elementProcessIdentifierProvider: { element in
+                switch element.rawValue {
+                case AnyHashable("foreign-field"):
+                    return 99
+                case AnyHashable("source-field"):
+                    return 42
+                default:
+                    return nil
+                }
+            },
+            selectedTextProvider: { element in
+                element.rawValue == AnyHashable("source-field") ? .success("expected") : .success("wrong")
+            }
+        )
+
+        XCTAssertEqual(reader.readSelectedText(sourceProcessIdentifier: 42), .success("expected"))
+    }
+
+    func testRejectsForeignDescendantOfSourceRoot() {
+        let didReadForeignElement = TestBox<Bool>()
         let reader = SelectedTextReader(
             isTrusted: { true },
             focusedElementProvider: { nil },
-            applicationFocusedElementProvider: { _ in nil }
+            applicationAccessibilityEnabler: { _ in },
+            applicationElementProvider: { _ in SelectedTextElement(rawValue: "source-root") },
+            applicationFocusedElementProvider: { _ in nil },
+            applicationFocusedWindowProvider: { _ in nil },
+            elementProcessIdentifierProvider: { element in
+                element.rawValue == AnyHashable("source-root") ? 42 : 99
+            },
+            childElementsProvider: { element in
+                element.rawValue == AnyHashable("source-root")
+                    ? [SelectedTextElement(rawValue: "foreign-child")]
+                    : []
+            },
+            selectedTextProvider: { element in
+                if element.rawValue == AnyHashable("foreign-child") {
+                    didReadForeignElement.value = true
+                    return .success("wrong")
+                }
+                return .success("")
+            }
         )
 
-        XCTAssertTrue(reader.isFocusedSelectableTextElement(sourceProcessIdentifier: 42))
+        XCTAssertEqual(reader.readSelectedText(sourceProcessIdentifier: 42), .emptySelection)
+        XCTAssertNil(didReadForeignElement.value)
     }
 
-    func testFocusedSelectableElementAllowsTextRoles() {
+    func testRejectsCandidateWithUnknownOwnerForSourceProcess() {
+        let didReadUnknownElement = TestBox<Bool>()
         let reader = SelectedTextReader(
             isTrusted: { true },
-            focusedElementProvider: { SelectedTextElement(rawValue: "field") },
-            focusedElementRoleProvider: { _ in "AXTextArea" }
+            focusedElementProvider: { SelectedTextElement(rawValue: "unknown-owner") },
+            applicationAccessibilityEnabler: { _ in },
+            applicationElementProvider: { _ in nil },
+            applicationFocusedElementProvider: { _ in nil },
+            applicationFocusedWindowProvider: { _ in nil },
+            elementProcessIdentifierProvider: { _ in nil },
+            selectedTextProvider: { _ in
+                didReadUnknownElement.value = true
+                return .success("wrong")
+            }
         )
 
-        XCTAssertTrue(reader.isFocusedSelectableTextElement())
+        XCTAssertEqual(reader.readSelectedText(sourceProcessIdentifier: 42), .missingFocusedElement)
+        XCTAssertNil(didReadUnknownElement.value)
     }
 
-    func testFocusedSelectableElementAllowsSelectedTextRange() {
+    func testDefaultOwnerProviderAcceptsAXElementOwnedBySourceProcess() throws {
+        let sourceProcessIdentifier = getpid()
+        let sourceElement = try XCTUnwrap(
+            SelectedTextReader.systemApplicationElement(
+                forProcessIdentifier: sourceProcessIdentifier
+            )
+        )
         let reader = SelectedTextReader(
             isTrusted: { true },
-            focusedElementProvider: { SelectedTextElement(rawValue: "field") },
-            focusedElementRoleProvider: { _ in "AXButton" },
-            selectedTextRangeProvider: { _ in .success(SelectedTextRange(location: 2, length: 4)) }
+            focusedElementProvider: { sourceElement },
+            applicationAccessibilityEnabler: { _ in },
+            applicationElementProvider: { _ in nil },
+            applicationFocusedElementProvider: { _ in nil },
+            applicationFocusedWindowProvider: { _ in nil },
+            childElementsProvider: { _ in [] },
+            selectedTextProvider: { _ in .success("expected") },
+            selectedTextRangeProvider: { _ in .failure(.unsupported) },
+            selectedTextMarkerRangeProvider: { _ in .failure(.unsupported) }
         )
 
-        XCTAssertTrue(reader.isFocusedSelectableTextElement())
+        XCTAssertEqual(
+            reader.readSelectedText(sourceProcessIdentifier: sourceProcessIdentifier),
+            .success("expected")
+        )
     }
 
-    func testFocusedSelectableElementAllowsNonEmptyValue() {
+    func testDefaultOwnerProviderRejectsNonAXElement() {
+        let didReadInvalidElement = TestBox<Bool>()
         let reader = SelectedTextReader(
             isTrusted: { true },
-            focusedElementProvider: { SelectedTextElement(rawValue: "field") },
-            focusedElementRoleProvider: { _ in "AXButton" },
-            focusedElementValueProvider: { _ in "visible text" },
-            selectedTextRangeProvider: { _ in .failure(.unsupported) }
+            focusedElementProvider: { SelectedTextElement(rawValue: "not-an-ax-element") },
+            applicationAccessibilityEnabler: { _ in },
+            applicationElementProvider: { _ in nil },
+            applicationFocusedElementProvider: { _ in nil },
+            applicationFocusedWindowProvider: { _ in nil },
+            selectedTextProvider: { _ in
+                didReadInvalidElement.value = true
+                return .success("wrong")
+            }
         )
 
-        XCTAssertTrue(reader.isFocusedSelectableTextElement())
-    }
-
-    func testFocusedSelectableElementRejectsNonTextElementWithoutTextSignals() {
-        let reader = SelectedTextReader(
-            isTrusted: { true },
-            focusedElementProvider: { SelectedTextElement(rawValue: "map") },
-            focusedElementRoleProvider: { _ in "AXButton" },
-            focusedElementValueProvider: { _ in "" },
-            selectedTextRangeProvider: { _ in .failure(.unsupported) }
+        XCTAssertEqual(
+            reader.readSelectedText(sourceProcessIdentifier: getpid()),
+            .missingFocusedElement
         )
-
-        XCTAssertFalse(reader.isFocusedSelectableTextElement())
+        XCTAssertNil(didReadInvalidElement.value)
     }
 
     func testFallsBackToElementAtMouseLocationWhenFocusedElementsAreMissing() {
