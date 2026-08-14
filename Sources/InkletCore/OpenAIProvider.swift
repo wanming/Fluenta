@@ -14,12 +14,10 @@ public struct OpenAIProvider: LLMProvider {
 
         public var model: String
         public var input: [InputMessage]
-        public var temperature: Double
 
-        public init(model: String, input: [InputMessage], temperature: Double) {
+        public init(model: String, input: [InputMessage]) {
             self.model = model
             self.input = input
-            self.temperature = temperature
         }
     }
 
@@ -106,8 +104,7 @@ public struct OpenAIProvider: LLMProvider {
             input: [
                 RequestBody.InputMessage(role: "system", content: request.systemPrompt),
                 RequestBody.InputMessage(role: "user", content: request.sourceText)
-            ],
-            temperature: request.temperature
+            ]
         )
     }
 

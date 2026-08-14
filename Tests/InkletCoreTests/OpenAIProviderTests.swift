@@ -2,7 +2,7 @@ import XCTest
 @testable import InkletCore
 
 final class OpenAIProviderTests: XCTestCase {
-    func testBuildsResponsesAPIRequest() {
+    func testBuildsResponsesAPIRequestWithoutTemperature() throws {
         let request = TransformationRequest(
             sourceText: "Make this clearer.",
             systemPrompt: "Rewrite in polished English.",
@@ -14,11 +14,17 @@ final class OpenAIProviderTests: XCTestCase {
         )
 
         let body = OpenAIProvider.makeRequestBody(for: request)
+        let json = try encodedJSONObject(body)
+        let input = try XCTUnwrap(json["input"] as? [[String: Any]])
 
-        XCTAssertEqual(body.model, "gpt-4.1-mini")
-        XCTAssertEqual(body.temperature, 0.2)
-        XCTAssertTrue(body.input.contains(.init(role: "system", content: "Rewrite in polished English.")))
-        XCTAssertTrue(body.input.contains(.init(role: "user", content: "Make this clearer.")))
+        XCTAssertNil(json["temperature"])
+        XCTAssertEqual(json["model"] as? String, "gpt-4.1-mini")
+        XCTAssertTrue(input.contains {
+            $0["role"] as? String == "system" && $0["content"] as? String == "Rewrite in polished English."
+        })
+        XCTAssertTrue(input.contains {
+            $0["role"] as? String == "user" && $0["content"] as? String == "Make this clearer."
+        })
     }
 
     func testParsesOutputTextFromResponse() throws {
@@ -149,6 +155,11 @@ final class OpenAIProviderTests: XCTestCase {
         }
 
         MockOpenAIURLProtocol.handler = nil
+    }
+
+    private func encodedJSONObject<T: Encodable>(_ value: T) throws -> [String: Any] {
+        let data = try JSONEncoder().encode(value)
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 }
 

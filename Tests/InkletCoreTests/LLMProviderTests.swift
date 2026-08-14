@@ -46,13 +46,15 @@ final class LLMProviderTests: XCTestCase {
         XCTAssertTrue(LLMProviderPreset.all.allSatisfy { !$0.defaultModel.isEmpty })
     }
 
-    func testChatCompletionBuildsOpenAICompatibleRequest() {
+    func testChatCompletionBuildsOpenAICompatibleRequestWithoutTemperature() throws {
         let body = ChatCompletionProvider.makeRequestBody(for: request)
+        let json = try encodedJSONObject(body)
+        let messages = try XCTUnwrap(json["messages"] as? [[String: Any]])
 
-        XCTAssertEqual(body.model, "test-model")
-        XCTAssertEqual(body.temperature, 0.2)
-        XCTAssertEqual(body.messages.map(\.role), ["system", "user"])
-        XCTAssertEqual(body.messages.map(\.content), ["Rewrite clearly.", "Hello"])
+        XCTAssertNil(json["temperature"])
+        XCTAssertEqual(json["model"] as? String, "test-model")
+        XCTAssertEqual(messages.compactMap { $0["role"] as? String }, ["system", "user"])
+        XCTAssertEqual(messages.compactMap { $0["content"] as? String }, ["Rewrite clearly.", "Hello"])
     }
 
     func testChatCompletionParsesResponseText() throws {
@@ -62,13 +64,17 @@ final class LLMProviderTests: XCTestCase {
         XCTAssertEqual(try ChatCompletionProvider.parseOutputText(from: data), "Hi there.")
     }
 
-    func testAnthropicBuildsMessagesRequest() {
+    func testAnthropicBuildsMessagesRequestWithoutTemperature() throws {
         let body = AnthropicProvider.makeRequestBody(for: request)
+        let json = try encodedJSONObject(body)
+        let messages = try XCTUnwrap(json["messages"] as? [[String: Any]])
+        let content = try XCTUnwrap(messages.first?["content"] as? [[String: Any]])
 
-        XCTAssertEqual(body.model, "test-model")
-        XCTAssertEqual(body.system, "Rewrite clearly.")
-        XCTAssertEqual(body.messages.first?.role, "user")
-        XCTAssertEqual(body.messages.first?.content.first?.text, "Hello")
+        XCTAssertNil(json["temperature"])
+        XCTAssertEqual(json["model"] as? String, "test-model")
+        XCTAssertEqual(json["system"] as? String, "Rewrite clearly.")
+        XCTAssertEqual(messages.first?["role"] as? String, "user")
+        XCTAssertEqual(content.first?["text"] as? String, "Hello")
     }
 
     func testAnthropicParsesResponseText() throws {
@@ -78,13 +84,18 @@ final class LLMProviderTests: XCTestCase {
         XCTAssertEqual(try AnthropicProvider.parseOutputText(from: data), "Hi there.")
     }
 
-    func testGeminiBuildsGenerateContentRequest() {
+    func testGeminiBuildsGenerateContentRequestWithoutGenerationConfig() throws {
         let body = GeminiProvider.makeRequestBody(for: request)
+        let json = try encodedJSONObject(body)
+        let systemInstruction = try XCTUnwrap(json["systemInstruction"] as? [String: Any])
+        let systemParts = try XCTUnwrap(systemInstruction["parts"] as? [[String: Any]])
+        let contents = try XCTUnwrap(json["contents"] as? [[String: Any]])
+        let userParts = try XCTUnwrap(contents.first?["parts"] as? [[String: Any]])
 
-        XCTAssertEqual(body.systemInstruction.parts.first?.text, "Rewrite clearly.")
-        XCTAssertEqual(body.contents.first?.role, "user")
-        XCTAssertEqual(body.contents.first?.parts.first?.text, "Hello")
-        XCTAssertEqual(body.generationConfig.temperature, 0.2)
+        XCTAssertNil(json["generationConfig"])
+        XCTAssertEqual(systemParts.first?["text"] as? String, "Rewrite clearly.")
+        XCTAssertEqual(contents.first?["role"] as? String, "user")
+        XCTAssertEqual(userParts.first?["text"] as? String, "Hello")
     }
 
     func testGeminiParsesResponseText() throws {
@@ -92,6 +103,11 @@ final class LLMProviderTests: XCTestCase {
         let data = try XCTUnwrap(json.data(using: .utf8))
 
         XCTAssertEqual(try GeminiProvider.parseOutputText(from: data), "Hi there.")
+    }
+
+    private func encodedJSONObject<T: Encodable>(_ value: T) throws -> [String: Any] {
+        let data = try JSONEncoder().encode(value)
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
     private var request: TransformationRequest {

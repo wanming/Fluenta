@@ -9,7 +9,6 @@ public struct ChatCompletionProvider: LLMProvider {
 
         public var model: String
         public var messages: [Message]
-        public var temperature: Double
     }
 
     private struct ResponseBody: Decodable {
@@ -88,8 +87,7 @@ public struct ChatCompletionProvider: LLMProvider {
             messages: [
                 RequestBody.Message(role: "system", content: request.systemPrompt),
                 RequestBody.Message(role: "user", content: request.sourceText)
-            ],
-            temperature: request.temperature
+            ]
         )
     }
 
