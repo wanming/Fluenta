@@ -26,13 +26,13 @@ curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install
 
 ## 首次设置
 
-1. 从 Applications 文件夹打开 Inklet，或者在源码目录运行 `swift run Inklet`。
+1. 从 Applications 文件夹打开 Inklet。本地源码构建请使用 `scripts/run-local-app.sh`。
 2. 点击菜单栏里的 Inklet 图标，打开 Settings。
 3. 按 macOS 提示授予 Accessibility 权限。Inklet 需要这个权限来回到上一个应用并粘贴结果。系统设置打开期间 Inklet 会留在后台；关闭系统设置后 Inklet 会返回 General 设置页。
 4. 在 General 中填写 OpenAI API key。Inklet 会用这一把 key 处理写作、语音转写、选区翻译和发音。
 5. 在 Write Assistant 中配置模型、写作快捷键、生成参数和 prompt modes。
 6. 可选：在 Voice Write Assistant 中配置麦克风、speech preset、语音快捷键、录音方式和转写后的处理方式。
-7. 可选：在 Selection Assistant 中配置翻译语言、强制取词模式、AI 发音声音和发音速度，并在设置中试听该声音。
+7. 可选：在 Selection Assistant 中配置翻译语言、安全的强制取词备用方式、AI 发音声音和发音速度，并在设置中试听该声音。
 8. 第一次使用语音输入时，请授予 Microphone 权限。
 
 ## 日常使用
@@ -67,8 +67,10 @@ curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install
   - To Chinese Summary
   - Voice Cleanup
 - 把生成结果插回之前聚焦的应用。
-- 插入和强制取词后都会恢复你的剪贴板内容。自动选区动作优先通过 Accessibility 读取，在支持的浏览器里会尝试浏览器选区读取，然后按设置里的强制取词模式 fallback；选中文本后快速按两次 `Command+C`，可以显式用刚复制的剪贴板文本触发选区动作。
-- 可以编辑 prompt modes、OpenAI 模型、timeout、temperature、写作快捷键、语音快捷键、语音录音方式、麦克风、speech preset、speech endpoint、speech model、转写后处理方式、选区翻译语言、选区 Translate prompt、AI 发音声音和 AI 发音速度。
+- 插入和强制取词后都会恢复你的剪贴板内容。自动选区动作依次使用 Accessibility、支持浏览器的 JavaScript 和菜单复制；这些默认路径不会模拟键盘输入。
+- 默认关闭模拟 `Command+C`。你可以显式开启这一高级备用方式，它只会发送给当时的前台 App，但可能干扰游戏、远程桌面或虚拟机。
+- 保留手动快速双击复制：单次 `Command+C` 只会正常复制；快速、独立地按两次才会用已变化的剪贴板文本打开选区动作。按住按键不会算作两次。
+- 可以编辑 prompt modes、OpenAI 模型、timeout、temperature、写作快捷键、语音快捷键、语音录音方式、麦克风、speech preset、speech endpoint、speech model、转写后处理方式、选区翻译语言、选区 Translate prompt、强制取词模式、模拟复制权限、AI 发音声音和 AI 发音速度。
 - 在本地 History 中查看成功的写作、语音和选区结果，连续重复项会自动合并，原文/结果文本可选择，可一键复制结果或清空全部历史。
 - 使用一把共享的 OpenAI API key 处理写作、语音转写、选区翻译和发音。
 - 提供英文和中文应用界面。
@@ -150,7 +152,7 @@ docs/                    手动测试说明和隐私政策
 - Inklet 只在录音语音输入时使用 Microphone 权限。
 - Inklet 会临时使用剪贴板完成插入和已配置的强制取词备用读取，然后恢复之前的剪贴板内容。
 - Inklet 会把成功的写作、语音和选区原文/结果作为本地 History 保存，直到你在 Settings 中清空；连续重复项会自动跳过。
-- 选区动作会在你选中其他 App 中的文字后，优先通过 Accessibility 读取当前选区；在支持的浏览器中，也会尝试用浏览器 JavaScript 读取 `window.getSelection()`。如果这些方式失败，设置中的强制取词模式可以短暂调用菜单复制和/或 `Command+C`，恢复之前的剪贴板，并使用复制出的文本。你可以在设置中关闭强制取词。选中文本后快速按两次 `Command+C`，会显式读取刚复制的剪贴板文本。Inklet 不会保存仅被选中的文本；只有成功完成的动作会进入本地 History。
+- 选区动作会在你选中其他 App 中的文字后，优先通过 Accessibility 读取当前选区；在支持的浏览器中，也会尝试用浏览器 JavaScript 读取 `window.getSelection()`，最后默认尝试菜单复制。模拟 `Command+C` 默认关闭，只有显式开启高级选项后才会发送给当时的前台 App，并可能干扰游戏、远程桌面或虚拟机。单次 `Command+C` 只会正常复制；快速、独立地按两次会显式读取已变化的剪贴板文本并打开选区动作。Inklet 不会保存仅被选中的文本；只有成功完成的动作会进入本地 History。
 - Selection Assistant 会把成功的翻译结果用哈希缓存键在本地缓存 7 天，以加速重复翻译。
 - 当本地没有可用缓存时，Selection Assistant 翻译会把选中文本和自定义 Translate 指令发送到 OpenAI；AI 发音会把选中文本发送到 OpenAI。
 - Inklet 最多每天从 `models.dev` 获取一次公开模型目录。该请求不包含你的文本、音频、API keys 或应用设置。

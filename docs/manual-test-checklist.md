@@ -2,7 +2,7 @@
 
 ## Preparation
 
-- Launch Inklet from Xcode, `swift run Inklet`, or the installed app bundle.
+- Build, install, and launch the stable local bundle with `scripts/run-local-app.sh`.
 - Configure an LLM provider and API key in Settings.
 - Configure Voice settings with a speech API key if testing dictation.
 - Grant Accessibility permission in macOS System Settings.
@@ -44,6 +44,11 @@
 ## Selection Actions
 
 - Select text in another app and pause briefly; confirm the compact menu appears with Translate and Pronounce.
+- Leave simulated Cmd+C fallback off, play a full-screen game, and confirm mouse/keyboard gameplay never receives an Inklet-generated copy shortcut.
+- Confirm one Cmd+C copies normally; two deliberate independent Cmd+C presses open Selection Actions; holding Cmd+C does not trigger it.
+- With simulated fallback off, verify TextEdit, Notes, Mail, Safari, Chrome, Edge, Terminal, and one standard editor still read selections through safe paths.
+- Turn the advanced fallback on, verify the warning is visible, and confirm switching apps during a pending read never sends Cmd+C to the newly active app.
+- Inspect the local diagnostic log and confirm it contains event metadata/decisions but no selected text, clipboard text, or typed characters, and repeated ignored events are rate-limited.
 - Translate selected text and confirm the result remains visible with copy, original-audio, and translated-audio controls.
 - Translate the same selected text with the same Selection Assistant settings again and confirm the cached result appears quickly.
 - Confirm a successful selection translation appears in Settings > History with the original text and translated result.

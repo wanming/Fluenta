@@ -26,13 +26,13 @@ curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install
 
 ## First-Time Setup
 
-1. Open Inklet from your Applications folder, or start it from source with `swift run Inklet`.
+1. Open Inklet from your Applications folder. For local source builds, use `scripts/run-local-app.sh`.
 2. Click the Inklet menu bar icon and open Settings.
 3. Grant Accessibility permission when macOS asks. Inklet needs this to return focus to the previous app and paste the result. Inklet stays in the background while System Settings is open and returns to General settings when you close it.
 4. Enter your OpenAI API key in General. Inklet uses this one key for writing, voice transcription, selection translation, and pronunciation.
 5. Configure Write Assistant with the model, writing shortcut, generation settings, and prompt modes you want to use.
 6. Optional: configure Voice Write Assistant with a microphone, speech preset, voice shortcut, recording mode, and what happens after transcription.
-7. Optional: configure Selection Assistant with a translation language, AI pronunciation voice, and pronunciation speed, then preview the voice in Settings.
+7. Optional: configure Selection Assistant with a translation language, safe Force Selection fallback, AI pronunciation voice, and pronunciation speed, then preview the voice in Settings.
 8. Grant Microphone permission the first time you use voice dictation.
 
 ## Everyday Use
@@ -67,8 +67,10 @@ The default voice shortcut is Right Option with press-and-hold recording. In Set
   - To Chinese Summary
   - Voice Cleanup
 - Inserts generated text back into the previously focused app.
-- Restores your clipboard after insertion and force-selection reads. Automatic Selection Actions use Accessibility first, browser JavaScript where supported, then the configured Force Selection fallback; pressing `Command+C` twice quickly can explicitly trigger Selection Actions from the copied clipboard text.
-- Lets you edit prompt modes, OpenAI model, timeout, temperature, writing shortcut, voice shortcut, voice recording mode, microphone, speech preset, speech endpoint, speech model, post-transcription handling, selection translation language, selection Translate prompt, Force Selection mode, AI pronunciation voice, and AI pronunciation speed.
+- Restores your clipboard after insertion and Force Selection reads. Automatic Selection Actions use Accessibility first, supported-browser JavaScript next, then Menu Copy; these default paths do not synthesize keyboard input.
+- Keeps simulated `Command+C` off by default. You can explicitly enable it as an advanced fallback sent to the foreground app, but it may interfere with games, remote desktops, or virtual machines.
+- Keeps deliberate double-copy as a manual fallback: one `Command+C` only copies normally, while two separate quick presses can open Selection Actions from the changed clipboard text. Holding the key does not count as two presses.
+- Lets you edit prompt modes, OpenAI model, timeout, temperature, writing shortcut, voice shortcut, voice recording mode, microphone, speech preset, speech endpoint, speech model, post-transcription handling, selection translation language, selection Translate prompt, Force Selection mode, simulated-copy permission, AI pronunciation voice, and AI pronunciation speed.
 - Shows local History for successful Write, Voice, and Selection results, with consecutive duplicate entries collapsed, selectable source/result text, a result copy control, and a clear-all action.
 - Uses one shared OpenAI API key for writing, voice transcription, selection translation, and pronunciation.
 - Provides English and Chinese app UI localization.
@@ -150,7 +152,7 @@ docs/                           manual QA and privacy policy
 - Inklet uses Microphone permission only while recording voice dictation.
 - Inklet temporarily uses the clipboard for insertion and configured Force Selection fallback reads, then restores the previous clipboard contents.
 - Inklet saves successful Write, Voice, and Selection source/result text locally in History until you clear it in Settings, while skipping consecutive duplicate entries.
-- Selection Actions use Accessibility to read the current selection after you select text in another app. For supported browsers, Inklet can use browser JavaScript to read `window.getSelection()`. If Accessibility and browser reading fail, the configured Force Selection mode can briefly invoke menu Copy and/or `Command+C`, restore the previous clipboard, and use the copied text. You can turn Force Selection off in Settings. Pressing `Command+C` twice quickly after selecting text explicitly reads the copied clipboard text. Inklet does not save merely selected text unless a successful action is recorded in local History.
+- Selection Actions use Accessibility to read the current selection after you select text in another app. For supported browsers, Inklet can use browser JavaScript to read `window.getSelection()`; Menu Copy is the default final fallback. Simulated `Command+C` is off by default and requires an explicit advanced opt-in; when enabled, it is sent to the foreground app and may interfere with games, remote desktops, or virtual machines. One `Command+C` only copies normally. Two deliberate, separate quick presses explicitly read the changed clipboard text and open Selection Actions. Inklet does not save merely selected text unless a successful action is recorded in local History.
 - Selection Assistant caches successful translation results locally for 7 days using hashed cache keys to speed repeated translations.
 - Selection Assistant translation sends selected text and your custom Translate instructions to OpenAI when no local cached translation is available; AI pronunciation sends selected text to OpenAI.
 - Inklet fetches the public model catalog from `models.dev` at most once per day. This request does not include your text, audio, API keys, or app settings.

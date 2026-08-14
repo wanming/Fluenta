@@ -1,6 +1,6 @@
 # Inklet Privacy Policy
 
-Last updated: June 26, 2026
+Last updated: August 13, 2026
 
 ## Overview
 
@@ -45,7 +45,11 @@ Inklet may fetch the public model catalog from `models.dev` periodically, curren
 
 ## Selection Actions
 
-When Selection Actions are enabled, Inklet watches for selection-related mouse and keyboard events and then uses macOS Accessibility to read the currently selected text after a short pause. For supported browsers, Inklet may use browser JavaScript to read `window.getSelection()`. If these methods do not return selected text, the configured Force Selection mode may briefly invoke menu Copy and/or `Command+C`, read the changed clipboard text, and restore the previous clipboard contents. You can turn Force Selection off in Settings. Pressing `Command+C` twice quickly after selecting text explicitly reads the copied clipboard text. Inklet does not store merely selected text unless a successful action is saved in local History.
+When Selection Actions are enabled, Inklet watches for selection-related mouse and keyboard events and then uses macOS Accessibility to read the currently selected text after a short pause. For supported browsers, Inklet may use browser JavaScript to read `window.getSelection()`. Menu Copy is the default final fallback when those methods do not return selected text. These automatic defaults do not synthesize keyboard input, and you can turn Force Selection off in Settings.
+
+Simulated `Command+C` is off by default. If you explicitly enable this advanced fallback, Inklet may post `Command+C` to the foreground app after rechecking that the same app is still active. This can interfere with games, remote desktops, or virtual machines. One `Command+C` only performs the normal copy action. Two deliberate, separate quick presses explicitly read the changed clipboard text and open Selection Actions; holding the key does not count as two presses. Inklet does not store merely selected text unless a successful action is saved in local History.
+
+Inklet's local Selection Actions diagnostic log may record timestamps, foreground app identifiers or process IDs, key codes, modifier bits, key-repeat and event-provenance metadata, and handling decisions. Repeated identical events are rate-limited. The diagnostic log never records typed characters, selected text, or clipboard contents.
 
 If you choose Translate, Inklet first checks for a local cached translation. When no cached translation is available, the selected text and your custom Translate instructions are sent to your configured LLM provider. If you choose Pronounce, the selected text is sent to OpenAI text-to-speech using your OpenAI API key. Some apps may still block Accessibility, browser, and Force Selection reads; in those apps the floating menu may not appear automatically.
 
@@ -63,7 +67,7 @@ Inklet temporarily uses the clipboard to insert text into the active app and for
 
 Inklet requests the following macOS permissions:
 
-- Accessibility: used to return focus to the previous app, insert text after you confirm insertion, inspect focused controls, invoke menu Copy when Force Selection is enabled, and read selected text for Selection Actions after you select text.
+- Accessibility: used to return focus to the previous app, insert text after you confirm insertion, inspect focused controls, invoke menu Copy when Force Selection is enabled, and read selected text for Selection Actions after you select text. If you explicitly enable simulated-copy fallback, it may also post `Command+C` to the foreground app.
 - Microphone: used only while recording voice dictation that you start.
 
 Inklet does not use these permissions to collect text from other apps in the background.
