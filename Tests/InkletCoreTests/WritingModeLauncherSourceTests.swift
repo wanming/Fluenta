@@ -376,6 +376,35 @@ final class WritingModeLauncherSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("sourceFocusGeneration.isCurrent(request)"))
     }
 
+    func testEscapeFromVisibleResultRequestsSourceFocusAfterRestoringEditorState() throws {
+        let source = try popoverSource()
+        let escapeStart = try XCTUnwrap(source.range(of: "func escape()"))
+        let openSettingsStart = try XCTUnwrap(source.range(
+            of: "func openSettings()",
+            range: escapeStart.upperBound..<source.endIndex
+        ))
+        let escapeBlock = source[escapeStart.lowerBound..<openSettingsStart.lowerBound]
+        let resultBranchStart = try XCTUnwrap(escapeBlock.range(of: "if !resultText.isEmpty {"))
+        let returnToPickerStart = try XCTUnwrap(escapeBlock.range(
+            of: "\n        returnToModePicker()",
+            range: resultBranchStart.upperBound..<escapeBlock.endIndex
+        ))
+        let resultBranch = escapeBlock[
+            resultBranchStart.lowerBound..<returnToPickerStart.lowerBound
+        ]
+        let restoredEditorState = try XCTUnwrap(resultBranch.range(
+            of: "stateMachine = PopoverStateMachine("
+        ))
+        let focusRequest = try XCTUnwrap(resultBranch.range(of: "requestSourceInputFocus()"))
+        let branchReturn = try XCTUnwrap(resultBranch.range(
+            of: "\n            return",
+            range: restoredEditorState.upperBound..<resultBranch.endIndex
+        ))
+
+        XCTAssertLessThan(restoredEditorState.lowerBound, focusRequest.lowerBound)
+        XCTAssertLessThan(focusRequest.lowerBound, branchReturn.lowerBound)
+    }
+
     func testPopoverShowLeavesSearchFocusedUntilModelRequestsSourceInput() throws {
         let source = try windowControllerSource()
         let showStart = try XCTUnwrap(source.range(of: "func show(fallbackApplication:"))

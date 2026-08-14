@@ -351,6 +351,7 @@ final class InkletPopoverViewModel: ObservableObject {
             stateMachine = PopoverStateMachine(
                 state: .editingSource(source: sourceText, errorMessage: nil)
             )
+            requestSourceInputFocus()
             return
         }
 
