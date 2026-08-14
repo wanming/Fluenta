@@ -9,16 +9,18 @@ final class SelectionActionsConfigTests: XCTestCase {
         XCTAssertEqual(config.translationLanguage, .followInterfaceLanguage)
         XCTAssertEqual(config.pronunciationVoice, .alloy)
         XCTAssertEqual(config.pronunciationSpeed, 1.0)
-        XCTAssertEqual(config.forceSelectionMode, .menuCopyThenShortcut)
+        XCTAssertEqual(config.forceSelectionMode, .menuCopyOnly)
+        XCTAssertFalse(config.allowsSimulatedCopyFallback)
     }
 
-    func testForceSelectionModeCasesMatchEasyDictFallbackOrder() {
+    func testForceSelectionModeKeepsLegacyCasesButExposesOnlySafeSettingsCases() {
         XCTAssertEqual(SelectionForceSelectionMode.allCases, [
             .disabled,
             .menuCopyOnly,
             .menuCopyThenShortcut,
             .shortcutThenMenuCopy
         ])
+        XCTAssertEqual(SelectionForceSelectionMode.settingsCases, [.disabled, .menuCopyOnly])
     }
 
     func testPronunciationSpeedUsesCompactSettingsRange() {
@@ -96,16 +98,31 @@ final class SelectionActionsConfigTests: XCTestCase {
         XCTAssertEqual(config.translationLanguage, .japanese)
         XCTAssertEqual(config.pronunciationVoice, .alloy)
         XCTAssertEqual(config.pronunciationSpeed, 1.0)
-        XCTAssertEqual(config.forceSelectionMode, .menuCopyThenShortcut)
+        XCTAssertEqual(config.forceSelectionMode, .menuCopyOnly)
+        XCTAssertFalse(config.allowsSimulatedCopyFallback)
     }
 
-    func testForceSelectionModeRoundTripsThroughCodable() throws {
-        let config = SelectionActionsConfig(forceSelectionMode: .menuCopyOnly)
+    func testLegacyShortcutModesNormalizeToMenuCopyWithoutExplicitPermission() throws {
+        for mode in ["menuCopyThenShortcut", "shortcutThenMenuCopy"] {
+            let data = Data(#"{"forceSelectionMode":"\#(mode)"}"#.utf8)
+            let config = try JSONDecoder().decode(SelectionActionsConfig.self, from: data)
+
+            XCTAssertEqual(config.forceSelectionMode, .menuCopyOnly)
+            XCTAssertFalse(config.allowsSimulatedCopyFallback)
+        }
+    }
+
+    func testExplicitSimulatedCopyPermissionRoundTrips() throws {
+        let config = SelectionActionsConfig(
+            forceSelectionMode: .menuCopyOnly,
+            allowsSimulatedCopyFallback: true
+        )
 
         let data = try JSONEncoder().encode(config)
         let decoded = try JSONDecoder().decode(SelectionActionsConfig.self, from: data)
 
         XCTAssertEqual(decoded.forceSelectionMode, .menuCopyOnly)
+        XCTAssertTrue(decoded.allowsSimulatedCopyFallback)
     }
 
     func testDecodingClampsPronunciationSpeed() throws {

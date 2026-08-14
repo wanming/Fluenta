@@ -95,7 +95,8 @@ final class ConfigStoreTests: XCTestCase {
             isEnabled: false,
             translationLanguage: .japanese,
             pronunciationVoice: .cedar,
-            translationPrompt: "Translate into {targetLanguage} with short wording."
+            translationPrompt: "Translate into {targetLanguage} with short wording.",
+            allowsSimulatedCopyFallback: true
         )
         config.promptModes = [
             PromptMode(

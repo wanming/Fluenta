@@ -6,7 +6,13 @@ public enum SelectionForceSelectionMode: String, Codable, CaseIterable, Equatabl
     case menuCopyThenShortcut
     case shortcutThenMenuCopy
 
+    public static let settingsCases: [Self] = [.disabled, .menuCopyOnly]
+
     public var id: String { rawValue }
+
+    var normalizedForSafeSettings: Self {
+        self == .disabled ? .disabled : .menuCopyOnly
+    }
 }
 
 public struct SelectionActionsConfig: Codable, Equatable, Sendable {
@@ -20,6 +26,7 @@ public struct SelectionActionsConfig: Codable, Equatable, Sendable {
     public var translationPrompt: String
     public var pronunciationSpeed: Double
     public var forceSelectionMode: SelectionForceSelectionMode
+    public var allowsSimulatedCopyFallback: Bool
 
     static let legacyDefaultTranslationPrompt = """
     Translate the user's selected text into {targetLanguage}.
@@ -44,14 +51,16 @@ public struct SelectionActionsConfig: Codable, Equatable, Sendable {
         pronunciationVoice: SelectionPronunciationVoice = .alloy,
         translationPrompt: String = Self.defaultTranslationPrompt,
         pronunciationSpeed: Double = Self.defaultPronunciationSpeed,
-        forceSelectionMode: SelectionForceSelectionMode = .menuCopyThenShortcut
+        forceSelectionMode: SelectionForceSelectionMode = .menuCopyOnly,
+        allowsSimulatedCopyFallback: Bool = false
     ) {
         self.isEnabled = isEnabled
         self.translationLanguage = translationLanguage
         self.pronunciationVoice = pronunciationVoice
         self.translationPrompt = translationPrompt
         self.pronunciationSpeed = Self.clampedPronunciationSpeed(pronunciationSpeed)
-        self.forceSelectionMode = forceSelectionMode
+        self.forceSelectionMode = forceSelectionMode.normalizedForSafeSettings
+        self.allowsSimulatedCopyFallback = allowsSimulatedCopyFallback
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -61,6 +70,7 @@ public struct SelectionActionsConfig: Codable, Equatable, Sendable {
         case translationPrompt
         case pronunciationSpeed
         case forceSelectionMode
+        case allowsSimulatedCopyFallback
     }
 
     public init(from decoder: Decoder) throws {
@@ -83,10 +93,15 @@ public struct SelectionActionsConfig: Codable, Equatable, Sendable {
         pronunciationSpeed = Self.clampedPronunciationSpeed(
             try container.decodeIfPresent(Double.self, forKey: .pronunciationSpeed) ?? defaults.pronunciationSpeed
         )
-        forceSelectionMode = try container.decodeIfPresent(
+        let decodedForceSelectionMode = try container.decodeIfPresent(
             SelectionForceSelectionMode.self,
             forKey: .forceSelectionMode
         ) ?? defaults.forceSelectionMode
+        forceSelectionMode = decodedForceSelectionMode.normalizedForSafeSettings
+        allowsSimulatedCopyFallback = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .allowsSimulatedCopyFallback
+        ) ?? false
     }
 
     public static func defaultConfig() -> SelectionActionsConfig {
