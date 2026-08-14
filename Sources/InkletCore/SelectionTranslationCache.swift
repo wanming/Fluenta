@@ -38,8 +38,18 @@ public final class JSONSelectionTranslationCache: @unchecked Sendable {
     private let timeToLive: TimeInterval
     private let lock = NSLock()
 
+    public convenience init(
+        timeToLive: TimeInterval = JSONSelectionTranslationCache.defaultTimeToLive
+    ) {
+        let storagePaths = InkletStoragePaths.currentOrLocalDevelopment()
+        self.init(
+            fileURL: Self.defaultFileURL(storagePaths: storagePaths),
+            timeToLive: timeToLive
+        )
+    }
+
     public init(
-        fileURL: URL = JSONSelectionTranslationCache.defaultFileURL(),
+        fileURL: URL,
         timeToLive: TimeInterval = JSONSelectionTranslationCache.defaultTimeToLive
     ) {
         self.fileURL = fileURL
@@ -81,17 +91,8 @@ public final class JSONSelectionTranslationCache: @unchecked Sendable {
         try writeEntries(entries)
     }
 
-    public static func defaultFileURL() -> URL {
-        let applicationSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library")
-            .appendingPathComponent("Application Support")
-
-        return applicationSupport
-            .appendingPathComponent("Inklet", isDirectory: true)
-            .appendingPathComponent("selection-translation-cache.json")
+    public static func defaultFileURL(storagePaths: InkletStoragePaths) -> URL {
+        storagePaths.translationCacheFileURL
     }
 
     private func loadEntries() throws -> [String: Entry] {

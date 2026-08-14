@@ -20,13 +20,17 @@ enum SelectionActionDismissReason {
 @MainActor
 final class SelectionActionMonitor {
     var onCandidateSelection: ((SelectionPoint) -> Void)?
-    var onCopyTrigger: ((SelectionPoint, Int, pid_t) -> Void)?
+    var onCopyTrigger: ((SelectionCopyEventTap.Trigger) -> Void)?
     var onDismiss: ((SelectionActionDismissReason) -> Void)?
 
     private var monitors: [Any] = []
     private var dismissalPolicy = SelectionDismissalPolicy()
-    private var copyTriggerPolicy = SelectionCopyTriggerPolicy()
     private var dragPolicy = SelectionDragPolicy()
+    private let copyEventTap: SelectionCopyEventTap
+
+    init(copyEventTap: SelectionCopyEventTap = SelectionCopyEventTap()) {
+        self.copyEventTap = copyEventTap
+    }
 
     func start() {
         guard monitors.isEmpty else {
@@ -34,7 +38,10 @@ final class SelectionActionMonitor {
         }
 
         SelectionActionDiagnostics.log("starting global monitors")
-        monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp, .rightMouseUp]) { [weak self] event in
+        copyEventTap.start { [weak self] trigger in
+            self?.onCopyTrigger?(trigger)
+        }
+        monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp]) { [weak self] event in
             Task { @MainActor in
                 guard let self else { return }
                 let point = SelectionPoint(x: NSEvent.mouseLocation.x, y: NSEvent.mouseLocation.y)
@@ -58,100 +65,29 @@ final class SelectionActionMonitor {
         } as Any)
 
         monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.keyUp]) { [weak self] event in
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard modifiers.contains(.shift) else {
+                return
+            }
             Task { @MainActor in
-                guard let self else { return }
-                let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                if event.keyCode == 8 {
-                    let provenance = self.copyEventProvenance(for: event)
-                    self.copyTriggerPolicy.recordKeyUp(
-                        isInkletGenerated: provenance.marker
-                            == SelectionClipboardReader.generatedCopyEventUserData
-                    )
-                }
-
-                guard modifiers.contains(.shift) else {
-                    return
-                }
                 SelectionActionDiagnostics.logRateLimited("candidate keyboard selection")
-                self.dismissalPolicy.recordCandidate(at: Date().timeIntervalSinceReferenceDate)
-                self.onCandidateSelection?(SelectionPoint(x: NSEvent.mouseLocation.x, y: NSEvent.mouseLocation.y))
+                self?.dismissalPolicy.recordCandidate(at: Date().timeIntervalSinceReferenceDate)
+                self?.onCandidateSelection?(SelectionPoint(x: NSEvent.mouseLocation.x, y: NSEvent.mouseLocation.y))
             }
         } as Any)
 
         monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+            guard !Self.isCopyShortcut(event) else {
+                return
+            }
             Task { @MainActor in
                 guard let self else { return }
-                let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                if event.keyCode == 8 {
-                    let provenance = self.copyEventProvenance(for: event)
-                    guard modifiers == .command else {
-                        self.logCopyEvent(
-                            event,
-                            marker: provenance.marker,
-                            sourcePID: provenance.sourcePID,
-                            decision: "ignoredModifiers"
-                        )
-                        return self.dismissIfNeededForKeyDown()
-                    }
-
-                    let decision = self.copyTriggerPolicy.recordKeyDown(
-                        at: Date().timeIntervalSinceReferenceDate,
-                        pasteboardChangeCount: NSPasteboard.general.changeCount,
-                        isRepeat: event.isARepeat,
-                        isInkletGenerated: provenance.marker
-                            == SelectionClipboardReader.generatedCopyEventUserData
-                    )
-                    switch decision {
-                    case .ignoredRepeat:
-                        self.logCopyEvent(
-                            event,
-                            marker: provenance.marker,
-                            sourcePID: provenance.sourcePID,
-                            decision: "ignoredRepeat"
-                        )
-                    case .ignoredGenerated:
-                        self.logCopyEvent(
-                            event,
-                            marker: provenance.marker,
-                            sourcePID: provenance.sourcePID,
-                            decision: "ignoredGenerated"
-                        )
-                    case .armed:
-                        self.logCopyEvent(
-                            event,
-                            marker: provenance.marker,
-                            sourcePID: provenance.sourcePID,
-                            decision: "armed"
-                        )
-                    case .awaitingKeyUp:
-                        self.logCopyEvent(
-                            event,
-                            marker: provenance.marker,
-                            sourcePID: provenance.sourcePID,
-                            decision: "awaitingKeyUp"
-                        )
-                    case .triggered(let initialPasteboardChangeCount):
-                        self.logCopyEvent(
-                            event,
-                            marker: provenance.marker,
-                            sourcePID: provenance.sourcePID,
-                            decision: "triggered"
-                        )
-                        guard let sourceApp = NSWorkspace.shared.frontmostApplication,
-                              sourceApp.processIdentifier != NSRunningApplication.current.processIdentifier
-                        else {
-                            return
-                        }
-                        self.onCopyTrigger?(
-                            SelectionPoint(x: NSEvent.mouseLocation.x, y: NSEvent.mouseLocation.y),
-                            initialPasteboardChangeCount,
-                            sourceApp.processIdentifier
-                        )
-                    }
+                guard self.dismissalPolicy.shouldDismiss(at: Date().timeIntervalSinceReferenceDate) else {
+                    SelectionActionDiagnostics.logRateLimited("dismiss suppressed during selection grace")
                     return
                 }
-
-                self.dismissIfNeededForKeyDown()
+                SelectionActionDiagnostics.logRateLimited("dismiss from keyDown")
+                self.onDismiss?(.keyboard)
             }
         } as Any)
 
@@ -174,52 +110,20 @@ final class SelectionActionMonitor {
     }
 
     func stop() {
+        copyEventTap.stop()
         monitors.forEach { NSEvent.removeMonitor($0) }
         monitors.removeAll()
-        copyTriggerPolicy.reset()
-        SelectionActionDiagnostics.resetCopyEventAggregation()
+        SelectionActionDiagnostics.resetEventAggregation()
     }
 
     func recordPanelShown() {
         dismissalPolicy.recordPanelShown()
     }
 
-    private func dismissIfNeededForKeyDown() {
-        guard dismissalPolicy.shouldDismiss(at: Date().timeIntervalSinceReferenceDate) else {
-            SelectionActionDiagnostics.logRateLimited("dismiss suppressed during selection grace")
-            return
-        }
-        SelectionActionDiagnostics.logRateLimited("dismiss from keyDown")
-        onDismiss?(.keyboard)
-    }
-
-    private func copyEventProvenance(for event: NSEvent) -> (marker: Int64, sourcePID: Int64) {
-        guard let cgEvent = event.cgEvent else {
-            return (0, -1)
-        }
-        return (
-            cgEvent.getIntegerValueField(.eventSourceUserData),
-            cgEvent.getIntegerValueField(.eventSourceUnixProcessID)
-        )
-    }
-
-    private func logCopyEvent(
-        _ event: NSEvent,
-        marker: Int64,
-        sourcePID: Int64,
-        decision: String
-    ) {
-        let sourceApp = NSWorkspace.shared.frontmostApplication
-        let foregroundApp = sourceApp?.bundleIdentifier
-            ?? "pid-\(sourceApp?.processIdentifier ?? -1)"
-        SelectionActionDiagnostics.logCopyEvent(
-            foregroundApp: foregroundApp,
-            keyCode: event.keyCode,
-            modifiers: event.modifierFlags.intersection(.deviceIndependentFlagsMask).rawValue,
-            isRepeat: event.isARepeat,
-            sourcePID: sourcePID,
-            marker: marker,
-            decision: decision
-        )
+    private nonisolated static func isCopyShortcut(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags
+            .intersection(.deviceIndependentFlagsMask)
+            .subtracting(.capsLock)
+        return event.keyCode == 8 && modifiers == .command
     }
 }

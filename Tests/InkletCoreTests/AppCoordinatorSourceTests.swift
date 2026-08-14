@@ -19,10 +19,20 @@ final class AppCoordinatorSourceTests: XCTestCase {
         XCTAssertTrue(translateBlock.contains("providerID: providerID"))
     }
 
-    func testAutomaticSelectionReadUsesEasyDictStyleFallbackPipeline() throws {
+    func testAutomaticSelectionReadUsesGenericPipelineWithImmutableCapturedRequest() throws {
         let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let sourceURL = packageRoot.appendingPathComponent("Sources/InkletApp/AppCoordinator.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let clipboardSourceURL = packageRoot.appendingPathComponent(
+            "Sources/InkletCore/SelectionClipboardReader.swift"
+        )
+        let clipboardSource = try String(contentsOf: clipboardSourceURL, encoding: .utf8)
+        let candidateRange = try XCTUnwrap(source.range(of: "private func handleSelectionActionCandidate"))
+        let copyTriggerRange = try XCTUnwrap(source.range(
+            of: "\n    private func handleSelectionActionCopyTrigger",
+            range: candidateRange.upperBound..<source.endIndex
+        ))
+        let candidateBlock = source[candidateRange.lowerBound..<copyTriggerRange.lowerBound]
         let scheduleReadRange = try XCTUnwrap(source.range(of: "case .scheduleRead"))
         let cancelReadRange = try XCTUnwrap(source.range(
             of: "\n            case .cancelRead",
@@ -30,92 +40,179 @@ final class AppCoordinatorSourceTests: XCTestCase {
         ))
         let scheduleReadBlock = source[scheduleReadRange.lowerBound..<cancelReadRange.lowerBound]
 
-        XCTAssertTrue(scheduleReadBlock.contains("completeScheduledSelectionRead"))
-        XCTAssertTrue(source.contains("private func readSelectedTextForAutomaticSelection"))
+        XCTAssertTrue(source.contains("private let selectionReadPipeline: SelectionReadPipeline"))
+        XCTAssertTrue(source.contains("let selectionSourceValidator = SelectionSourceValidator()"))
+        XCTAssertTrue(source.contains("SelectionClipboardReader("))
+        XCTAssertTrue(source.contains("sourceProcessValidator: sourceValidator"))
+        XCTAssertTrue(source.contains("SelectionReadPipeline("))
+        XCTAssertTrue(source.contains("sourceValidator: sourceValidator"))
+        XCTAssertTrue(source.contains("private struct PendingSelectionRead"))
+        XCTAssertTrue(source.contains("let sourceProcessIdentifier: pid_t"))
+        XCTAssertTrue(source.contains("let location: SelectionPoint"))
+        XCTAssertTrue(candidateBlock.contains("let request = PendingSelectionRead("))
+        XCTAssertTrue(candidateBlock.contains("sourceProcessIdentifier: sourceApp.processIdentifier"))
+        XCTAssertTrue(candidateBlock.contains("location: point"))
+        XCTAssertTrue(candidateBlock.contains("pendingSelectionRead: request"))
+        XCTAssertTrue(scheduleReadBlock.contains("guard let pendingSelectionRead"))
+        XCTAssertTrue(scheduleReadBlock.contains("completeScheduledSelectionRead(pendingSelectionRead)"))
+        XCTAssertFalse(scheduleReadBlock.contains("let forceSelectionMode"))
 
-        let automaticReadRange = try XCTUnwrap(source.range(of: "private func readSelectedTextForAutomaticSelection"))
+        let automaticReadRange = try XCTUnwrap(source.range(of: "private func completeScheduledSelectionRead"))
         let noticeRange = try XCTUnwrap(source.range(
             of: "\n    private func showSelectionUnsupportedNotice",
             range: automaticReadRange.upperBound..<source.endIndex
         ))
         let automaticReadBlock = source[automaticReadRange.lowerBound..<noticeRange.lowerBound]
-        XCTAssertTrue(automaticReadBlock.contains("selectedTextReader.readSelectedText"))
-        XCTAssertTrue(automaticReadBlock.contains("selectedTextReader.isFocusedSelectableTextElement"))
-        XCTAssertTrue(automaticReadBlock.contains("selectionBrowserTextReader.readSelectedText"))
-        XCTAssertTrue(automaticReadBlock.contains("selectionClipboardReader.readSelectedText"))
-        XCTAssertTrue(automaticReadBlock.contains("forceSelectionMode: config.selectionActions.forceSelectionMode"))
+        XCTAssertTrue(automaticReadBlock.contains("let config ="))
         XCTAssertTrue(automaticReadBlock.contains(
-            "allowsSimulatedCopyFallback: config.selectionActions.allowsSimulatedCopyFallback"
+            "let configuredForceSelectionMode = config.selectionActions.forceSelectionMode"
         ))
+        XCTAssertTrue(automaticReadBlock.contains("config.selectionActions.allowsSimulatedCopyFallback"))
+        XCTAssertTrue(automaticReadBlock.contains(".menuCopyThenShortcut"))
+        XCTAssertTrue(automaticReadBlock.contains("selectionReadPipeline.readSelectedText"))
+        XCTAssertTrue(automaticReadBlock.contains("sourceProcessIdentifier: pendingSelectionRead.sourceProcessIdentifier"))
+        XCTAssertTrue(automaticReadBlock.contains("mouseLocation: pendingSelectionRead.location"))
+        XCTAssertTrue(automaticReadBlock.contains("forceSelectionMode: forceSelectionMode"))
+        let removedBrowserReaderType = ["Selection", "Browser", "TextReader"].joined()
+        let removedBrowserReaderProperty = ["selection", "Browser", "TextReader"].joined()
+        let removedBrowserResult = ["browser", "Result"].joined()
+        XCTAssertFalse(source.contains(removedBrowserReaderType))
+        XCTAssertFalse(source.contains(removedBrowserReaderProperty))
+        XCTAssertFalse(source.contains("pendingSelectionSourceBundleIdentifier"))
+        XCTAssertFalse(source.contains("pendingSelectionSourceProcessIdentifier"))
+        XCTAssertFalse(source.contains("pendingSelectionLocation"))
+        XCTAssertFalse(source.contains("isFocusedSelectableTextElement"))
+        XCTAssertFalse(source.contains("sourceProcessIdentifier: pid_t?"))
+        XCTAssertFalse(source.contains(removedBrowserResult))
+        XCTAssertFalse(clipboardSource.contains("sourceProcessIdentifier: pid_t?"))
+        XCTAssertFalse(clipboardSource.contains("Compatibility for the current app caller"))
 
-        let copyTriggerRange = try XCTUnwrap(source.range(of: "private func handleSelectionActionCopyTrigger"))
         let effectsRange = try XCTUnwrap(source.range(
             of: "\n    private func handleSelectionActionEffects",
             range: copyTriggerRange.upperBound..<source.endIndex
         ))
         let copyTriggerBlock = source[copyTriggerRange.lowerBound..<effectsRange.lowerBound]
-        XCTAssertTrue(copyTriggerBlock.contains("pasteboard.string"))
+        XCTAssertFalse(copyTriggerBlock.contains("selectionReadPipeline"))
     }
 
-    func testManualDoubleCopyValidatesClipboardChangeForSameSourceApp() throws {
+    func testDoubleCopyCapturesImmutableRequestAndUsesOnlyPassiveReader() throws {
         let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let sourceURL = packageRoot.appendingPathComponent("Sources/InkletApp/AppCoordinator.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        let triggerRange = try XCTUnwrap(source.range(of: "private func handleSelectionActionCopyTrigger"))
-        let effectsRange = try XCTUnwrap(source.range(
+        let callbackStart = try XCTUnwrap(source.range(
+            of: "self.selectionActionMonitor.onCopyTrigger ="
+        ))
+        let dismissCallbackStart = try XCTUnwrap(source.range(
+            of: "self.selectionActionMonitor.onDismiss =",
+            range: callbackStart.upperBound..<source.endIndex
+        ))
+        let callbackBlock = source[callbackStart.lowerBound..<dismissCallbackStart.lowerBound]
+        let copyTriggerStart = try XCTUnwrap(source.range(
+            of: "private func handleSelectionActionCopyTrigger"
+        ))
+        let effectsStart = try XCTUnwrap(source.range(
             of: "\n    private func handleSelectionActionEffects",
-            range: triggerRange.upperBound..<source.endIndex
+            range: copyTriggerStart.upperBound..<source.endIndex
         ))
-        let triggerBlock = source[triggerRange.lowerBound..<effectsRange.lowerBound]
+        let copyTriggerBlock = source[copyTriggerStart.lowerBound..<effectsStart.lowerBound]
+        let finishHandoff = try XCTUnwrap(copyTriggerBlock.range(
+            of: "await selectionClipboardReader.finishUserCopyHandoff("
+        ))
+        let unobservedSyntheticActionGuard = try XCTUnwrap(copyTriggerBlock.range(
+            of: "case .unobservedSyntheticAction:"
+        ))
+        let passiveRead = try XCTUnwrap(copyTriggerBlock.range(
+            of: "await selectionUserCopyReader.readCopiedText("
+        ))
+        let finalSourceValidation = try XCTUnwrap(copyTriggerBlock.range(
+            of: "selectionSourceValidator.isCurrent"
+        ))
+        let showPanel = try XCTUnwrap(copyTriggerBlock.range(
+            of: "selectionActionWindowController.showMenu(at: pendingUserCopyRead.location)"
+        ))
+        let afterPassiveReadBlock = copyTriggerBlock[passiveRead.upperBound..<showPanel.lowerBound]
+        let userCopyReaderInitializerStart = try XCTUnwrap(source.range(
+            of: "let selectionUserCopyReader = SelectionUserCopyReader("
+        ))
+        let storedPropertiesStart = try XCTUnwrap(source.range(
+            of: "\n        self.migrationOutcome = migrationOutcome",
+            range: userCopyReaderInitializerStart.upperBound..<source.endIndex
+        ))
+        let userCopyReaderInitializer = source[
+            userCopyReaderInitializerStart.lowerBound..<storedPropertiesStart.lowerBound
+        ]
 
-        XCTAssertTrue(triggerBlock.contains("initialPasteboardChangeCount"))
-        XCTAssertTrue(triggerBlock.contains("sourceProcessIdentifier"))
-        XCTAssertTrue(triggerBlock.contains("NSWorkspace.shared.frontmostApplication?.processIdentifier"))
-        XCTAssertTrue(triggerBlock.contains("SelectionCopyTriggerPolicy.validatedClipboardText"))
-        XCTAssertTrue(triggerBlock.contains("currentChangeCount: pasteboard.changeCount"))
-        XCTAssertTrue(triggerBlock.contains("initialChangeCount: initialPasteboardChangeCount"))
-        XCTAssertTrue(triggerBlock.contains("selectionActionWindowController.showMenu"))
+        XCTAssertTrue(source.contains("private let selectionSourceValidator: SelectionSourceValidator"))
+        XCTAssertTrue(source.contains("private let selectionClipboardReader: SelectionClipboardReader"))
+        XCTAssertTrue(source.contains("private let selectionUserCopyReader: SelectionUserCopyReader"))
+        XCTAssertTrue(userCopyReaderInitializer.contains("sourceProcessValidator: sourceValidator"))
+        XCTAssertTrue(source.contains("private struct PendingUserCopyRead"))
+        XCTAssertTrue(source.contains("let clipboardHandoff: SelectionClipboardUserCopyHandoff"))
+
+        XCTAssertTrue(callbackBlock.contains("trigger in"))
+        XCTAssertTrue(callbackBlock.contains("trigger.sourceProcessIdentifier > 0"))
+        XCTAssertTrue(callbackBlock.contains("trigger.sourceProcessIdentifier != NSRunningApplication.current.processIdentifier"))
+        XCTAssertTrue(callbackBlock.contains("selectionSourceValidator.isCurrent(trigger.sourceProcessIdentifier)"))
+        XCTAssertTrue(callbackBlock.contains("let clipboardHandoff = selectionClipboardReader.beginUserCopyHandoff()"))
+        XCTAssertTrue(callbackBlock.contains("let pendingUserCopyRead = PendingUserCopyRead("))
+        XCTAssertTrue(callbackBlock.contains("sourceProcessIdentifier: trigger.sourceProcessIdentifier"))
+        XCTAssertTrue(callbackBlock.contains("location: trigger.point"))
+        XCTAssertTrue(callbackBlock.contains("clipboardHandoff: clipboardHandoff"))
+        XCTAssertTrue(callbackBlock.contains("handleSelectionActionCopyTrigger(pendingUserCopyRead)"))
+        XCTAssertFalse(callbackBlock.contains("Task"))
+        XCTAssertFalse(callbackBlock.contains("NSWorkspace.shared.frontmostApplication"))
+        XCTAssertFalse(callbackBlock.contains("NSEvent.mouseLocation"))
+
+        XCTAssertLessThan(finishHandoff.lowerBound, passiveRead.lowerBound)
+        XCTAssertLessThan(finishHandoff.lowerBound, unobservedSyntheticActionGuard.lowerBound)
+        XCTAssertLessThan(unobservedSyntheticActionGuard.lowerBound, passiveRead.lowerBound)
+        XCTAssertTrue(copyTriggerBlock.contains("let handoffOutcome = await selectionClipboardReader.finishUserCopyHandoff("))
+        XCTAssertTrue(copyTriggerBlock.contains("SelectionActionDiagnostics.log(\"copy trigger ignored unobserved synthetic action\")"))
+        XCTAssertTrue(copyTriggerBlock.contains("case .noActiveRead, .restorationRelinquished, .completedWithoutPasteboardMutation:"))
+        XCTAssertTrue(copyTriggerBlock.contains("sourceProcessIdentifier: pendingUserCopyRead.sourceProcessIdentifier"))
+        XCTAssertTrue(copyTriggerBlock.contains("after: pendingUserCopyRead.clipboardHandoff.boundaryChangeCount"))
+        XCTAssertTrue(afterPassiveReadBlock.contains("guard !Task.isCancelled,"))
+        XCTAssertTrue(afterPassiveReadBlock.contains("!isMigrationMaintenanceActive"))
+        XCTAssertTrue(afterPassiveReadBlock.contains("selectionReadTaskID == taskID"))
+        XCTAssertTrue(afterPassiveReadBlock.contains("selectionSourceValidator.isCurrent"))
+        XCTAssertTrue(afterPassiveReadBlock.contains("guard case .success(let text) = result, !text.isEmpty"))
+        XCTAssertLessThan(finalSourceValidation.lowerBound, showPanel.lowerBound)
+        XCTAssertTrue(copyTriggerBlock.contains("selectionReadTaskID == taskID"))
+        XCTAssertTrue(copyTriggerBlock.contains("guard !Task.isCancelled,"))
+        XCTAssertTrue(copyTriggerBlock.contains("!isMigrationMaintenanceActive"))
+
+        let forbiddenDoubleCopyTokens = [
+            "selectionReadPipeline",
+            "selectionClipboardReader.readSelectedText",
+            "readSelectedTextForAutomaticSelection",
+            "NSPasteboard.general.string",
+            "CGEvent(",
+            "copyMenuAction",
+            "clearContents()",
+            "writeObjects("
+        ]
+        for token in forbiddenDoubleCopyTokens {
+            XCTAssertFalse(copyTriggerBlock.contains(token), "Double-copy handler must not contain \(token)")
+        }
     }
 
-    func testCancelledAutomaticReadCannotContinueToFallbackOrShowPanel() throws {
+    func testSelectionMonitorSourcePreservesNativeRightClickAndMultiClickSelection() throws {
         let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        let sourceURL = packageRoot.appendingPathComponent("Sources/InkletApp/AppCoordinator.swift")
+        let sourceURL = packageRoot.appendingPathComponent("Sources/InkletApp/SelectionActionMonitor.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        let completionRange = try XCTUnwrap(source.range(of: "private func completeScheduledSelectionRead"))
-        let automaticReadRange = try XCTUnwrap(source.range(
-            of: "\n    private func readSelectedTextForAutomaticSelection",
-            range: completionRange.upperBound..<source.endIndex
+        let mouseUpStart = try XCTUnwrap(source.range(
+            of: "NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp]"
         ))
-        let completionBlock = source[completionRange.lowerBound..<automaticReadRange.lowerBound]
-        let completionAwait = try XCTUnwrap(completionBlock.range(
-            of: "await readSelectedTextForAutomaticSelection()"
+        let keyUpStart = try XCTUnwrap(source.range(
+            of: "NSEvent.addGlobalMonitorForEvents(matching: [.keyUp]",
+            range: mouseUpStart.upperBound..<source.endIndex
         ))
-        let completionCancellation = try XCTUnwrap(completionBlock.range(
-            of: "guard !Task.isCancelled else { return }"
-        ))
-        let completionEffect = try XCTUnwrap(completionBlock.range(
-            of: "handleSelectionActionEffects"
-        ))
+        let mouseUpBlock = source[mouseUpStart.lowerBound..<keyUpStart.lowerBound]
 
-        XCTAssertLessThan(completionAwait.lowerBound, completionCancellation.lowerBound)
-        XCTAssertLessThan(completionCancellation.lowerBound, completionEffect.lowerBound)
-
-        let noticeRange = try XCTUnwrap(source.range(
-            of: "\n    private func showSelectionUnsupportedNotice",
-            range: automaticReadRange.upperBound..<source.endIndex
-        ))
-        let automaticReadBlock = source[automaticReadRange.lowerBound..<noticeRange.lowerBound]
-        let browserRead = try XCTUnwrap(automaticReadBlock.range(of: "selectionBrowserTextReader.readSelectedText"))
-        let postBrowserCancellation = try XCTUnwrap(automaticReadBlock.range(
-            of: "guard !Task.isCancelled else { return .unsupported }",
-            range: browserRead.upperBound..<automaticReadBlock.endIndex
-        ))
-        let clipboardRead = try XCTUnwrap(automaticReadBlock.range(
-            of: "selectionClipboardReader.readSelectedText"
-        ))
-
-        XCTAssertLessThan(postBrowserCancellation.lowerBound, clipboardRead.lowerBound)
-        XCTAssertTrue(automaticReadBlock.contains("guard config.selectionActions.isEnabled else"))
+        XCTAssertFalse(mouseUpBlock.contains(".rightMouseDown"))
+        XCTAssertFalse(mouseUpBlock.contains(".rightMouseUp"))
+        XCTAssertTrue(mouseUpBlock.contains("clickCount: event.clickCount"))
+        XCTAssertTrue(mouseUpBlock.contains("dragPolicy.consumeMouseUpAction"))
     }
 
     func testSelectionActionsDoNotHardcodeIgnoredAppBundleIDs() throws {

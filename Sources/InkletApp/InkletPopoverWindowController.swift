@@ -64,6 +64,12 @@ final class InkletPopoverWindowController: NSWindowController {
         }
     }
 
+    var onBusyChange: ((Bool) -> Void)?
+
+    var isBusy: Bool {
+        model.isBusy
+    }
+
     init(historyStore: any HistoryStore = JSONLHistoryStore()) {
         self.model = InkletPopoverViewModel(historyStore: historyStore)
 
@@ -93,6 +99,14 @@ final class InkletPopoverWindowController: NSWindowController {
             .removeDuplicates()
             .sink { [weak self] height in
                 self?.resizePopover(to: height)
+            }
+            .store(in: &cancellables)
+
+        Publishers.CombineLatest(model.$isTransforming, model.$isInserting)
+            .map { $0 || $1 }
+            .removeDuplicates()
+            .sink { [weak self] isBusy in
+                self?.onBusyChange?(isBusy)
             }
             .store(in: &cancellables)
 
@@ -129,6 +143,11 @@ final class InkletPopoverWindowController: NSWindowController {
     }
 
     func hide() {
+        window?.orderOut(nil)
+    }
+
+    func cancelForMigrationMaintenance() {
+        model.cancelForMigrationMaintenance()
         window?.orderOut(nil)
     }
 

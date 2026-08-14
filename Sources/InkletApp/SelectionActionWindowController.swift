@@ -88,7 +88,7 @@ private final class SelectionActionHostingView<Content: View>: NSHostingView<Con
 
 @MainActor
 final class SelectionActionWindowController: NSWindowController {
-    private static let translationPanelSizeKey = "SelectionActionWindowController.translationPanelSize"
+    private static let translationPanelSizeKey = InkletPreferenceKeys.translationPanelSize
     private static let translationPanelMinimumSize = SelectionPanelSize(width: 300, height: 180)
     private static let translationPanelMaximumSize = SelectionPanelSize(width: 560, height: 520)
 

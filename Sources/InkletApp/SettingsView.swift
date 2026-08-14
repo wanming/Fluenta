@@ -32,6 +32,8 @@ final class SettingsViewModel: ObservableObject {
     @Published var permissionRefreshID: UUID
     @Published var historyItems: [HistoryItem]
     @Published var historyFilter: HistorySource?
+    @Published private(set) var isMigrationMaintenanceActive = false
+    @Published private(set) var isMigrationWorkflowIdle = true
 
     private let configStore: UserDefaultsConfigStore
     private let apiKeyStore: LocalAPIKeyStore
@@ -39,9 +41,14 @@ final class SettingsViewModel: ObservableObject {
     private let historyStore: any HistoryStore
     private let microphoneDeviceCatalog: MicrophoneDeviceCatalog
     private let pronunciationPreviewPlaybackService: SpeechPlaybackService
-    private var cancellables = Set<AnyCancellable>()
-    private var pronunciationPreviewTask: Task<Void, Never>?
+    private var autoSaveCancellable: AnyCancellable?
+    private var pronunciationPreviewTasks: [UUID: Task<Void, Never>] = [:]
+    private var pronunciationPreviewTaskID: UUID?
+    private var modelCatalogRefreshTask: Task<Void, Never>?
+    private var modelCatalogRefreshTaskID: UUID?
+    private var savedConfig: AppConfig
     private var savedProviderAPIKey: String
+    private var savedInterfaceLanguage: InterfaceLanguage
 
     static let customModelMenuID = "__custom_model__"
 
@@ -62,8 +69,10 @@ final class SettingsViewModel: ObservableObject {
         self.pronunciationPreviewPlaybackService = SpeechPlaybackService()
         loadedConfig.providerID = LLMProviderPreset.openAI.id
         self.config = loadedConfig
+        self.savedConfig = loadedConfig
         self.message = ""
         self.interfaceLanguage = InkletLanguageStore.selectedLanguage
+        self.savedInterfaceLanguage = InkletLanguageStore.selectedLanguage
         let loadedProviderAPIKey = apiKeyStore.loadAPIKey(forProviderID: LLMProviderPreset.openAI.id) ?? ""
         self.providerAPIKey = loadedProviderAPIKey
         self.savedProviderAPIKey = loadedProviderAPIKey
@@ -91,6 +100,7 @@ final class SettingsViewModel: ObservableObject {
 
         self.pronunciationPreviewPlaybackService.onFinish = { [weak self] in
             self?.pronunciationPreviewState = nil
+            self?.refreshMigrationWorkflowIdle()
         }
         installAutoSave()
     }
@@ -178,6 +188,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func clearHistory() {
+        guard !isMigrationMaintenanceActive else { return }
         do {
             try historyStore.clear()
             historyItems = []
@@ -262,13 +273,25 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func previewPronunciationVoice() {
+        guard !isMigrationMaintenanceActive else { return }
         let voice = config.selectionActions.pronunciationVoice
         let speed = config.selectionActions.pronunciationSpeed
-        pronunciationPreviewTask?.cancel()
+        if let pronunciationPreviewTaskID {
+            pronunciationPreviewTasks[pronunciationPreviewTaskID]?.cancel()
+        }
         pronunciationPreviewPlaybackService.stop()
         pronunciationPreviewState = .loading(voice)
+        let taskID = UUID()
+        pronunciationPreviewTaskID = taskID
 
-        pronunciationPreviewTask = Task { [weak self] in
+        let task = Task { [weak self] in
+            defer {
+                self?.pronunciationPreviewTasks[taskID] = nil
+                if self?.pronunciationPreviewTaskID == taskID {
+                    self?.pronunciationPreviewTaskID = nil
+                }
+                self?.refreshMigrationWorkflowIdle()
+            }
             do {
                 guard let self else { return }
                 let provider = OpenAITTSProvider(apiKeyProvider: { [apiKeyStore] in
@@ -287,6 +310,12 @@ final class SettingsViewModel: ObservableObject {
                     speed: speed,
                     timeoutSeconds: config.timeoutSeconds
                 ))
+                guard !Task.isCancelled,
+                      pronunciationPreviewTaskID == taskID,
+                      !isMigrationMaintenanceActive
+                else {
+                    return
+                }
                 await MainActor.run {
                     do {
                         try self.pronunciationPreviewPlaybackService.play(audioData: audioData)
@@ -298,12 +327,15 @@ final class SettingsViewModel: ObservableObject {
                 }
             } catch is CancellationError {
             } catch {
+                guard !Task.isCancelled, self?.pronunciationPreviewTaskID == taskID else { return }
                 await MainActor.run {
                     self?.pronunciationPreviewState = nil
                     self?.message = L10n.text("selection.action.pronunciationFailed")
                 }
             }
         }
+        pronunciationPreviewTasks[taskID] = task
+        refreshMigrationWorkflowIdle()
     }
 
     func resetSelectionTranslationPrompt() {
@@ -312,24 +344,41 @@ final class SettingsViewModel: ObservableObject {
     }
 
     func refreshModelCatalogIfNeeded() async {
-        isRefreshingModelCatalog = true
-        defer {
-            isRefreshingModelCatalog = false
+        guard !isMigrationMaintenanceActive else { return }
+        if let modelCatalogRefreshTask {
+            await modelCatalogRefreshTask.value
+            return
         }
 
-        do {
-            try await modelCatalogService.refreshIfNeeded()
-            cachedProviderModels = Dictionary(
-                uniqueKeysWithValues: LLMProviderPreset.all.compactMap { preset in
-                    guard let modelIDs = modelCatalogService.cachedModelIDs(for: preset.id) else {
-                        return nil
-                    }
-                    return (preset.id, modelIDs)
-                }
-            )
-        } catch {
-            // The model picker still works with saved/default/custom values when the catalog cannot be fetched.
+        isRefreshingModelCatalog = true
+        let taskID = UUID()
+        modelCatalogRefreshTaskID = taskID
+        let modelCatalogService = self.modelCatalogService
+        let task = Task<Void, Never> {
+            do {
+                try await modelCatalogService.refreshIfNeeded()
+            } catch {
+                // The model picker still works with saved/default/custom values when refresh fails.
+            }
         }
+        modelCatalogRefreshTask = task
+        refreshMigrationWorkflowIdle()
+        await task.value
+
+        guard modelCatalogRefreshTaskID == taskID else { return }
+        modelCatalogRefreshTask = nil
+        modelCatalogRefreshTaskID = nil
+        isRefreshingModelCatalog = false
+        refreshMigrationWorkflowIdle()
+        guard !isMigrationMaintenanceActive else { return }
+        cachedProviderModels = Dictionary(
+            uniqueKeysWithValues: LLMProviderPreset.all.compactMap { preset in
+                guard let modelIDs = modelCatalogService.cachedModelIDs(for: preset.id) else {
+                    return nil
+                }
+                return (preset.id, modelIDs)
+            }
+        )
     }
 
     func addPromptMode() {
@@ -451,57 +500,134 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
-    func save() {
+    @discardableResult
+    func save() -> Bool {
+        guard !isMigrationMaintenanceActive else { return false }
+        let trimmedKey = providerAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shouldSaveConfig = config != savedConfig
+        let shouldSaveProviderAPIKey = providerAPIKey != savedProviderAPIKey
+        let shouldSaveInterfaceLanguage = interfaceLanguage != savedInterfaceLanguage
+        guard shouldSaveConfig || shouldSaveProviderAPIKey || shouldSaveInterfaceLanguage else {
+            return true
+        }
+
         do {
-            guard config.promptModes.contains(where: \.isVisible) else {
-                message = L10n.text("settings.error.visibleModeRequired")
-                return
-            }
-            guard !config.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                message = L10n.text("settings.error.modelRequired")
-                return
-            }
-            config.temperature = min(max(config.temperature, 0), 1)
-            config.providerID = LLMProviderPreset.openAI.id
-            guard let speechEndpoint = URL(string: config.voiceInput.speechEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
-                  speechEndpoint.scheme?.hasPrefix("http") == true,
-                  speechEndpoint.host != nil
-            else {
-                message = L10n.text("voice.error.invalidSpeechEndpoint")
-                return
+            if shouldSaveConfig {
+                guard config.promptModes.contains(where: \.isVisible) else {
+                    message = L10n.text("settings.error.visibleModeRequired")
+                    return false
+                }
+                guard !config.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    message = L10n.text("settings.error.modelRequired")
+                    return false
+                }
+                config.temperature = min(max(config.temperature, 0), 1)
+                config.providerID = LLMProviderPreset.openAI.id
+                guard let speechEndpoint = URL(string: config.voiceInput.speechEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
+                      speechEndpoint.scheme?.hasPrefix("http") == true,
+                      speechEndpoint.host != nil
+                else {
+                    message = L10n.text("voice.error.invalidSpeechEndpoint")
+                    return false
+                }
+
+                _ = try Hotkey.parse(config.hotkey)
+                config.voiceInput.autoProcessTranscription = config.voiceInput.postTranscriptionAction != .insertRawTranscript
+                try configStore.save(config)
+                savedConfig = config
             }
 
-            _ = try Hotkey.parse(config.hotkey)
-            config.voiceInput.autoProcessTranscription = config.voiceInput.postTranscriptionAction != .insertRawTranscript
-            InkletLanguageStore.selectedLanguage = interfaceLanguage
-            try configStore.save(config)
-            let trimmedKey = providerAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmedKey != savedProviderAPIKey {
+            if shouldSaveInterfaceLanguage {
+                InkletLanguageStore.selectedLanguage = interfaceLanguage
+                savedInterfaceLanguage = interfaceLanguage
+            }
+
+            if shouldSaveProviderAPIKey {
                 if trimmedKey.isEmpty {
                     try apiKeyStore.deleteAPIKey(forProviderID: LLMProviderPreset.openAI.id)
                 } else {
                     try apiKeyStore.saveAPIKey(trimmedKey, forProviderID: LLMProviderPreset.openAI.id)
                 }
+                providerAPIKey = trimmedKey
                 savedProviderAPIKey = trimmedKey
             }
             message = L10n.text("settings.saved")
             NotificationCenter.default.post(name: .appConfigDidSave, object: nil)
+            return true
         } catch let error as HotkeyError {
             message = error.userFacingMessage
+            return false
         } catch {
             message = L10n.format("settings.error.saveFailed", String(describing: error))
+            return false
         }
     }
 
     private func installAutoSave() {
-        Publishers.CombineLatest3($config, $providerAPIKey, $interfaceLanguage)
+        guard !isMigrationMaintenanceActive, autoSaveCancellable == nil else {
+            return
+        }
+        autoSaveCancellable = Publishers.CombineLatest3($config, $providerAPIKey, $interfaceLanguage)
             .dropFirst()
             .debounce(for: .milliseconds(450), scheduler: RunLoop.main)
             .sink { [weak self] _, _, _ in
                 guard let self else { return }
                 self.save()
             }
-            .store(in: &cancellables)
+    }
+
+    func flushPendingEdits() -> Bool {
+        autoSaveCancellable?.cancel()
+        autoSaveCancellable = nil
+        let didSave = hasPendingEdits ? save() : true
+        installAutoSave()
+        return didSave
+    }
+
+    private var hasPendingEdits: Bool {
+        config != savedConfig
+            || providerAPIKey != savedProviderAPIKey
+            || interfaceLanguage != savedInterfaceLanguage
+    }
+
+    func setMigrationMaintenanceActive(_ isActive: Bool) {
+        guard isMigrationMaintenanceActive != isActive else { return }
+        isMigrationMaintenanceActive = isActive
+        if isActive {
+            autoSaveCancellable?.cancel()
+            autoSaveCancellable = nil
+            pronunciationPreviewTasks.values.forEach { $0.cancel() }
+            modelCatalogRefreshTask?.cancel()
+            pronunciationPreviewPlaybackService.stop()
+            pronunciationPreviewState = nil
+            refreshMigrationWorkflowIdle()
+        } else {
+            installAutoSave()
+            refreshMigrationWorkflowIdle()
+        }
+    }
+
+    func waitForMigrationMaintenanceQuiescence() async {
+        let previewTasks = Array(pronunciationPreviewTasks.values)
+        for task in previewTasks {
+            await task.value
+        }
+
+        let catalogTaskID = modelCatalogRefreshTaskID
+        await modelCatalogRefreshTask?.value
+        if modelCatalogRefreshTaskID == catalogTaskID {
+            modelCatalogRefreshTask = nil
+            modelCatalogRefreshTaskID = nil
+            isRefreshingModelCatalog = false
+        }
+        refreshMigrationWorkflowIdle()
+    }
+
+    private func refreshMigrationWorkflowIdle() {
+        isMigrationWorkflowIdle = pronunciationPreviewState == nil
+            && pronunciationPreviewTasks.isEmpty
+            && modelCatalogRefreshTask == nil
+            && !isRefreshingModelCatalog
     }
 
     func openAccessibilitySettings() {
@@ -604,22 +730,34 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 }
 
 struct SettingsView: View {
-    @StateObject private var model: SettingsViewModel
+    @ObservedObject var model: SettingsViewModel
+    @ObservedObject var migrationPresentationModel: LegacyMigrationPresentationModel
     @State private var selectedSection: SettingsSection
     @State private var promptModePendingDeletionID: String?
     @State private var isConfirmingClearHistory = false
     @State private var copiedHistoryControlID: String?
     @State private var historyCopyFeedbackTask: Task<Void, Never>?
     private let onAppearanceChange: (AppAppearance) -> Void
+    private let onRequestMigrationImport: () -> Void
+    private let onRetryMigrationRelaunch: () -> Void
+    private let onQuitForMigration: () -> Void
 
     init(
+        model: SettingsViewModel,
+        migrationPresentationModel: LegacyMigrationPresentationModel,
         initialSection: SettingsSection = .general,
-        historyStore: any HistoryStore = JSONLHistoryStore(),
-        onAppearanceChange: @escaping (AppAppearance) -> Void = { _ in }
+        onAppearanceChange: @escaping (AppAppearance) -> Void = { _ in },
+        onRequestMigrationImport: @escaping () -> Void = {},
+        onRetryMigrationRelaunch: @escaping () -> Void = {},
+        onQuitForMigration: @escaping () -> Void = {}
     ) {
-        _model = StateObject(wrappedValue: SettingsViewModel(historyStore: historyStore))
+        self.model = model
+        self.migrationPresentationModel = migrationPresentationModel
         _selectedSection = State(initialValue: initialSection)
         self.onAppearanceChange = onAppearanceChange
+        self.onRequestMigrationImport = onRequestMigrationImport
+        self.onRetryMigrationRelaunch = onRetryMigrationRelaunch
+        self.onQuitForMigration = onQuitForMigration
     }
 
     private var isSuccessMessage: Bool {
@@ -766,6 +904,7 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(width: 188)
+        .disabled(model.isMigrationMaintenanceActive)
         .background(InkletTheme.toolbarBackground)
         .overlay(alignment: .trailing) { Rectangle().fill(InkletTheme.subtleBorder).frame(width: 1) }
     }
@@ -785,28 +924,34 @@ struct SettingsView: View {
                     }
                 case .writeAssistant:
                     writeAssistantPanel
+                        .disabled(model.isMigrationMaintenanceActive)
                 case .voiceWriteAssistant:
                     ScrollView {
                         voicePanel
                             .padding(.horizontal, 24)
                             .padding(.vertical, 20)
                     }
+                    .disabled(model.isMigrationMaintenanceActive)
                 case .selectionAssistant:
                     ScrollView {
                         selectionActionsPanel
                             .padding(.horizontal, 24)
                             .padding(.vertical, 20)
                     }
+                    .disabled(model.isMigrationMaintenanceActive)
                 case .history:
                     historyPanel
+                        .disabled(model.isMigrationMaintenanceActive)
                 case .promptModes:
                     promptModesPanel
+                        .disabled(model.isMigrationMaintenanceActive)
                 case .about:
                     ScrollView {
                         aboutPanel
                             .padding(.horizontal, 24)
                             .padding(.vertical, 20)
                     }
+                    .disabled(model.isMigrationMaintenanceActive)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -859,35 +1004,165 @@ struct SettingsView: View {
 
     private var generalPanel: some View {
         VStack(alignment: .leading, spacing: 22) {
-            settingsPanel {
-                settingsRow(L10n.text("settings.row.openAIAPIKey"), help: L10n.text("settings.help.openAIAPIKey")) {
-                    SecureField(LLMProviderPreset.openAI.apiKeyPlaceholder, text: $model.providerAPIKey)
-                        .textFieldStyle(.roundedBorder)
+            if migrationPresentationModel.phase != .hidden {
+                migrationNoticeCard
+            }
+
+            VStack(alignment: .leading, spacing: 22) {
+                settingsPanel {
+                    settingsRow(L10n.text("settings.row.openAIAPIKey"), help: L10n.text("settings.help.openAIAPIKey")) {
+                        SecureField(LLMProviderPreset.openAI.apiKeyPlaceholder, text: $model.providerAPIKey)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    settingsRow(L10n.text("settings.row.language"), help: L10n.text("settings.help.language")) {
+                        Picker("", selection: $model.interfaceLanguage) {
+                            ForEach(InterfaceLanguage.allCases) { language in
+                                Text(language.localizedDisplayName).tag(language)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: 320, alignment: .leading)
+                    }
+
+                    settingsRow(L10n.text("settings.row.appearance"), help: L10n.text("settings.help.appearance")) {
+                        Picker("", selection: $model.config.appearance) {
+                            ForEach(AppAppearance.allCases) { appearance in
+                                Text(appearance.localizedDisplayName).tag(appearance)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: 320, alignment: .leading)
+                    }
                 }
 
-                settingsRow(L10n.text("settings.row.language"), help: L10n.text("settings.help.language")) {
-                    Picker("", selection: $model.interfaceLanguage) {
-                        ForEach(InterfaceLanguage.allCases) { language in
-                            Text(language.localizedDisplayName).tag(language)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: 320, alignment: .leading)
-                }
+                systemPermissionsPanel
+            }
+            .disabled(model.isMigrationMaintenanceActive)
+        }
+    }
 
-                settingsRow(L10n.text("settings.row.appearance"), help: L10n.text("settings.help.appearance")) {
-                    Picker("", selection: $model.config.appearance) {
-                        ForEach(AppAppearance.allCases) { appearance in
-                            Text(appearance.localizedDisplayName).tag(appearance)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: 320, alignment: .leading)
+    private var migrationNoticeCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "externaldrive.badge.exclamationmark")
+                    .foregroundStyle(InkletTheme.warning)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(L10n.text("legacyMigration.notice.title"))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(InkletTheme.textPrimary)
+                    Text(migrationNoticeMessage)
+                        .font(.system(size: 11))
+                        .foregroundStyle(InkletTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
-            systemPermissionsPanel
+            HStack(spacing: 8) {
+                migrationPrimaryAction
+                if migrationPresentationModel.phase == .relaunchFailed {
+                    Button(L10n.text("legacyMigration.action.quit"), action: onQuitForMigration)
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(InkletTheme.textSecondary)
+                        .padding(.horizontal, 10)
+                        .frame(height: 28)
+                        .background(InkletTheme.controlFill, in: RoundedRectangle(cornerRadius: 7))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
         }
+        .padding(14)
+        .frame(maxWidth: 580, alignment: .leading)
+        .background(InkletTheme.controlFill.opacity(0.58), in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(InkletTheme.subtleBorder)
+        }
+    }
+
+    private var migrationNoticeMessage: String {
+        switch migrationPresentationModel.phase {
+        case .failed:
+            switch migrationPresentationModel.failureReason {
+            case .invalidSelection:
+                L10n.text("legacyMigration.import.invalidSelection")
+            case .partialFailure:
+                L10n.text("legacyMigration.import.partialFailure")
+            case .importFailed, .none:
+                L10n.text("legacyMigration.import.failed")
+            }
+        case .relaunching:
+            L10n.text("legacyMigration.import.relaunching")
+        case .relaunchFailed:
+            L10n.text("legacyMigration.import.relaunchFailed")
+        case .hidden, .needsImport, .selecting, .importing:
+            L10n.text("legacyMigration.notice.message")
+        }
+    }
+
+    @ViewBuilder
+    private var migrationPrimaryAction: some View {
+        switch migrationPresentationModel.phase {
+        case .importing, .relaunching:
+            migrationActionButton(
+                titleKey: migrationPresentationModel.phase == .importing
+                    ? "legacyMigration.import.progress"
+                    : "legacyMigration.import.relaunchProgress",
+                systemImage: "square.and.arrow.down",
+                showsProgress: true,
+                isEnabled: false,
+                action: {}
+            )
+        case .relaunchFailed:
+            migrationActionButton(
+                titleKey: "legacyMigration.action.retryRelaunch",
+                systemImage: "arrow.clockwise",
+                showsProgress: false,
+                isEnabled: true,
+                action: onRetryMigrationRelaunch
+            )
+        case .hidden, .needsImport, .selecting, .failed:
+            migrationActionButton(
+                titleKey: "legacyMigration.action.importOldData",
+                systemImage: "square.and.arrow.down",
+                showsProgress: false,
+                isEnabled: migrationPresentationModel.canStartImport,
+                action: onRequestMigrationImport
+            )
+        }
+    }
+
+    private func migrationActionButton(
+        titleKey: String,
+        systemImage: String,
+        showsProgress: Bool,
+        isEnabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label {
+                Text(L10n.text(titleKey))
+            } icon: {
+                Group {
+                    if showsProgress {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: systemImage)
+                    }
+                }
+                .frame(width: 14, height: 14)
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .frame(width: 168, height: 28)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+        .disabled(!isEnabled)
+        .help(L10n.text("legacyMigration.settings.help"))
+        .accessibilityLabel(L10n.text(titleKey))
     }
 
     private var writeAssistantControls: some View {

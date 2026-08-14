@@ -72,6 +72,7 @@ public final class VoiceInputCoordinator {
     public typealias Insert = @MainActor (String, NSRunningApplication) async throws -> Void
     public typealias RecordHistory = @MainActor (VoiceInputHistoryEvent) async -> Void
     public typealias StatusHandler = @MainActor (VoiceInputStatus) -> Void
+    public typealias IdleStateHandler = @MainActor (Bool) -> Void
 
     private enum State {
         case idle
@@ -95,8 +96,11 @@ public final class VoiceInputCoordinator {
     private let insertHandler: Insert
     private let recordHistoryHandler: RecordHistory
     private let statusHandler: StatusHandler
+    private let idleStateHandler: IdleStateHandler
     private var state: State = .idle
     private var sessionID = 0
+    private var activeOperationCount = 0
+    private var operationWaiters: [CheckedContinuation<Void, Never>] = []
 
     public init(
         configProvider: @escaping ConfigProvider,
@@ -111,7 +115,8 @@ public final class VoiceInputCoordinator {
         cleanup: @escaping Cleanup,
         insert: @escaping Insert,
         recordHistory: @escaping RecordHistory = { _ in },
-        statusHandler: @escaping StatusHandler
+        statusHandler: @escaping StatusHandler,
+        idleStateHandler: @escaping IdleStateHandler = { _ in }
     ) {
         self.configProvider = configProvider
         self.targetApplicationProvider = targetApplicationProvider
@@ -124,6 +129,7 @@ public final class VoiceInputCoordinator {
         self.insertHandler = insert
         self.recordHistoryHandler = recordHistory
         self.statusHandler = statusHandler
+        self.idleStateHandler = idleStateHandler
     }
 
     public func toggle() async {
@@ -141,6 +147,9 @@ public final class VoiceInputCoordinator {
         guard case .idle = state else {
             return
         }
+
+        beginOperation()
+        defer { finishOperation() }
 
         sessionID += 1
         let activeSessionID = sessionID
@@ -177,6 +186,9 @@ public final class VoiceInputCoordinator {
         guard case .listening = state else {
             return
         }
+
+        beginOperation()
+        defer { finishOperation() }
 
         let activeSessionID = sessionID
         do {
@@ -289,6 +301,9 @@ public final class VoiceInputCoordinator {
     }
 
     public func cancel() async {
+        beginOperation()
+        defer { finishOperation() }
+
         switch state {
         case .starting, .listening:
             sessionID += 1
@@ -300,6 +315,64 @@ public final class VoiceInputCoordinator {
             sessionID += 1
             state = .idle
             statusHandler(.idle)
+        }
+    }
+
+    public var isIdle: Bool {
+        if case .idle = state {
+            return activeOperationCount == 0
+        }
+        return false
+    }
+
+    public func cancelForMigrationMaintenance() async {
+        guard !isIdle else {
+            return
+        }
+
+        let shouldCancelRecordingDirectly: Bool
+        switch state {
+        case .listening:
+            shouldCancelRecordingDirectly = true
+        case .starting:
+            shouldCancelRecordingDirectly = activeOperationCount == 0
+        case .idle, .transcribing, .choosingPromptMode, .polishing, .inserting, .cancelling:
+            shouldCancelRecordingDirectly = false
+        }
+
+        sessionID += 1
+        state = .cancelling
+        if shouldCancelRecordingDirectly {
+            await cancelRecordingHandler()
+        }
+        await waitForActiveOperations()
+        state = .idle
+        statusHandler(.idle)
+        idleStateHandler(true)
+    }
+
+    private func beginOperation() {
+        activeOperationCount += 1
+        idleStateHandler(false)
+    }
+
+    private func finishOperation() {
+        activeOperationCount -= 1
+        guard activeOperationCount == 0 else {
+            return
+        }
+        let waiters = operationWaiters
+        operationWaiters.removeAll()
+        idleStateHandler(isIdle)
+        waiters.forEach { $0.resume() }
+    }
+
+    private func waitForActiveOperations() async {
+        guard activeOperationCount > 0 else {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            operationWaiters.append(continuation)
         }
     }
 
@@ -336,6 +409,9 @@ public final class VoiceInputCoordinator {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
+            guard activeSessionID == sessionID else {
+                throw CancellationError()
+            }
             try await insertText(transcript)
             guard activeSessionID == sessionID else {
                 return nil

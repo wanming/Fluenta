@@ -8,12 +8,13 @@ bundle_id="${INKLET_BUNDLE_ID:-com.tomwan.inklet}"
 version="${INKLET_VERSION:-0.1.0}"
 build_number="${INKLET_BUILD_NUMBER:-$(git -C "$repo_root" rev-list --count HEAD 2>/dev/null || echo 1)}"
 sign_identity="${INKLET_SIGN_IDENTITY:--}"
+require_timestamp="${INKLET_REQUIRE_TIMESTAMP:-0}"
 if [[ ${INKLET_ENTITLEMENTS_PATH+x} ]]; then
   entitlements_path="$INKLET_ENTITLEMENTS_PATH"
 else
   entitlements_path="${support_dir}/Inklet.entitlements"
 fi
-output_dir="${INKLET_OUTPUT_DIR:-${repo_root}/dist/app-store-spike}"
+output_dir="${INKLET_OUTPUT_DIR:-${repo_root}/dist/direct}"
 app_path="${output_dir}/${app_name}.app"
 contents_dir="${app_path}/Contents"
 resources_dir="${contents_dir}/Resources"
@@ -52,13 +53,27 @@ ditto "${support_dir}/InfoPlistStrings" "$resources_dir"
 plutil -lint "${contents_dir}/Info.plist" >/dev/null
 
 echo "Signing ${app_path}..."
+codesign_arguments=(--force --sign "$sign_identity" --options runtime)
+if [[ "$require_timestamp" == "1" ]]; then
+  codesign_arguments+=(--timestamp)
+fi
 if [[ -n "$entitlements_path" ]]; then
-  codesign --force --sign "$sign_identity" --entitlements "$entitlements_path" "$app_path"
-else
-  codesign --force --sign "$sign_identity" "$app_path"
+  codesign_arguments+=(--entitlements "$entitlements_path")
+fi
+if ! signing_temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/inklet-app-signing.XXXXXX" 2>/dev/null)"; then
+  echo "Signing failed." >&2
+  exit 1
+fi
+trap 'rm -rf "$signing_temp_dir" >/dev/null 2>&1' EXIT
+if ! codesign "${codesign_arguments[@]}" "$app_path" >"${signing_temp_dir}/codesign.log" 2>&1; then
+  echo "Signing failed." >&2
+  exit 1
 fi
 
+verification_arguments=("$app_path" "$bundle_id")
+if [[ "$require_timestamp" == "1" ]]; then
+  verification_arguments+=(--release)
+fi
+"${repo_root}/scripts/verify-direct-app.sh" "${verification_arguments[@]}"
+
 echo "Built ${app_path}"
-echo
-echo "Entitlements:"
-codesign -d --entitlements - "$app_path" 2>&1

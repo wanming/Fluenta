@@ -16,9 +16,9 @@
 
 ## 安装
 
-Mac App Store：即将上线。
+GitHub Releases 是 Inklet 唯一支持的发布渠道。请从 [GitHub Releases](https://github.com/wanming/Inklet/releases) 下载最新已签名并完成 Apple 公证的 DMG，打开后把 Inklet 复制到 `/Applications`。
 
-你也可以从 [GitHub Releases](https://github.com/wanming/Inklet/releases) 下载最新已签名并公证的 DMG，或使用下面的安装脚本。脚本会下载最新 DMG，校验 checksum，检查 Gatekeeper 和 App 签名，然后复制 Inklet 到 `/Applications`。
+也可以使用下面的安装脚本。安装脚本会下载最新 GitHub Releases DMG 及 checksum，验证 DMG 结构、checksum、Gatekeeper、bundle identifier、Hardened Runtime、effective entitlements 和 App 签名，再把 Inklet 复制到 `/Applications`。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install.sh | bash
@@ -26,13 +26,13 @@ curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install
 
 ## 首次设置
 
-1. 从 Applications 文件夹打开 Inklet。本地源码构建请使用 `scripts/run-local-app.sh`。
+1. 从 Applications 文件夹打开 Inklet。需要运行源码构建时，请在仓库根目录执行 `scripts/run-local-app.sh`，然后使用 `/Applications/Inklet Local.app`。
 2. 点击菜单栏里的 Inklet 图标，打开 Settings。
-3. 按 macOS 提示授予 Accessibility 权限。Inklet 需要这个权限来回到上一个应用并粘贴结果。系统设置打开期间 Inklet 会留在后台；关闭系统设置后 Inklet 会返回 General 设置页。
+3. 按 macOS 提示授予 Accessibility 权限。Inklet 用这一个通用权限读取选区、执行已配置的复制备用流程、回到上一个应用并粘贴确认后的结果。系统设置打开期间 Inklet 会留在后台；关闭系统设置后 Inklet 会返回 General 设置页。
 4. 在 General 中填写 OpenAI API key。Inklet 会用这一把 key 处理写作、语音转写、选区翻译和发音。
 5. 在 Write Assistant 中配置模型、写作快捷键、生成参数和 prompt modes。
 6. 可选：在 Voice Write Assistant 中配置麦克风、speech preset、语音快捷键、录音方式和转写后的处理方式。
-7. 可选：在 Selection Assistant 中配置翻译语言、安全的强制取词备用方式、AI 发音声音和发音速度，并在设置中试听该声音。
+7. 可选：在 Selection Assistant 中配置翻译语言、强制取词模式、AI 发音声音和发音速度，并在设置中试听该声音。
 8. 第一次使用语音输入时，请授予 Microphone 权限。
 
 ## 日常使用
@@ -67,9 +67,10 @@ curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install
   - To Chinese Summary
   - Voice Cleanup
 - 把生成结果插回之前聚焦的应用。
-- 插入和强制取词后都会恢复你的剪贴板内容。自动选区动作依次使用 Accessibility、支持浏览器的 JavaScript 和菜单复制；这些默认路径不会模拟键盘输入。
-- 默认关闭模拟 `Command+C`。你可以显式开启这一高级备用方式，它只会发送给当时的前台 App，但可能干扰游戏、远程桌面或虚拟机。
-- 保留手动快速双击复制：单次 `Command+C` 只会正常复制；快速、独立地按两次才会用已变化的剪贴板文本打开选区动作。按住按键不会算作两次。
+- 使用与应用无关、Accessibility 优先的通用选区流程。自动选区动作先通过 macOS Accessibility 读取；只有强制取词设置允许时，才进入按设置启用的临时剪贴板备用读取。每次读取都绑定到捕获的来源进程；来源退出或失去前台焦点时会取消。
+- 默认关闭模拟 `Command+C`。菜单复制仍是安全的强制取词备用方式；对于没有可用复制菜单的 App，可以显式开启模拟复制这一高级备用选项，但它可能干扰游戏、远程桌面或虚拟机。
+- 临时剪贴板读取会串行执行。只有同一次读取仍持有已观察到的复制结果时，Inklet 才恢复之前的快照；较新的剪贴板内容优先。双击复制触发是被动流程：它只读取用户已经完成的复制，不会再发一次合成复制，也不会恢复更旧的剪贴板数据。右键点击保留原生行为，不会开始选区读取。
+- 不包含浏览器专用的选区代码，也不会请求浏览器 Automation。Chrome、Safari、Edge 和原生 App 使用同一条通用流程。
 - 可以编辑 prompt modes、OpenAI 模型、timeout、temperature、写作快捷键、语音快捷键、语音录音方式、麦克风、speech preset、speech endpoint、speech model、转写后处理方式、选区翻译语言、选区 Translate prompt、强制取词模式、模拟复制权限、AI 发音声音和 AI 发音速度。
 - 在本地 History 中查看成功的写作、语音和选区结果，连续重复项会自动合并，原文/结果文本可选择，可一键复制结果或清空全部历史。
 - 使用一把共享的 OpenAI API key 处理写作、语音转写、选区翻译和发音。
@@ -90,7 +91,7 @@ Inklet 是早期 MVP。当前仓库包含：
 - macOS 14 或更新版本。
 - Swift 6 toolchain。
 - 推荐安装完整 Xcode，以获得 XCTest 支持。
-- Accessibility 权限，用于回到上一个应用并粘贴生成结果。
+- Accessibility 权限，用于通用选区读取、按设置启用的复制备用流程、回到上一个应用并粘贴生成结果。
 - Microphone 权限，用于语音输入。
 - 一个 OpenAI API key。
 
@@ -139,20 +140,35 @@ docs/                    手动测试说明和隐私政策
 
 - Provider 行为应保持有聚焦的单元测试覆盖。
 - 发布用户可见的 app 改动前，请使用 [docs/manual-test-checklist.md](docs/manual-test-checklist.md)。
-- 日常手动测试 app 时使用 `scripts/run-local-app.sh`，不要用 `swift run Inklet` 或 `open dist/...`，这样本机 Accessibility 和 Keychain 授权会绑定到同一个稳定 app 身份。
+- 日常手动测试 app 时使用 `scripts/run-local-app.sh`，不要直接运行 SwiftPM 可执行文件或 `open dist/...`，这样本机 Accessibility 和 Keychain 授权会绑定到同一个稳定 app 身份。
 - 剪贴板和 Accessibility 流程是核心体验，需要谨慎处理。
 - 项目仍处于 MVP 阶段，README 应描述当前代码已经支持的能力，而不是未来计划。
+
+## 本地存储与升级
+
+正式版与本地 QA 版使用按 bundle 标识符隔离的存储，不共享设置、History、翻译缓存、诊断文件或 Keychain 凭据：
+
+- 正式版 Application Support：`~/Library/Application Support/com.tomwan.inklet/`
+- 本地版 Application Support：`~/Library/Application Support/com.tomwan.inklet.local/`
+- 正式版偏好设置：`~/Library/Preferences/com.tomwan.inklet.plist`
+- 本地版偏好设置：`~/Library/Preferences/com.tomwan.inklet.local.plist`
+- 正式版 Keychain service：`Inklet.ProviderAPIKey`
+- 本地版 Keychain service：`Inklet.Local.ProviderAPIKey`
+
+从旧版 sandbox 构建升级后的第一次启动中，Inklet 会自动复制已识别的旧版偏好设置、把 provider API keys 写入对应 Keychain service，并把 History 复制到当前 bundle 的存储中。迁移不会删除或修改旧版来源，因此旧数据仍可用于回滚或恢复。可丢弃的翻译缓存不会迁移。
+
+如果 macOS 阻止自动访问对应的旧容器，Settings 会持续提供**导入旧数据…**操作。辅助导入只接受当前正式版或本地版对应的准确旧版 `Data` 文件夹，只在当前文件选择授权有效期间读取，并且不会保存永久访问 bookmark。
 
 ## 隐私
 
 - Inklet 使用你配置的 OpenAI API key 调用 OpenAI，处理写作、语音转写、选区翻译和发音。
 - 使用语音输入时，临时音频会发送到 OpenAI 转写接口。
 - OpenAI API key 存储在你的 Mac 本地。
-- Inklet 使用 Accessibility 权限回到上一个应用并粘贴文本。
+- Inklet 使用 Accessibility 权限完成通用选区读取、按设置启用的复制备用流程、回到上一个应用并粘贴文本。
 - Inklet 只在录音语音输入时使用 Microphone 权限。
-- Inklet 会临时使用剪贴板完成插入和已配置的强制取词备用读取，然后恢复之前的剪贴板内容。
+- Inklet 会临时使用剪贴板完成插入和已配置的强制取词备用读取。强制取词仅在 Inklet 的临时复制内容仍是当前内容时恢复原剪贴板，不会覆盖之后发生的外部剪贴板变化。
 - Inklet 会把成功的写作、语音和选区原文/结果作为本地 History 保存，直到你在 Settings 中清空；连续重复项会自动跳过。
-- 选区动作会在你选中其他 App 中的文字后，优先通过 Accessibility 读取当前选区；在支持的浏览器中，也会尝试用浏览器 JavaScript 读取 `window.getSelection()`，最后默认尝试菜单复制。模拟 `Command+C` 默认关闭，只有显式开启高级选项后才会发送给当时的前台 App，并可能干扰游戏、远程桌面或虚拟机。单次 `Command+C` 只会正常复制；快速、独立地按两次会显式读取已变化的剪贴板文本并打开选区动作。Inklet 不会保存仅被选中的文本；只有成功完成的动作会进入本地 History。
+- 选区动作会捕获来源 App 和选区位置，在读取前和读取期间验证来源，然后通过 Accessibility 读取该 App 的当前选区。如果 Accessibility 没有返回选中文本，设置中的强制取词模式可以短暂调用菜单复制，并通过上面所述的受保护剪贴板事务读取复制出的文本。模拟 `Command+C` 默认关闭，只有显式开启高级选项后才会运行。你可以在设置中关闭强制取词。此流程不会发送针对浏览器的 Apple Events，也不会请求浏览器 Automation。选中文本后快速按两次 `Command+C`，会显式读取你已经完成的复制。Inklet 不会保存仅被选中的文本；只有成功完成的动作会进入本地 History。
 - Selection Assistant 会把成功的翻译结果用哈希缓存键在本地缓存 7 天，以加速重复翻译。
 - 当本地没有可用缓存时，Selection Assistant 翻译会把选中文本和自定义 Translate 指令发送到 OpenAI；AI 发音会把选中文本发送到 OpenAI。
 - Inklet 最多每天从 `models.dev` 获取一次公开模型目录。该请求不包含你的文本、音频、API keys 或应用设置。

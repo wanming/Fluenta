@@ -3,11 +3,19 @@ import InkletCore
 
 @MainActor
 enum SelectionActionDiagnostics {
+    private static var fileURL: URL?
     private static var eventRateLimiter = SelectionActionDiagnosticRateLimiter()
 
+    static func configure(fileURL: URL) {
+        self.fileURL = fileURL
+    }
+
     static func log(_ message: String) {
+        guard let url = fileURL else {
+            return
+        }
+
         let line = "\(Date()) \(message)\n"
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("InkletSelectionActions.log")
         guard let data = line.data(using: .utf8) else {
             return
         }
@@ -19,21 +27,6 @@ enum SelectionActionDiagnostics {
         } else {
             try? data.write(to: url, options: .atomic)
         }
-    }
-
-    static func logCopyEvent(
-        foregroundApp: String,
-        keyCode: UInt16,
-        modifiers: UInt,
-        isRepeat: Bool,
-        sourcePID: Int64,
-        marker: Int64,
-        decision: String,
-        at time: TimeInterval = Date().timeIntervalSinceReferenceDate
-    ) {
-        let signature = "app=\(foregroundApp) keyCode=\(keyCode) modifiers=\(modifiers) "
-            + "repeat=\(isRepeat) sourcePID=\(sourcePID) marker=\(marker) decision=\(decision)"
-        logRateLimited("copy event \(signature)", at: time)
     }
 
     static func logRateLimited(
@@ -51,7 +44,7 @@ enum SelectionActionDiagnostics {
         }
     }
 
-    static func resetCopyEventAggregation() {
+    static func resetEventAggregation() {
         eventRateLimiter.reset()
     }
 }

@@ -38,6 +38,7 @@ final class InkletPopoverViewModel: ObservableObject {
     private var config: AppConfig
     private var previousApplication: NSRunningApplication?
     private var transformationTask: Task<Void, Never>?
+    private var insertionTask: Task<Void, Never>?
     private var sessionID = 0
     private var draftSourceText = ""
     private var hasTransformedInSession = false
@@ -68,6 +69,8 @@ final class InkletPopoverViewModel: ObservableObject {
     func resetForOpen(previousApplication: NSRunningApplication?) {
         transformationTask?.cancel()
         transformationTask = nil
+        insertionTask?.cancel()
+        insertionTask = nil
         sessionID += 1
         self.previousApplication = previousApplication
         stateMachine = PopoverStateMachine()
@@ -90,6 +93,20 @@ final class InkletPopoverViewModel: ObservableObject {
         if !sourceText.isEmpty {
             _ = stateMachine.send(.sourceChanged(sourceText))
         }
+    }
+
+    var isBusy: Bool {
+        isTransforming || isInserting
+    }
+
+    func cancelForMigrationMaintenance() {
+        sessionID += 1
+        transformationTask?.cancel()
+        transformationTask = nil
+        insertionTask?.cancel()
+        insertionTask = nil
+        isTransforming = false
+        isInserting = false
     }
 
     private func refreshVoiceShortcutHint() {
@@ -336,7 +353,8 @@ final class InkletPopoverViewModel: ObservableObject {
         isInserting = true
 
         let insertionSessionID = sessionID
-        Task { [weak self] in
+        insertionTask?.cancel()
+        insertionTask = Task { [weak self] in
             guard let self else { return }
             do {
                 try await insertionService.insert(text: text, into: previousApplication)
@@ -344,6 +362,7 @@ final class InkletPopoverViewModel: ObservableObject {
                     return
                 }
                 isInserting = false
+                insertionTask = nil
                 draftSourceText = ""
                 sourceText = ""
                 resultText = ""
@@ -353,6 +372,7 @@ final class InkletPopoverViewModel: ObservableObject {
                     return
                 }
                 isInserting = false
+                insertionTask = nil
                 stateMachine = PopoverStateMachine(state: fallbackState)
                 errorMessage = error.userFacingMessage
                 onFocusPopover?()

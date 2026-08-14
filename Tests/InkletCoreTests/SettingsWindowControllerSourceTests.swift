@@ -1,10 +1,19 @@
 import XCTest
 
 final class SettingsWindowControllerSourceTests: XCTestCase {
+    func testMigrationWorkflowIdlePropagatesFromRetainedSettingsModel() throws {
+        let source = try controllerSource()
+
+        XCTAssertTrue(source.contains("var onMigrationWorkflowIdleChange: ((Bool) -> Void)?"))
+        XCTAssertTrue(source.contains("var isMigrationWorkflowIdle: Bool"))
+        XCTAssertTrue(source.contains("model.isMigrationWorkflowIdle"))
+        XCTAssertTrue(source.contains("model.$isMigrationWorkflowIdle"))
+        XCTAssertTrue(source.contains("removeDuplicates()"))
+        XCTAssertTrue(source.contains("onMigrationWorkflowIdleChange?(isIdle)"))
+    }
+
     func testSettingsWindowDragsOnlyFromTopStrip() throws {
-        let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        let sourceURL = packageRoot.appendingPathComponent("Sources/InkletApp/SettingsWindowController.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let source = try controllerSource()
 
         XCTAssertTrue(source.contains("private struct SettingsWindowDragState"))
         XCTAssertTrue(source.contains("private var dragState: SettingsWindowDragState?"))
@@ -22,5 +31,11 @@ final class SettingsWindowControllerSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("point.y >= frame.height - SettingsWindowDragMetrics.draggableHeaderHeight"))
         XCTAssertTrue(source.contains("point.x < frame.width - SettingsWindowDragMetrics.closeButtonExclusionWidth"))
         XCTAssertTrue(source.contains("window.isMovableByWindowBackground = false"))
+    }
+
+    private func controllerSource() throws -> String {
+        let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let sourceURL = packageRoot.appendingPathComponent("Sources/InkletApp/SettingsWindowController.swift")
+        return try String(contentsOf: sourceURL, encoding: .utf8)
     }
 }

@@ -26,6 +26,19 @@ final class SelectionTranslationCacheTests: XCTestCase {
         )
     }
 
+    func testDefaultFileURLUsesQualifiedStoragePath() {
+        let paths = InkletStoragePaths(
+            bundleIdentifier: "com.tomwan.inklet.local",
+            applicationSupportDirectory: URL(fileURLWithPath: "/Users/test/Library/Application Support"),
+            temporaryDirectory: URL(fileURLWithPath: "/tmp/test")
+        )
+
+        XCTAssertEqual(
+            JSONSelectionTranslationCache.defaultFileURL(storagePaths: paths),
+            paths.translationCacheFileURL
+        )
+    }
+
     func testStoredTranslationIsReturnedWithinSevenDays() throws {
         let url = temporaryCacheURL()
         let cache = JSONSelectionTranslationCache(fileURL: url)

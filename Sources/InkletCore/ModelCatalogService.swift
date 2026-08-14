@@ -11,7 +11,7 @@ public struct ModelCatalogSnapshot: Codable, Equatable, Sendable {
 }
 
 public final class ModelCatalogService: @unchecked Sendable {
-    public static let cacheKey = "modelCatalogSnapshot"
+    public static let cacheKey = InkletPreferenceKeys.modelCatalogSnapshot
     public static let catalogURL = URL(string: "https://models.dev/api.json")!
     public static let refreshInterval: TimeInterval = 86_400
     public static let maxModelsPerProvider = 80
