@@ -166,7 +166,7 @@ public struct SelectedTextReader: Sendable {
             ?? focusedElementProvider()
 
         guard let focusedElement else {
-            return true
+            return false
         }
 
         if let roleValue = focusedElementRoleProvider(focusedElement),
@@ -175,11 +175,6 @@ public struct SelectedTextReader: Sendable {
         }
 
         if case .success = selectedTextRangeProvider(focusedElement) {
-            return true
-        }
-
-        if let value = focusedElementValueProvider(focusedElement),
-           !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return true
         }
 
