@@ -1,6 +1,25 @@
 import XCTest
 
 final class SettingsViewSourceTests: XCTestCase {
+    func testTemperatureSettingIsRemoved() throws {
+        let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let sourceURL = packageRoot.appendingPathComponent("Sources/InkletApp/SettingsView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("settings.row.temperature"))
+        XCTAssertFalse(source.contains("settings.help.temperature"))
+        XCTAssertFalse(source.contains("config.temperature"))
+    }
+
+    func testTemperatureLocalizationKeysAreRemoved() throws {
+        let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let sourceURL = packageRoot.appendingPathComponent("Sources/InkletApp/InkletLocalization.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("settings.row.temperature"))
+        XCTAssertFalse(source.contains("settings.help.temperature"))
+    }
+
     func testSelectionActionsExposeSafeForceSelectionChoicesAndCopyOptIn() throws {
         let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let sourceURL = packageRoot.appendingPathComponent("Sources/InkletApp/SettingsView.swift")

@@ -70,7 +70,7 @@ curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install
 - 插入和强制取词后都会恢复你的剪贴板内容。自动选区动作依次使用 Accessibility、支持浏览器的 JavaScript 和菜单复制；这些默认路径不会模拟键盘输入。
 - 默认关闭模拟 `Command+C`。你可以显式开启这一高级备用方式，它只会发送给当时的前台 App，但可能干扰游戏、远程桌面或虚拟机。
 - 保留手动快速双击复制：单次 `Command+C` 只会正常复制；快速、独立地按两次才会用已变化的剪贴板文本打开选区动作。按住按键不会算作两次。
-- 可以编辑 prompt modes、OpenAI 模型、timeout、temperature、写作快捷键、语音快捷键、语音录音方式、麦克风、speech preset、speech endpoint、speech model、转写后处理方式、选区翻译语言、选区 Translate prompt、强制取词模式、模拟复制权限、AI 发音声音和 AI 发音速度。
+- 可以编辑 prompt modes、OpenAI 模型、timeout、写作快捷键、语音快捷键、语音录音方式、麦克风、speech preset、speech endpoint、speech model、转写后处理方式、选区翻译语言、选区 Translate prompt、强制取词模式、模拟复制权限、AI 发音声音和 AI 发音速度。
 - 在本地 History 中查看成功的写作、语音和选区结果，连续重复项会自动合并，原文/结果文本可选择，可一键复制结果或清空全部历史。
 - 使用一把共享的 OpenAI API key 处理写作、语音转写、选区翻译和发音。
 - 提供英文和中文应用界面。

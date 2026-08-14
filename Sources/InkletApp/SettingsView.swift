@@ -53,7 +53,6 @@ final class SettingsViewModel: ObservableObject {
         microphoneDeviceCatalog: MicrophoneDeviceCatalog = MicrophoneDeviceCatalog()
     ) {
         var loadedConfig = (try? configStore.load()) ?? AppConfig.defaultConfig()
-        loadedConfig.temperature = min(max(loadedConfig.temperature, 0), 1)
         self.configStore = configStore
         self.apiKeyStore = apiKeyStore
         self.modelCatalogService = modelCatalogService
@@ -461,7 +460,6 @@ final class SettingsViewModel: ObservableObject {
                 message = L10n.text("settings.error.modelRequired")
                 return
             }
-            config.temperature = min(max(config.temperature, 0), 1)
             config.providerID = LLMProviderPreset.openAI.id
             guard let speechEndpoint = URL(string: config.voiceInput.speechEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
                   speechEndpoint.scheme?.hasPrefix("http") == true,
@@ -934,16 +932,6 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-            }
-
-            settingsRow(L10n.text("settings.row.temperature"), help: L10n.text("settings.help.temperature")) {
-                HStack(spacing: 12) {
-                    Slider(value: $model.config.temperature, in: 0...1, step: 0.1)
-                    Text(model.config.temperature, format: .number.precision(.fractionLength(1)))
-                        .font(.body.monospacedDigit())
-                        .frame(width: 42, alignment: .trailing)
-                }
-                .frame(maxWidth: 520)
             }
 
             settingsRow(L10n.text("settings.row.timeout"), help: L10n.text("settings.help.timeout")) {

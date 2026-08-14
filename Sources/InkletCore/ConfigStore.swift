@@ -14,7 +14,6 @@ public struct AppConfig: Codable, Equatable, Sendable {
     public var version: Int
     public var providerID: String
     public var model: String
-    public var temperature: Double
     public var timeoutSeconds: Double
     public var hotkey: String
     public var appearance: AppAppearance
@@ -27,7 +26,6 @@ public struct AppConfig: Codable, Equatable, Sendable {
         version: Int = AppConfig.currentVersion,
         providerID: String = LLMProviderPreset.openAI.id,
         model: String,
-        temperature: Double,
         timeoutSeconds: Double,
         hotkey: String,
         appearance: AppAppearance = .system,
@@ -39,7 +37,6 @@ public struct AppConfig: Codable, Equatable, Sendable {
         self.version = version
         self.providerID = providerID
         self.model = model
-        self.temperature = temperature
         self.timeoutSeconds = timeoutSeconds
         self.hotkey = hotkey
         self.appearance = appearance
@@ -53,7 +50,6 @@ public struct AppConfig: Codable, Equatable, Sendable {
         AppConfig(
             providerID: LLMProviderPreset.openAI.id,
             model: LLMProviderPreset.openAI.defaultModel,
-            temperature: 0.2,
             timeoutSeconds: 20,
             hotkey: "⌥Space",
             appearance: .system,
@@ -90,7 +86,6 @@ public struct AppConfig: Codable, Equatable, Sendable {
         case version
         case providerID
         case model
-        case temperature
         case timeoutSeconds
         case hotkey
         case appearance
@@ -113,7 +108,6 @@ public struct AppConfig: Codable, Equatable, Sendable {
         } else {
             model = defaults.model
         }
-        temperature = try container.decodeIfPresent(Double.self, forKey: .temperature) ?? defaults.temperature
         timeoutSeconds = try container.decodeIfPresent(Double.self, forKey: .timeoutSeconds) ?? defaults.timeoutSeconds
         hotkey = try container.decodeIfPresent(String.self, forKey: .hotkey) ?? defaults.hotkey
         appearance = try container.decodeIfPresent(AppAppearance.self, forKey: .appearance) ?? defaults.appearance
@@ -140,7 +134,6 @@ public struct AppConfig: Codable, Equatable, Sendable {
         try container.encode(version, forKey: .version)
         try container.encode(providerID, forKey: .providerID)
         try container.encode(model, forKey: .model)
-        try container.encode(temperature, forKey: .temperature)
         try container.encode(timeoutSeconds, forKey: .timeoutSeconds)
         try container.encode(hotkey, forKey: .hotkey)
         try container.encode(appearance, forKey: .appearance)
