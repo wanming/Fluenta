@@ -43,7 +43,7 @@ final class SelectionActionMonitor {
                     case .candidateSelection:
                         break
                     case .dismiss:
-                        SelectionActionDiagnostics.log("dismiss from mouse click")
+                        SelectionActionDiagnostics.logRateLimited("dismiss from mouse click")
                         self.onDismiss?(.mouseClick)
                         return
                     case .ignore:
@@ -51,7 +51,7 @@ final class SelectionActionMonitor {
                     }
                 }
 
-                SelectionActionDiagnostics.log("candidate mouse selection")
+                SelectionActionDiagnostics.logRateLimited("candidate mouse selection")
                 self.dismissalPolicy.recordCandidate(at: Date().timeIntervalSinceReferenceDate)
                 self.onCandidateSelection?(point)
             }
@@ -72,7 +72,7 @@ final class SelectionActionMonitor {
                 guard modifiers.contains(.shift) else {
                     return
                 }
-                SelectionActionDiagnostics.log("candidate keyboard selection")
+                SelectionActionDiagnostics.logRateLimited("candidate keyboard selection")
                 self.dismissalPolicy.recordCandidate(at: Date().timeIntervalSinceReferenceDate)
                 self.onCandidateSelection?(SelectionPoint(x: NSEvent.mouseLocation.x, y: NSEvent.mouseLocation.y))
             }
@@ -160,14 +160,14 @@ final class SelectionActionMonitor {
                 guard let self else { return }
                 if event.type == .leftMouseDown {
                     self.dragPolicy.recordMouseDown(at: SelectionPoint(x: NSEvent.mouseLocation.x, y: NSEvent.mouseLocation.y))
-                    SelectionActionDiagnostics.log("mouse down recorded for selection drag")
+                    SelectionActionDiagnostics.logRateLimited("mouse down recorded for selection drag")
                     return
                 }
                 guard self.dismissalPolicy.shouldDismiss(at: Date().timeIntervalSinceReferenceDate) else {
-                    SelectionActionDiagnostics.log("dismiss suppressed during selection grace")
+                    SelectionActionDiagnostics.logRateLimited("dismiss suppressed during selection grace")
                     return
                 }
-                SelectionActionDiagnostics.log("dismiss from \(event.type)")
+                SelectionActionDiagnostics.logRateLimited("dismiss from \(event.type)")
                 self.onDismiss?(.pointerEvent(event.type))
             }
         } as Any)
@@ -186,10 +186,10 @@ final class SelectionActionMonitor {
 
     private func dismissIfNeededForKeyDown() {
         guard dismissalPolicy.shouldDismiss(at: Date().timeIntervalSinceReferenceDate) else {
-            SelectionActionDiagnostics.log("dismiss suppressed during selection grace")
+            SelectionActionDiagnostics.logRateLimited("dismiss suppressed during selection grace")
             return
         }
-        SelectionActionDiagnostics.log("dismiss from keyDown")
+        SelectionActionDiagnostics.logRateLimited("dismiss from keyDown")
         onDismiss?(.keyboard)
     }
 

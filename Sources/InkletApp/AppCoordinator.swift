@@ -490,7 +490,7 @@ final class AppCoordinator: NSObject {
         pendingSelectionSourceProcessIdentifier = sourceApp.processIdentifier
         pendingSelectionSourceBundleIdentifier = sourceApp.bundleIdentifier
         pendingSelectionLocation = point
-        SelectionActionDiagnostics.log("candidate sourceApp=\(bundleID)")
+        SelectionActionDiagnostics.logRateLimited("candidate sourceApp=\(bundleID)")
         handleSelectionActionEffects(selectionActionCoordinator.handle(
             .candidateSelection(sourceAppBundleID: bundleID, mouseLocation: point)
         ))
@@ -539,7 +539,7 @@ final class AppCoordinator: NSObject {
         for effect in effects {
             switch effect {
             case .scheduleRead(let delayMilliseconds):
-                SelectionActionDiagnostics.log("effect scheduleRead delayMs=\(delayMilliseconds)")
+                SelectionActionDiagnostics.logRateLimited("effect scheduleRead delayMs=\(delayMilliseconds)")
                 selectionReadTask?.cancel()
                 selectionReadTask = Task { [weak self] in
                     try? await Task.sleep(nanoseconds: UInt64(delayMilliseconds) * 1_000_000)
@@ -620,7 +620,7 @@ final class AppCoordinator: NSObject {
     private func completeScheduledSelectionRead() async {
         let result = await readSelectedTextForAutomaticSelection()
         guard !Task.isCancelled else { return }
-        SelectionActionDiagnostics.log("read result \(diagnosticSummary(for: result))")
+        SelectionActionDiagnostics.logRateLimited("read result \(diagnosticSummary(for: result))")
         handleSelectionActionEffects(selectionActionCoordinator.handle(.readCompleted(result)))
     }
 
@@ -630,7 +630,7 @@ final class AppCoordinator: NSObject {
         guard selectedTextReader.isFocusedSelectableTextElement(
             sourceProcessIdentifier: sourceProcessIdentifier
         ) else {
-            SelectionActionDiagnostics.log("focused element is not selectable text")
+            SelectionActionDiagnostics.logRateLimited("focused element is not selectable text")
             return .emptySelection
         }
 
@@ -650,7 +650,7 @@ final class AppCoordinator: NSObject {
         )
         guard !Task.isCancelled else { return .unsupported }
         if case .success = browserResult {
-            SelectionActionDiagnostics.log("browser selection fallback success")
+            SelectionActionDiagnostics.logRateLimited("browser selection fallback success")
             return browserResult
         }
 
@@ -661,7 +661,7 @@ final class AppCoordinator: NSObject {
             let bundleID = pendingSelectionSourceBundleIdentifier
                 ?? sourceProcessIdentifier.map { "pid-\($0)" }
                 ?? "unknown"
-            SelectionActionDiagnostics.log("simulated copy skipped sourceApp=\(bundleID)")
+            SelectionActionDiagnostics.logRateLimited("simulated copy skipped sourceApp=\(bundleID)")
         }
         let clipboardResult = await selectionClipboardReader.readSelectedText(
             sourceProcessIdentifier: sourceProcessIdentifier,
@@ -670,7 +670,7 @@ final class AppCoordinator: NSObject {
         )
         guard !Task.isCancelled else { return .unsupported }
         if case .success = clipboardResult {
-            SelectionActionDiagnostics.log("force selection fallback success")
+            SelectionActionDiagnostics.logRateLimited("force selection fallback success")
             return clipboardResult
         }
 

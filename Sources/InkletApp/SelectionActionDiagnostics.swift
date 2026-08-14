@@ -1,10 +1,9 @@
 import Foundation
+import InkletCore
 
 @MainActor
 enum SelectionActionDiagnostics {
-    private static var lastCopySignature: String?
-    private static var lastCopyLogTime: TimeInterval?
-    private static var suppressedCopyEventCount = 0
+    private static var eventRateLimiter = SelectionActionDiagnosticRateLimiter()
 
     static func log(_ message: String) {
         let line = "\(Date()) \(message)\n"
@@ -34,25 +33,25 @@ enum SelectionActionDiagnostics {
     ) {
         let signature = "app=\(foregroundApp) keyCode=\(keyCode) modifiers=\(modifiers) "
             + "repeat=\(isRepeat) sourcePID=\(sourcePID) marker=\(marker) decision=\(decision)"
-        if signature == lastCopySignature,
-           let lastCopyLogTime,
-           time - lastCopyLogTime < 1 {
-            suppressedCopyEventCount += 1
-            return
-        }
+        logRateLimited("copy event \(signature)", at: time)
+    }
 
-        if suppressedCopyEventCount > 0 {
-            log("copy event suppressed=\(suppressedCopyEventCount)")
+    static func logRateLimited(
+        _ message: String,
+        at time: TimeInterval = Date().timeIntervalSinceReferenceDate
+    ) {
+        switch eventRateLimiter.record(signature: message, at: time) {
+        case .suppress:
+            return
+        case .log(let suppressedCount):
+            if suppressedCount > 0 {
+                log("selection event suppressed=\(suppressedCount)")
+            }
+            log(message)
         }
-        log("copy event \(signature)")
-        lastCopySignature = signature
-        lastCopyLogTime = time
-        suppressedCopyEventCount = 0
     }
 
     static func resetCopyEventAggregation() {
-        lastCopySignature = nil
-        lastCopyLogTime = nil
-        suppressedCopyEventCount = 0
+        eventRateLimiter.reset()
     }
 }
