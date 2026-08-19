@@ -492,6 +492,13 @@ final class WritingModeLauncherSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("writingModeIconName(for:"))
     }
 
+    func testNetworkConnectionLostUsesLocalizedPopoverError() throws {
+        let source = try popoverSource()
+
+        XCTAssertTrue(source.contains("case .networkConnectionLost:"))
+        XCTAssertTrue(source.contains("return L10n.text(\"error.networkConnectionLost\")"))
+    }
+
     func testEditorEscapeHintAlwaysDescribesBackNavigation() throws {
         let source = try popoverSource()
         let actionBarStart = try XCTUnwrap(source.range(of: "private var actionBar"))

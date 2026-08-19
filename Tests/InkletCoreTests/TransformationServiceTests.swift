@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import InkletCore
 
@@ -48,6 +49,13 @@ final class TransformationServiceTests: XCTestCase {
         } catch let error as TransformationError {
             XCTAssertEqual(error, .timeout)
         }
+    }
+
+    func testNetworkConnectionLostErrorHasSafeFallbackDescription() {
+        XCTAssertEqual(
+            TransformationError.networkConnectionLost.errorDescription,
+            "网络连接中断，请重试"
+        )
     }
 
     func testTimeoutReturnsPromptlyWhenProviderIgnoresCancellation() async throws {

@@ -118,6 +118,19 @@ final class WritingModeLauncherLocalizationTests: XCTestCase {
         ],
     ]
 
+    private let expectedNetworkConnectionLostValues = [
+        "en": "The network connection was interrupted. Please try again.",
+        "zhHans": "网络连接已中断，请重试。",
+        "zhHant": "網路連線已中斷，請再試一次。",
+        "ja": "ネットワーク接続が中断されました。もう一度お試しください。",
+        "ko": "네트워크 연결이 중단되었습니다. 다시 시도하세요.",
+        "es": "Se interrumpió la conexión de red. Inténtalo de nuevo.",
+        "fr": "La connexion réseau a été interrompue. Réessayez.",
+        "de": "Die Netzwerkverbindung wurde unterbrochen. Bitte erneut versuchen.",
+        "pt": "A conexão de rede foi interrompida. Tente novamente.",
+        "it": "La connessione di rete è stata interrotta. Riprova.",
+    ]
+
     func testLocalizationTableDeclarationsMatchApprovedTables() throws {
         let source = try localizationSource()
         let declaredTableIDs = try localizationTableIDs(in: source)
@@ -171,6 +184,32 @@ final class WritingModeLauncherLocalizationTests: XCTestCase {
                 generatedWithEntry.components(separatedBy: "%@").count - 1,
                 1,
                 "Expected one %@ placeholder in \(tableID) popover.result.generatedWith"
+            )
+        }
+    }
+
+    func testNetworkConnectionLostCopyMatchesEveryApprovedLocalizationTable() throws {
+        let source = try localizationSource()
+
+        XCTAssertEqual(Set(expectedNetworkConnectionLostValues.keys), Set(approvedTableIDs))
+
+        for tableID in approvedTableIDs {
+            let tableSource = try localizationTableSource(tableID, in: source)
+            let expectedValue = try XCTUnwrap(
+                expectedNetworkConnectionLostValues[tableID],
+                "Missing approved network connection lost translation for \(tableID)"
+            )
+
+            XCTAssertEqual(
+                countDictionaryEntries("error.networkConnectionLost", in: tableSource),
+                1,
+                "Expected exactly one error.networkConnectionLost entry in \(tableID)"
+            )
+            XCTAssertTrue(
+                normalizedDictionaryEntries(in: tableSource).contains(
+                    #""error.networkConnectionLost": "\#(expectedValue)""#
+                ),
+                "Unexpected error.networkConnectionLost value in \(tableID)"
             )
         }
     }
