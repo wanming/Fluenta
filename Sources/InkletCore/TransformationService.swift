@@ -28,7 +28,7 @@ public struct TransformationService: Sendable {
         )
 
         let result = try await withTimeout(seconds: timeoutSeconds) {
-            try await provider.transform(request)
+            try await transformWithNetworkConnectionLostRetry(request)
         }
         let trimmedOutput = result.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedOutput.isEmpty else {
@@ -40,6 +40,31 @@ public struct TransformationService: Sendable {
             providerMetadata: result.providerMetadata,
             elapsedMilliseconds: result.elapsedMilliseconds
         )
+    }
+
+    private func transformWithNetworkConnectionLostRetry(
+        _ request: TransformationRequest
+    ) async throws -> TransformationResult {
+        do {
+            return try await provider.transform(request)
+        } catch {
+            guard Self.isNetworkConnectionLost(error) else { throw error }
+        }
+
+        try Task.checkCancellation()
+
+        do {
+            return try await provider.transform(request)
+        } catch {
+            guard Self.isNetworkConnectionLost(error) else { throw error }
+            throw TransformationError.networkConnectionLost
+        }
+    }
+
+    private static func isNetworkConnectionLost(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain
+            && nsError.code == URLError.networkConnectionLost.rawValue
     }
 
     private func withTimeout<T: Sendable>(
