@@ -208,6 +208,60 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertEqual(config.selectionActions, AppConfig.defaultConfig().selectionActions)
     }
 
+    func testConfigDecodeMigratesFormerOpenAIDefaultToLuna() throws {
+        let data = """
+        {
+            "version": 2,
+            "providerID": "openai",
+            "model": "gpt-5.4-mini"
+        }
+        """.data(using: .utf8)!
+
+        let config = try JSONDecoder().decode(AppConfig.self, from: data)
+
+        XCTAssertEqual(AppConfig.currentVersion, 3)
+        XCTAssertEqual(config.version, AppConfig.currentVersion)
+        XCTAssertEqual(config.model, "gpt-5.6-luna")
+    }
+
+    func testConfigDecodePreservesOtherLegacyOpenAIModels() throws {
+        let savedModels = [
+            "gpt-5.4",
+            "openai/gpt-5.4-mini",
+            "gpt-5.4-mini-2026-05-21",
+            "GPT-5.4-MINI",
+            " gpt-5.4-mini "
+        ]
+
+        for savedModel in savedModels {
+            let data = try JSONSerialization.data(withJSONObject: [
+                "version": 2,
+                "providerID": "openai",
+                "model": savedModel
+            ])
+
+            let config = try JSONDecoder().decode(AppConfig.self, from: data)
+
+            XCTAssertEqual(config.version, AppConfig.currentVersion)
+            XCTAssertEqual(config.model, savedModel)
+        }
+    }
+
+    func testCurrentConfigPreservesExplicitFormerOpenAIDefault() throws {
+        let data = """
+        {
+            "version": 3,
+            "providerID": "openai",
+            "model": "gpt-5.4-mini"
+        }
+        """.data(using: .utf8)!
+
+        let config = try JSONDecoder().decode(AppConfig.self, from: data)
+
+        XCTAssertEqual(config.version, AppConfig.currentVersion)
+        XCTAssertEqual(config.model, "gpt-5.4-mini")
+    }
+
     func testLegacyTemperatureIsIgnoredWhenConfigurationIsResaved() throws {
         let data = #"{"model":"saved-model","temperature":0.8}"#.data(using: .utf8)!
 

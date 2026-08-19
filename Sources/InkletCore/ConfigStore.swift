@@ -9,7 +9,10 @@ public enum AppAppearance: String, Codable, Equatable, Sendable, CaseIterable, I
 }
 
 public struct AppConfig: Codable, Equatable, Sendable {
-    public static let currentVersion = 2
+    public static let currentVersion = 3
+
+    private static let lunaDefaultMigrationVersion = 3
+    private static let formerOpenAIDefaultModel = "gpt-5.4-mini"
 
     public var version: Int
     public var providerID: String
@@ -104,7 +107,13 @@ public struct AppConfig: Codable, Equatable, Sendable {
         let decodedProviderID = try container.decodeIfPresent(String.self, forKey: .providerID) ?? defaults.providerID
         providerID = LLMProviderPreset.openAI.id
         if decodedProviderID == LLMProviderPreset.openAI.id {
-            model = try container.decodeIfPresent(String.self, forKey: .model) ?? defaults.model
+            let decodedModel = try container.decodeIfPresent(String.self, forKey: .model) ?? defaults.model
+            if decodedVersion < AppConfig.lunaDefaultMigrationVersion,
+               decodedModel == AppConfig.formerOpenAIDefaultModel {
+                model = defaults.model
+            } else {
+                model = decodedModel
+            }
         } else {
             model = defaults.model
         }
