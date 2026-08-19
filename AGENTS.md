@@ -4,6 +4,7 @@ Before any response or action, use the relevant `superpowers` skill.
 
 ## Workflow
 
+- For every task, work in a dedicated linked Git worktree. Before editing, detect whether the current checkout is already isolated; if it is not, create a worktree and do not edit the primary checkout directly.
 - Inspect relevant files and `git status` before editing. Preserve unrelated user work.
 - State relevant assumptions before editing, and ask only when a safe assumption is not possible.
 - Prefer the smallest surgical change that satisfies the request; avoid speculative abstractions and unrelated refactors.
@@ -13,7 +14,9 @@ Before any response or action, use the relevant `superpowers` skill.
 ## Running The App
 
 - When asked to run Inklet locally, prefer the `/Applications/Inklet Local.app` workflow instead of `swift run Inklet` or an ad-hoc `dist/dev-run` bundle.
+- Before every Inklet app bundle build, update `INKLET_VERSION` in the root `VERSION` file. Increment the patch version by default, the minor version for a substantial new feature, and the major version for broad or breaking changes; reset lower-order components to zero when incrementing minor or major.
 - Build, install, and launch the local bundle with `scripts/run-local-app.sh`.
+- Before every app launch, check whether the matching Inklet process is already running and stop it if necessary before starting a new instance. `scripts/run-local-app.sh` already handles this for `Inklet Local`; do not bypass its shutdown check.
 - The local runner must use a stable signing identity from `INKLET_LOCAL_SIGN_IDENTITY`, `INKLET_SIGN_IDENTITY`, or an automatically detected local code signing identity hash. Do not use ad-hoc signing for normal local runs because macOS may ask for Accessibility permission again after each rebuild.
 - The local bundle uses `com.tomwan.inklet.local` and the separate `Inklet.Local.ProviderAPIKey` Keychain service so local runs do not request the production `Inklet.ProviderAPIKey` item.
 - If `/Applications` is not writable, use `sudo` only for the `rm -rf` and `ditto` install steps. Do not print or commit signing identities or other local-only values.
@@ -48,6 +51,7 @@ Before any response or action, use the relevant `superpowers` skill.
 ## Verification
 
 - Define verification before editing, then run the narrowest relevant checks.
+- Do not invoke the `computer-use` skill or tool to test Inklet. Use automated tests and scripts, and leave any required visual or interaction checks as an explicit manual QA checklist for the user.
 - Run `swift test` for code changes. Use targeted app launches and the manual checklist for user-facing workflows.
 - For routine local app hand-testing from any worktree, run `scripts/run-local-app.sh`. Do not launch worktree-local `dist/...` apps or ad-hoc signed bundles, because macOS treats each path, bundle identifier, and signing requirement as a different app for Accessibility and Keychain trust.
 - Keep local hand-test builds on the stable identity `/Applications/Inklet Local.app` with bundle identifier `com.tomwan.inklet.local` and a real signing identity from `.env.local`, the environment, or local signing identity auto-detection. After the first Accessibility and Keychain approval, reuse this path so future worktrees do not prompt again.
