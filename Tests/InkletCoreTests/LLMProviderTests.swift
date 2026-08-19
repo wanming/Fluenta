@@ -34,7 +34,7 @@ final class LLMProviderTests: XCTestCase {
     func testProviderDefaultsUseCurrentFastModels() {
         let defaults = Dictionary(uniqueKeysWithValues: LLMProviderPreset.all.map { ($0.id, $0.defaultModel) })
 
-        XCTAssertEqual(defaults["openai"], "gpt-5.4-mini")
+        XCTAssertEqual(defaults["openai"], "gpt-5.6-luna")
         XCTAssertEqual(defaults["anthropic"], "claude-haiku-4-5")
         XCTAssertEqual(defaults["gemini"], "gemini-flash-latest")
         XCTAssertEqual(defaults["deepseek"], "deepseek-v4-flash")

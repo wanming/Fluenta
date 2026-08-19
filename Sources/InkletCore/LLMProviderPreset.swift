@@ -37,7 +37,7 @@ public struct LLMProviderPreset: Codable, Equatable, Identifiable, Sendable {
     public static let openAI = LLMProviderPreset(
         id: "openai",
         name: "OpenAI",
-        defaultModel: "gpt-5.4-mini",
+        defaultModel: "gpt-5.6-luna",
         apiKeyPlaceholder: "sk-...",
         keychainService: KeychainStore.defaultService,
         kind: .openAIResponses,

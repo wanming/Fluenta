@@ -135,6 +135,7 @@ final class ConfigStoreTests: XCTestCase {
         let config = AppConfig.defaultConfig()
 
         XCTAssertEqual(config.providerID, LLMProviderPreset.openAI.id)
+        XCTAssertEqual(config.model, "gpt-5.6-luna")
         XCTAssertEqual(config.model, LLMProviderPreset.openAI.defaultModel)
         XCTAssertEqual(config.timeoutSeconds, 20)
         XCTAssertEqual(config.hotkey, "⌥Space")
