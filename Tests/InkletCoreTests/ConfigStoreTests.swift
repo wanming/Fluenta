@@ -209,19 +209,24 @@ final class ConfigStoreTests: XCTestCase {
     }
 
     func testConfigDecodeMigratesFormerOpenAIDefaultToLuna() throws {
-        let data = """
-        {
-            "version": 2,
-            "providerID": "openai",
-            "model": "gpt-5.4-mini"
+        let savedVersions: [Int?] = [nil, 1, 2]
+
+        for savedVersion in savedVersions {
+            var savedConfig: [String: Any] = [
+                "providerID": "openai",
+                "model": "gpt-5.4-mini"
+            ]
+            if let savedVersion {
+                savedConfig["version"] = savedVersion
+            }
+            let data = try JSONSerialization.data(withJSONObject: savedConfig)
+
+            let config = try JSONDecoder().decode(AppConfig.self, from: data)
+
+            XCTAssertEqual(AppConfig.currentVersion, 3)
+            XCTAssertEqual(config.version, AppConfig.currentVersion)
+            XCTAssertEqual(config.model, "gpt-5.6-luna")
         }
-        """.data(using: .utf8)!
-
-        let config = try JSONDecoder().decode(AppConfig.self, from: data)
-
-        XCTAssertEqual(AppConfig.currentVersion, 3)
-        XCTAssertEqual(config.version, AppConfig.currentVersion)
-        XCTAssertEqual(config.model, "gpt-5.6-luna")
     }
 
     func testConfigDecodePreservesOtherLegacyOpenAIModels() throws {
@@ -259,6 +264,20 @@ final class ConfigStoreTests: XCTestCase {
         let config = try JSONDecoder().decode(AppConfig.self, from: data)
 
         XCTAssertEqual(config.version, AppConfig.currentVersion)
+        XCTAssertEqual(config.model, "gpt-5.4-mini")
+    }
+
+    func testFutureConfigPreservesExplicitFormerOpenAIDefault() throws {
+        let futureVersion = AppConfig.currentVersion + 1
+        let data = try JSONSerialization.data(withJSONObject: [
+            "version": futureVersion,
+            "providerID": "openai",
+            "model": "gpt-5.4-mini"
+        ])
+
+        let config = try JSONDecoder().decode(AppConfig.self, from: data)
+
+        XCTAssertEqual(config.version, futureVersion)
         XCTAssertEqual(config.model, "gpt-5.4-mini")
     }
 
