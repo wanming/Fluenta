@@ -49,6 +49,7 @@ public enum TransformationError: Error, Equatable, LocalizedError {
     case emptySource
     case emptyResponse
     case timeout
+    case networkConnectionLost
     case provider(String)
 
     public var errorDescription: String? {
@@ -59,6 +60,8 @@ public enum TransformationError: Error, Equatable, LocalizedError {
             "模型返回了空内容"
         case .timeout:
             "请求超时，请稍后重试"
+        case .networkConnectionLost:
+            "网络连接中断，请重试"
         case .provider(let message):
             message
         }

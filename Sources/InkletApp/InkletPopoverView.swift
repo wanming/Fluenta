@@ -623,6 +623,8 @@ private extension Error {
                 return L10n.text("error.emptyResponse")
             case .timeout:
                 return L10n.text("error.timeout")
+            case .networkConnectionLost:
+                return L10n.text("error.networkConnectionLost")
             case .provider(let message):
                 return localizedProviderMessage(message)
             }
