@@ -1,5 +1,141 @@
 import Foundation
 
+public enum AppUpdateCheckResult: Equatable, Sendable {
+    case updateAvailable(InkletRelease)
+    case upToDate(InkletRelease)
+}
+
+public enum AppUpdateCheckError: Error, Equatable, Sendable {
+    case networkUnavailable
+    case serviceUnavailable
+    case invalidResponse
+    case currentVersionUnavailable
+}
+
+public struct GitHubReleaseUpdateChecker: Sendable {
+    private static let endpoint = URL(string: "https://api.github.com/repos/wanming/Inklet/releases/latest")!
+    private static let maximumResponseSize = 1_048_576
+
+    private let session: URLSession
+
+    public init(session: URLSession = .shared) {
+        self.session = session
+    }
+
+    public func check(currentBuildNumber: String?) async throws -> AppUpdateCheckResult {
+        guard let currentBuildNumber,
+              let currentBuild = Self.parseCanonicalPositiveInteger(currentBuildNumber)
+        else {
+            throw AppUpdateCheckError.currentVersionUnavailable
+        }
+
+        try Task.checkCancellation()
+
+        let request = Self.makeRequest()
+        let data: Data
+        let response: URLResponse
+        let redirectDelegate = RedirectRejectingDelegate()
+
+        do {
+            (data, response) = try await session.data(
+                for: request,
+                delegate: redirectDelegate
+            )
+        } catch {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            if redirectDelegate.didRejectRedirect {
+                throw AppUpdateCheckError.serviceUnavailable
+            }
+            if error is CancellationError {
+                throw CancellationError()
+            }
+            if let error = error as? URLError, error.code == .cancelled {
+                throw CancellationError()
+            }
+            throw AppUpdateCheckError.networkUnavailable
+        }
+
+        try Task.checkCancellation()
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AppUpdateCheckError.invalidResponse
+        }
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            throw AppUpdateCheckError.serviceUnavailable
+        }
+
+        if httpResponse.expectedContentLength != NSURLSessionTransferSizeUnknown,
+           httpResponse.expectedContentLength > Int64(Self.maximumResponseSize) {
+            throw AppUpdateCheckError.invalidResponse
+        }
+        guard data.count <= Self.maximumResponseSize else {
+            throw AppUpdateCheckError.invalidResponse
+        }
+
+        let release: InkletRelease
+        do {
+            release = try GitHubReleaseParser.parse(data)
+        } catch {
+            throw AppUpdateCheckError.invalidResponse
+        }
+
+        try Task.checkCancellation()
+
+        if release.version.buildNumber > currentBuild {
+            return .updateAvailable(release)
+        }
+        return .upToDate(release)
+    }
+
+    private static func makeRequest() -> URLRequest {
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+        return request
+    }
+
+    private static func parseCanonicalPositiveInteger(_ value: String) -> Int? {
+        guard !value.isEmpty,
+              value.unicodeScalars.allSatisfy({ (48...57).contains($0.value) }),
+              value.count == 1 || value.first != "0",
+              let integer = Int(value),
+              integer > 0
+        else {
+            return nil
+        }
+        return integer
+    }
+}
+
+final class RedirectRejectingDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var rejectedRedirect = false
+
+    var didRejectRedirect: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return rejectedRedirect
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping @Sendable (URLRequest?) -> Void
+    ) {
+        lock.lock()
+        rejectedRedirect = true
+        lock.unlock()
+        completionHandler(nil)
+    }
+}
+
 public struct InkletReleaseVersion: Equatable, Sendable {
     public let marketingVersion: String
     public let buildNumber: Int
