@@ -61,6 +61,7 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
             String(repeating: "a", count: 799) + "…"
         )
         XCTAssertEqual(InkletReleaseNotes.excerpt(notes801, limit: 0), "")
+        XCTAssertEqual(InkletReleaseNotes.excerpt("ab", limit: 1), "…")
     }
 
     func testReleaseNotesCountsExtendedGraphemeClusters() {
@@ -84,6 +85,20 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
         XCTAssertEqual(release.pageURL.absoluteString, "https://github.com/wanming/Inklet/releases/tag/v12.34.56-789")
     }
 
+    func testParserAcceptsAnyUploadedExactDMGAsset() throws {
+        let release = try GitHubReleaseParser.parse(
+            makeReleaseData(
+                assets: [
+                    ["name": "Inklet.dmg", "state": "uploaded"],
+                    ["name": "Inklet.dmg", "state": "pending"],
+                    ["name": "other.dmg", "state": "pending"]
+                ]
+            )
+        )
+
+        XCTAssertEqual(release.tagName, "v12.34.56-789")
+    }
+
     func testParserAllowsNullNameAndBody() throws {
         let release = try GitHubReleaseParser.parse(
             makeReleaseData(name: nil, body: nil)
@@ -94,27 +109,50 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
     }
 
     func testParserRejectsDraftAndPrereleaseResponses() throws {
-        XCTAssertThrowsError(try GitHubReleaseParser.parse(makeReleaseData(draft: true)))
-        XCTAssertThrowsError(try GitHubReleaseParser.parse(makeReleaseData(prerelease: true)))
+        assertValidationError(.unavailableRelease) {
+            _ = try GitHubReleaseParser.parse(makeReleaseData(draft: true))
+        }
+        assertValidationError(.unavailableRelease) {
+            _ = try GitHubReleaseParser.parse(makeReleaseData(prerelease: true))
+        }
     }
 
     func testParserRejectsMissingOrNonUploadedDMG() throws {
-        XCTAssertThrowsError(try GitHubReleaseParser.parse(makeReleaseData(assets: [])))
-        XCTAssertThrowsError(
-            try GitHubReleaseParser.parse(
+        assertValidationError(.invalidAsset) {
+            _ = try GitHubReleaseParser.parse(makeReleaseData(assets: []))
+        }
+        assertValidationError(.invalidAsset) {
+            _ = try GitHubReleaseParser.parse(
                 makeReleaseData(assets: [["name": "Inklet.dmg", "state": "pending"]])
             )
-        )
+        }
+        assertValidationError(.invalidAsset) {
+            _ = try GitHubReleaseParser.parse(
+                makeReleaseData(assets: [["name": "inklet.dmg", "state": "uploaded"]])
+            )
+        }
+        assertValidationError(.invalidAsset) {
+            _ = try GitHubReleaseParser.parse(
+                makeReleaseData(assets: [["name": "Inklet.DMG", "state": "uploaded"]])
+            )
+        }
         XCTAssertThrowsError(
             try GitHubReleaseParser.parse(
                 makeReleaseData(assets: [["name": "Inklet.dmg"]])
             )
-        )
+        ) { error in
+            XCTAssertTrue(error is DecodingError)
+        }
     }
 
     func testParserRejectsMalformedJSONAndMissingRequiredFields() throws {
-        XCTAssertThrowsError(try GitHubReleaseParser.parse(Data("not json".utf8)))
+        XCTAssertThrowsError(try GitHubReleaseParser.parse(Data("not json".utf8))) { error in
+            XCTAssertTrue(error is DecodingError)
+        }
         XCTAssertThrowsError(try GitHubReleaseParser.parse(Data("{}".utf8)))
+        assertValidationError(.invalidTag) {
+            _ = try GitHubReleaseParser.parse(makeReleaseData(tagName: "v01.2.3-4"))
+        }
     }
 
     func testParserRejectsUntrustedReleasePageURLs() throws {
@@ -124,6 +162,8 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
             "https://evilgithub.com/wanming/Inklet/releases/tag/v12.34.56-789",
             "https://user:password@github.com/wanming/Inklet/releases/tag/v12.34.56-789",
             "https://github.com:444/wanming/Inklet/releases/tag/v12.34.56-789",
+            "https://gith%75b.com/wanming/Inklet/releases/tag/v12.34.56-789",
+            "https://github%2Ecom/wanming/Inklet/releases/tag/v12.34.56-789",
             "https://github.com/wanming/Inklet/releases/tag%2Fv12.34.56-789",
             "https://github.com/wanming/Inklet/releases/tag/v12.34.56-789/extra",
             "https://github.com/wanming/Inklet/releases/tag/v12.34.56-789?source=api",
@@ -132,11 +172,18 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
         ]
 
         for url in invalidURLs {
-            XCTAssertThrowsError(
-                try GitHubReleaseParser.parse(makeReleaseData(htmlURL: url)),
-                "Expected \(url) to be rejected"
-            )
+            assertValidationError(.invalidPageURL, "Expected \(url) to be rejected") {
+                _ = try GitHubReleaseParser.parse(makeReleaseData(htmlURL: url))
+            }
         }
+    }
+
+    func testParserReturnsCanonicalPageURL() throws {
+        let release = try GitHubReleaseParser.parse(
+            makeReleaseData(htmlURL: "https://GITHUB.com/wanming/Inklet/releases/tag/v12.34.56-789")
+        )
+
+        XCTAssertEqual(release.pageURL.absoluteString, "https://github.com/wanming/Inklet/releases/tag/v12.34.56-789")
     }
 
     private func makeReleaseData(
@@ -158,5 +205,17 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
         payload["name"] = name ?? NSNull()
         payload["body"] = body ?? NSNull()
         return try JSONSerialization.data(withJSONObject: payload)
+    }
+
+    private func assertValidationError(
+        _ expectedError: InkletReleaseValidationError,
+        _ message: String = "",
+        operation: () throws -> Void,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertThrowsError(try operation(), message, file: file, line: line) { error in
+            XCTAssertEqual(error as? InkletReleaseValidationError, expectedError, file: file, line: line)
+        }
     }
 }

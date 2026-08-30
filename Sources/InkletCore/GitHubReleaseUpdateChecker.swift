@@ -4,7 +4,7 @@ public struct InkletReleaseVersion: Equatable, Sendable {
     public let marketingVersion: String
     public let buildNumber: Int
 
-    public init(marketingVersion: String, buildNumber: Int) {
+    init(marketingVersion: String, buildNumber: Int) {
         self.marketingVersion = marketingVersion
         self.buildNumber = buildNumber
     }
@@ -78,7 +78,7 @@ public struct InkletRelease: Equatable, Sendable {
     public let notes: String
     public let pageURL: URL
 
-    public init(
+    init(
         version: InkletReleaseVersion,
         tagName: String,
         name: String?,
@@ -100,8 +100,7 @@ enum GitHubReleaseParser {
             throw InkletReleaseValidationError.unavailableRelease
         }
 
-        let dmgAssets = response.assets.filter { $0.name == "Inklet.dmg" }
-        guard !dmgAssets.isEmpty, dmgAssets.allSatisfy({ $0.state == "uploaded" }) else {
+        guard response.assets.contains(where: { $0.name == "Inklet.dmg" && $0.state == "uploaded" }) else {
             throw InkletReleaseValidationError.invalidAsset
         }
 
@@ -124,6 +123,7 @@ enum GitHubReleaseParser {
         guard let components = URLComponents(string: value),
               components.scheme?.caseInsensitiveCompare("https") == .orderedSame,
               components.host?.caseInsensitiveCompare("github.com") == .orderedSame,
+              components.percentEncodedHost?.caseInsensitiveCompare("github.com") == .orderedSame,
               components.user == nil,
               components.password == nil,
               components.port == nil || components.port == 443,
@@ -136,7 +136,7 @@ enum GitHubReleaseParser {
         let expectedPath = "/wanming/Inklet/releases/tag/\(tagName)"
         guard components.path == expectedPath,
               components.percentEncodedPath == expectedPath,
-              let pageURL = components.url
+              let pageURL = URL(string: "https://github.com\(expectedPath)")
         else {
             throw InkletReleaseValidationError.invalidPageURL
         }
@@ -169,7 +169,7 @@ enum GitHubReleaseParser {
     }
 }
 
-private enum InkletReleaseValidationError: Error {
+enum InkletReleaseValidationError: Error, Equatable {
     case invalidTag
     case unavailableRelease
     case invalidAsset
