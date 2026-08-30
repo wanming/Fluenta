@@ -55,7 +55,7 @@ func testReleaseNotesNormalizeAndCapAtEightHundredCharacters() {
     let excerpt = InkletReleaseNotes.excerpt(source)
     XCTAssertFalse(excerpt.contains("\r"))
     XCTAssertTrue(excerpt.hasSuffix("…"))
-    XCTAssertLessThanOrEqual(excerpt.count, 801)
+    XCTAssertLessThanOrEqual(excerpt.count, 800)
 }
 ```
 
@@ -88,7 +88,8 @@ public struct InkletReleaseVersion: Equatable, Sendable {
 public enum InkletReleaseNotes {
     public static func excerpt(_ body: String?, limit: Int = 800) -> String {
         // Normalize CRLF/CR, trim whitespace/newlines, and append one ellipsis
-        // only when the user-perceived Character count exceeds `limit`.
+        // only when the user-perceived Character count exceeds `limit`, keeping
+        // the final excerpt including the ellipsis within `limit` Characters.
     }
 }
 ```
