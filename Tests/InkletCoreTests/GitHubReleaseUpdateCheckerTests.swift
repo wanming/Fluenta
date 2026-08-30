@@ -215,6 +215,16 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
         XCTAssertEqual(MockGitHubReleaseURLProtocol.requestCount, 1)
     }
 
+    func testDefaultSessionConfigurationDisablesPersistentPrivacySurfaces() {
+        let configuration = GitHubReleaseUpdateChecker.makeSessionConfiguration()
+
+        XCTAssertNil(configuration.urlCredentialStorage)
+        XCTAssertNil(configuration.httpCookieStorage)
+        XCTAssertFalse(configuration.httpShouldSetCookies)
+        XCTAssertNil(configuration.urlCache)
+        XCTAssertEqual(configuration.requestCachePolicy, URLRequest.CachePolicy.reloadIgnoringLocalCacheData)
+    }
+
     func testCheckComparesRemoteBuildNumberOnly() async throws {
         for (remoteBuild, expectedResult) in [
             (11, AppUpdateCheckResult.updateAvailable(try expectedRelease(buildNumber: 11))),
@@ -298,6 +308,45 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
         XCTAssertTrue(delegate.didRejectRedirect)
     }
 
+    func testAuthenticationDelegateAllowsServerTrustAndCancelsOtherChallenges() throws {
+        let delegate = RedirectRejectingDelegate()
+        let session = URLSession(configuration: .ephemeral)
+        let task = session.dataTask(with: try XCTUnwrap(URL(string: "https://api.github.com/repos/wanming/Inklet/releases/latest")))
+
+        let cases: [(String, URLSession.AuthChallengeDisposition)] = [
+            (NSURLAuthenticationMethodServerTrust, .performDefaultHandling),
+            (NSURLAuthenticationMethodHTTPBasic, .cancelAuthenticationChallenge),
+            (NSURLAuthenticationMethodHTTPDigest, .cancelAuthenticationChallenge),
+            (NSURLAuthenticationMethodClientCertificate, .cancelAuthenticationChallenge)
+        ]
+
+        for (authenticationMethod, expectedDisposition) in cases {
+            let protectionSpace = URLProtectionSpace(
+                host: "api.github.com",
+                port: 443,
+                protocol: "https",
+                realm: nil,
+                authenticationMethod: authenticationMethod
+            )
+            let challenge = URLAuthenticationChallenge(
+                protectionSpace: protectionSpace,
+                proposedCredential: nil,
+                previousFailureCount: 0,
+                failureResponse: nil,
+                error: nil,
+                sender: MockAuthenticationChallengeSender()
+            )
+            let result = AuthenticationChallengeResult()
+
+            delegate.urlSession(session, task: task, didReceive: challenge) { disposition, credential in
+                result.record(disposition: disposition, credential: credential)
+            }
+
+            XCTAssertEqual(result.disposition, expectedDisposition)
+            XCTAssertNil(result.credential)
+        }
+    }
+
     func testCheckRejectsRedirectWithoutFollowUpRequest() async throws {
         let endpoint = try XCTUnwrap(URL(string: "https://api.github.com/repos/wanming/Inklet/releases/latest"))
         let redirectedURL = try XCTUnwrap(URL(string: "https://example.invalid/redirected-release"))
@@ -329,6 +378,20 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
                 textEncodingName: nil
             )
             return (response, try self.releaseData(buildNumber: 11))
+        }
+
+        await assertCheckError(.invalidResponse)
+    }
+
+    func testCheckRejectsSuccessResponseFromDifferentURL() async throws {
+        let unexpectedURL = try XCTUnwrap(URL(string: "https://example.invalid/releases/latest"))
+        MockGitHubReleaseURLProtocol.handler = { request in
+            try self.httpResponse(
+                for: request,
+                responseURL: unexpectedURL,
+                statusCode: 200,
+                data: self.releaseData(buildNumber: 11)
+            )
         }
 
         await assertCheckError(.invalidResponse)
@@ -433,6 +496,32 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
         }
     }
 
+    func testCheckCancellationStopsPendingRequest() async {
+        let requestStarted = expectation(description: "request started")
+        MockGitHubReleaseURLProtocol.pending = true
+        MockGitHubReleaseURLProtocol.onStart = {
+            requestStarted.fulfill()
+        }
+        let checker = makeChecker()
+        let checkTask = Task {
+            try await checker.check(currentBuildNumber: "10")
+        }
+
+        await fulfillment(of: [requestStarted], timeout: 1)
+        checkTask.cancel()
+
+        do {
+            _ = try await checkTask.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+
+        XCTAssertEqual(MockGitHubReleaseURLProtocol.requestCount, 1)
+        XCTAssertEqual(MockGitHubReleaseURLProtocol.stopLoadingCount, 1)
+    }
+
     private func makeReleaseData(
         tagName: String = "v12.34.56-789",
         name: String? = "Inklet 12.34.56",
@@ -470,12 +559,13 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
 
     private func httpResponse(
         for request: URLRequest,
+        responseURL: URL? = nil,
         statusCode: Int,
         headers: [String: String]? = nil,
         data: Data
     ) throws -> (HTTPURLResponse, Data) {
         let response = try XCTUnwrap(HTTPURLResponse(
-            url: XCTUnwrap(request.url),
+            url: responseURL ?? XCTUnwrap(request.url),
             statusCode: statusCode,
             httpVersion: nil,
             headerFields: headers
@@ -518,11 +608,17 @@ private final class MockGitHubReleaseURLProtocol: URLProtocol {
     nonisolated(unsafe) static var handler: ((URLRequest) throws -> (URLResponse, Data))?
     nonisolated(unsafe) static var requestCount = 0
     nonisolated(unsafe) static var redirect: Redirect?
+    nonisolated(unsafe) static var pending = false
+    nonisolated(unsafe) static var onStart: (() -> Void)?
+    nonisolated(unsafe) static var stopLoadingCount = 0
 
     static func reset() {
         handler = nil
         requestCount = 0
         redirect = nil
+        pending = false
+        onStart = nil
+        stopLoadingCount = 0
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -531,6 +627,11 @@ private final class MockGitHubReleaseURLProtocol: URLProtocol {
 
     override func startLoading() {
         Self.requestCount += 1
+        Self.onStart?()
+
+        if Self.pending {
+            return
+        }
 
         if let redirect = Self.redirect {
             Self.redirect = nil
@@ -554,5 +655,40 @@ private final class MockGitHubReleaseURLProtocol: URLProtocol {
         }
     }
 
-    override func stopLoading() {}
+    override func stopLoading() {
+        Self.stopLoadingCount += 1
+    }
+}
+
+private final class AuthenticationChallengeResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedDisposition: URLSession.AuthChallengeDisposition?
+    private var storedCredential: URLCredential?
+
+    var disposition: URLSession.AuthChallengeDisposition? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedDisposition
+    }
+
+    var credential: URLCredential? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedCredential
+    }
+
+    func record(disposition: URLSession.AuthChallengeDisposition, credential: URLCredential?) {
+        lock.lock()
+        storedDisposition = disposition
+        storedCredential = credential
+        lock.unlock()
+    }
+}
+
+private final class MockAuthenticationChallengeSender: NSObject, URLAuthenticationChallengeSender {
+    func use(_ credential: URLCredential, for challenge: URLAuthenticationChallenge) {}
+
+    func continueWithoutCredential(for challenge: URLAuthenticationChallenge) {}
+
+    func cancel(_ challenge: URLAuthenticationChallenge) {}
 }

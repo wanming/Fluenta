@@ -18,8 +18,22 @@ public struct GitHubReleaseUpdateChecker: Sendable {
 
     private let session: URLSession
 
-    public init(session: URLSession = .shared) {
+    public init() {
+        session = URLSession(configuration: Self.makeSessionConfiguration())
+    }
+
+    init(session: URLSession) {
         self.session = session
+    }
+
+    static func makeSessionConfiguration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCredentialStorage = nil
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return configuration
     }
 
     public func check(currentBuildNumber: String?) async throws -> AppUpdateCheckResult {
@@ -60,6 +74,10 @@ public struct GitHubReleaseUpdateChecker: Sendable {
         try Task.checkCancellation()
 
         guard let httpResponse = response as? HTTPURLResponse else {
+            throw AppUpdateCheckError.invalidResponse
+        }
+
+        guard httpResponse.url == Self.endpoint else {
             throw AppUpdateCheckError.invalidResponse
         }
 
@@ -134,6 +152,19 @@ final class RedirectRejectingDelegate: NSObject, URLSessionTaskDelegate, @unchec
         rejectedRedirect = true
         lock.unlock()
         completionHandler(nil)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust {
+            completionHandler(.performDefaultHandling, nil)
+        } else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+        }
     }
 }
 
