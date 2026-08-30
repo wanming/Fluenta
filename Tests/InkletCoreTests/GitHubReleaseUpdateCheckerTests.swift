@@ -498,9 +498,13 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
 
     func testCheckCancellationStopsPendingRequest() async {
         let requestStarted = expectation(description: "request started")
+        let requestStopped = expectation(description: "request stopped")
         MockGitHubReleaseURLProtocol.pending = true
         MockGitHubReleaseURLProtocol.onStart = {
             requestStarted.fulfill()
+        }
+        MockGitHubReleaseURLProtocol.onStop = {
+            requestStopped.fulfill()
         }
         let checker = makeChecker()
         let checkTask = Task {
@@ -518,6 +522,7 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
             XCTFail("Expected CancellationError, got \(error)")
         }
 
+        await fulfillment(of: [requestStopped], timeout: 1)
         XCTAssertEqual(MockGitHubReleaseURLProtocol.requestCount, 1)
         XCTAssertEqual(MockGitHubReleaseURLProtocol.stopLoadingCount, 1)
     }
@@ -605,20 +610,221 @@ private final class MockGitHubReleaseURLProtocol: URLProtocol {
         let response: HTTPURLResponse
     }
 
-    nonisolated(unsafe) static var handler: ((URLRequest) throws -> (URLResponse, Data))?
-    nonisolated(unsafe) static var requestCount = 0
-    nonisolated(unsafe) static var redirect: Redirect?
-    nonisolated(unsafe) static var pending = false
-    nonisolated(unsafe) static var onStart: (() -> Void)?
-    nonisolated(unsafe) static var stopLoadingCount = 0
+    private enum LoadingAction {
+        case pending
+        case redirect(Redirect)
+        case handler((URLRequest) throws -> (URLResponse, Data))
+        case missingHandler
+    }
+
+    private final class Generation: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storedHandler: ((URLRequest) throws -> (URLResponse, Data))?
+        private var storedRequestCount = 0
+        private var storedRedirect: Redirect?
+        private var storedPending = false
+        private var storedOnStart: (() -> Void)?
+        private var storedOnStop: (() -> Void)?
+        private var storedStopLoadingCount = 0
+
+        var handler: ((URLRequest) throws -> (URLResponse, Data))? {
+            get {
+                lock.lock()
+                defer { lock.unlock() }
+                return storedHandler
+            }
+            set {
+                lock.lock()
+                storedHandler = newValue
+                lock.unlock()
+            }
+        }
+
+        var requestCount: Int {
+            get {
+                lock.lock()
+                defer { lock.unlock() }
+                return storedRequestCount
+            }
+            set {
+                lock.lock()
+                storedRequestCount = newValue
+                lock.unlock()
+            }
+        }
+
+        var redirect: Redirect? {
+            get {
+                lock.lock()
+                defer { lock.unlock() }
+                return storedRedirect
+            }
+            set {
+                lock.lock()
+                storedRedirect = newValue
+                lock.unlock()
+            }
+        }
+
+        var pending: Bool {
+            get {
+                lock.lock()
+                defer { lock.unlock() }
+                return storedPending
+            }
+            set {
+                lock.lock()
+                storedPending = newValue
+                lock.unlock()
+            }
+        }
+
+        var onStart: (() -> Void)? {
+            get {
+                lock.lock()
+                defer { lock.unlock() }
+                return storedOnStart
+            }
+            set {
+                lock.lock()
+                storedOnStart = newValue
+                lock.unlock()
+            }
+        }
+
+        var onStop: (() -> Void)? {
+            get {
+                lock.lock()
+                defer { lock.unlock() }
+                return storedOnStop
+            }
+            set {
+                lock.lock()
+                storedOnStop = newValue
+                lock.unlock()
+            }
+        }
+
+        var stopLoadingCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedStopLoadingCount
+        }
+
+        func beginLoading() -> LoadingAction {
+            let action: LoadingAction
+            let onStart: (() -> Void)?
+
+            lock.lock()
+            storedRequestCount += 1
+            onStart = storedOnStart
+            if storedPending {
+                action = .pending
+            } else if let redirect = storedRedirect {
+                storedRedirect = nil
+                action = .redirect(redirect)
+            } else if let handler = storedHandler {
+                action = .handler(handler)
+            } else {
+                action = .missingHandler
+            }
+            lock.unlock()
+
+            onStart?()
+            return action
+        }
+
+        func completeLoading() {
+            lock.lock()
+            storedHandler = nil
+            storedOnStart = nil
+            storedOnStop = nil
+            storedRedirect = nil
+            storedPending = false
+            lock.unlock()
+        }
+
+        func stopLoading() {
+            let onStop: (() -> Void)?
+
+            lock.lock()
+            storedStopLoadingCount += 1
+            onStop = storedOnStop
+            storedHandler = nil
+            storedOnStart = nil
+            storedOnStop = nil
+            storedRedirect = nil
+            storedPending = false
+            lock.unlock()
+
+            onStop?()
+        }
+    }
+
+    private static let generationLock = NSLock()
+    nonisolated(unsafe) private static var currentGeneration = Generation()
+
+    nonisolated(unsafe) static var handler: ((URLRequest) throws -> (URLResponse, Data))? {
+        get { currentGenerationSnapshot().handler }
+        set { currentGenerationSnapshot().handler = newValue }
+    }
+
+    nonisolated(unsafe) static var requestCount: Int {
+        get { currentGenerationSnapshot().requestCount }
+        set { currentGenerationSnapshot().requestCount = newValue }
+    }
+
+    nonisolated(unsafe) static var redirect: Redirect? {
+        get { currentGenerationSnapshot().redirect }
+        set { currentGenerationSnapshot().redirect = newValue }
+    }
+
+    nonisolated(unsafe) static var pending: Bool {
+        get { currentGenerationSnapshot().pending }
+        set { currentGenerationSnapshot().pending = newValue }
+    }
+
+    nonisolated(unsafe) static var onStart: (() -> Void)? {
+        get { currentGenerationSnapshot().onStart }
+        set { currentGenerationSnapshot().onStart = newValue }
+    }
+
+    nonisolated(unsafe) static var onStop: (() -> Void)? {
+        get { currentGenerationSnapshot().onStop }
+        set { currentGenerationSnapshot().onStop = newValue }
+    }
+
+    nonisolated(unsafe) static var stopLoadingCount: Int {
+        currentGenerationSnapshot().stopLoadingCount
+    }
+
+    private let instanceLock = NSLock()
+    private var capturedGeneration: Generation?
 
     static func reset() {
-        handler = nil
-        requestCount = 0
-        redirect = nil
-        pending = false
-        onStart = nil
-        stopLoadingCount = 0
+        generationLock.lock()
+        currentGeneration = Generation()
+        generationLock.unlock()
+    }
+
+    private static func currentGenerationSnapshot() -> Generation {
+        generationLock.lock()
+        defer { generationLock.unlock() }
+        return currentGeneration
+    }
+
+    private func captureCurrentGeneration() -> Generation {
+        let generation = Self.currentGenerationSnapshot()
+        instanceLock.lock()
+        capturedGeneration = generation
+        instanceLock.unlock()
+        return generation
+    }
+
+    private func capturedGenerationSnapshot() -> Generation? {
+        instanceLock.lock()
+        defer { instanceLock.unlock() }
+        return capturedGeneration
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -626,37 +832,35 @@ private final class MockGitHubReleaseURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        Self.requestCount += 1
-        Self.onStart?()
+        let generation = captureCurrentGeneration()
 
-        if Self.pending {
+        switch generation.beginLoading() {
+        case .pending:
             return
-        }
-
-        if let redirect = Self.redirect {
-            Self.redirect = nil
+        case .redirect(let redirect):
             client?.urlProtocol(self, wasRedirectedTo: redirect.request, redirectResponse: redirect.response)
             client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            generation.completeLoading()
             return
-        }
-
-        guard let handler = Self.handler else {
+        case .missingHandler:
             client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            generation.completeLoading()
             return
-        }
-
-        do {
-            let (response, data) = try handler(request)
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: data)
-            client?.urlProtocolDidFinishLoading(self)
-        } catch {
-            client?.urlProtocol(self, didFailWithError: error)
+        case .handler(let handler):
+            do {
+                let (response, data) = try handler(request)
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: data)
+                client?.urlProtocolDidFinishLoading(self)
+            } catch {
+                client?.urlProtocol(self, didFailWithError: error)
+            }
+            generation.completeLoading()
         }
     }
 
     override func stopLoading() {
-        Self.stopLoadingCount += 1
+        capturedGenerationSnapshot()?.stopLoading()
     }
 }
 
