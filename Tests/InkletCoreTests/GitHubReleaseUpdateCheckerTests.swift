@@ -204,6 +204,8 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
             XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "application/vnd.github+json")
             XCTAssertEqual(request.value(forHTTPHeaderField: "X-GitHub-Api-Version"), "2022-11-28")
             XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            XCTAssertFalse(request.httpShouldHandleCookies)
+            XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
             return try self.httpResponse(for: request, statusCode: 200, data: self.releaseData(buildNumber: 11))
         }
 
@@ -296,6 +298,28 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
         XCTAssertTrue(delegate.didRejectRedirect)
     }
 
+    func testCheckRejectsRedirectWithoutFollowUpRequest() async throws {
+        let endpoint = try XCTUnwrap(URL(string: "https://api.github.com/repos/wanming/Inklet/releases/latest"))
+        let redirectedURL = try XCTUnwrap(URL(string: "https://example.invalid/redirected-release"))
+        MockGitHubReleaseURLProtocol.redirect = try MockGitHubReleaseURLProtocol.Redirect(
+            request: URLRequest(url: redirectedURL),
+            response: XCTUnwrap(HTTPURLResponse(
+                url: endpoint,
+                statusCode: 302,
+                httpVersion: nil,
+                headerFields: ["Location": redirectedURL.absoluteString]
+            ))
+        )
+        MockGitHubReleaseURLProtocol.handler = { _ in
+            XCTFail("The checker must not follow a redirect")
+            throw URLError(.badServerResponse)
+        }
+
+        await assertCheckError(.serviceUnavailable)
+
+        XCTAssertEqual(MockGitHubReleaseURLProtocol.requestCount, 1)
+    }
+
     func testCheckRejectsNonHTTPResponse() async {
         MockGitHubReleaseURLProtocol.handler = { request in
             let response = URLResponse(
@@ -371,7 +395,12 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
         XCTAssertEqual(data.count, maximumResponseSize)
 
         MockGitHubReleaseURLProtocol.handler = { request in
-            try self.httpResponse(for: request, statusCode: 200, data: data)
+            try self.httpResponse(
+                for: request,
+                statusCode: 200,
+                headers: ["Content-Length": "\(maximumResponseSize)"],
+                data: data
+            )
         }
 
         let result = try await makeChecker().check(currentBuildNumber: "10")
@@ -481,12 +510,19 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
 }
 
 private final class MockGitHubReleaseURLProtocol: URLProtocol {
+    struct Redirect {
+        let request: URLRequest
+        let response: HTTPURLResponse
+    }
+
     nonisolated(unsafe) static var handler: ((URLRequest) throws -> (URLResponse, Data))?
     nonisolated(unsafe) static var requestCount = 0
+    nonisolated(unsafe) static var redirect: Redirect?
 
     static func reset() {
         handler = nil
         requestCount = 0
+        redirect = nil
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -495,6 +531,13 @@ private final class MockGitHubReleaseURLProtocol: URLProtocol {
 
     override func startLoading() {
         Self.requestCount += 1
+
+        if let redirect = Self.redirect {
+            Self.redirect = nil
+            client?.urlProtocol(self, wasRedirectedTo: redirect.request, redirectResponse: redirect.response)
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
 
         guard let handler = Self.handler else {
             client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
