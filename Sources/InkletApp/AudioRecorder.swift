@@ -10,6 +10,16 @@ protocol DictationAudioCapturing: AnyObject {
 }
 
 @MainActor
+protocol AudioRecorderCaptureBackend: AnyObject {
+    var stream: AsyncThrowingStream<Data, Error> { get }
+
+    func startRecording(to url: URL) async throws
+    func detachRealtimeAndDrain() async
+    func finalizeFile() async throws
+    func stopSession()
+}
+
+@MainActor
 final class AudioRecorder: DictationAudioCapturing {
     enum AudioRecorderError: Error, LocalizedError {
         case microphonePermissionDenied
@@ -41,12 +51,34 @@ final class AudioRecorder: DictationAudioCapturing {
         AVLinearPCMIsNonInterleaved: false
     ]
 
-    private var captureSession: AVCaptureSession?
-    private var fileOutput: AVCaptureAudioFileOutput?
-    private var dataOutput: AVCaptureAudioDataOutput?
-    private var recordingDelegate: AudioRecordingDelegate?
-    private var sampleDelegate: RealtimeAudioSampleDelegate?
-    private var recordingURL: URL?
+    typealias CaptureBackendFactory = () throws -> any AudioRecorderCaptureBackend
+
+    private struct ActiveCapture {
+        let id: UUID
+        let backend: any AudioRecorderCaptureBackend
+        let recordingURL: URL
+    }
+
+    private let captureBackendFactory: CaptureBackendFactory?
+    private let recordingURLProvider: () -> URL
+    private let removeRecording: (URL) -> Void
+    private var activeCapture: ActiveCapture?
+
+    init(
+        captureBackendFactory: CaptureBackendFactory? = nil,
+        recordingURLProvider: @escaping () -> URL = {
+            FileManager.default.temporaryDirectory
+                .appendingPathComponent("inklet-voice-\(UUID().uuidString)")
+                .appendingPathExtension("m4a")
+        },
+        removeRecording: @escaping (URL) -> Void = { url in
+            try? FileManager.default.removeItem(at: url)
+        }
+    ) {
+        self.captureBackendFactory = captureBackendFactory
+        self.recordingURLProvider = recordingURLProvider
+        self.removeRecording = removeRecording
+    }
 
     func start(microphoneDeviceID: String?) async throws {
         _ = try await startStreaming(microphoneDeviceID: microphoneDeviceID)
@@ -55,124 +87,93 @@ final class AudioRecorder: DictationAudioCapturing {
     func startStreaming(
         microphoneDeviceID: String?
     ) async throws -> AsyncThrowingStream<Data, Error> {
-        guard await requestMicrophoneAccess() else {
-            throw AudioRecorderError.microphonePermissionDenied
-        }
-        guard let device = audioDevice(matching: microphoneDeviceID) else {
-            throw AudioRecorderError.noAudioInputDevice
+        let device: AVCaptureDevice?
+        if captureBackendFactory == nil {
+            guard await requestMicrophoneAccess() else {
+                throw AudioRecorderError.microphonePermissionDenied
+            }
+            guard let selectedDevice = audioDevice(matching: microphoneDeviceID) else {
+                throw AudioRecorderError.noAudioInputDevice
+            }
+            device = selectedDevice
+        } else {
+            device = nil
         }
 
         await cancel()
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("inklet-voice-\(UUID().uuidString)")
-            .appendingPathExtension("m4a")
-
-        let captureSession = AVCaptureSession()
-        let input = try AVCaptureDeviceInput(device: device)
-        let fileOutput = AVCaptureAudioFileOutput()
-        let dataOutput = AVCaptureAudioDataOutput()
-        dataOutput.audioSettings = Self.realtimeAudioSettings
-        guard captureSession.canAddInput(input),
-              captureSession.canAddOutput(fileOutput),
-              captureSession.canAddOutput(dataOutput)
-        else {
+        let recordingURL = recordingURLProvider()
+        let backend: any AudioRecorderCaptureBackend
+        if let captureBackendFactory {
+            backend = try captureBackendFactory()
+        } else if let device {
+            backend = try AVFoundationAudioRecorderCaptureBackend(device: device)
+        } else {
             throw AudioRecorderError.recordingUnavailable
         }
 
-        let sampleDelegate = RealtimeAudioSampleDelegate(bufferLimit: 96)
-        dataOutput.setSampleBufferDelegate(sampleDelegate, queue: sampleDelegate.queue)
-        captureSession.beginConfiguration()
-        captureSession.addInput(input)
-        captureSession.addOutput(fileOutput)
-        captureSession.addOutput(dataOutput)
-        captureSession.commitConfiguration()
-
-        let recordingDelegate = AudioRecordingDelegate()
-        self.captureSession = captureSession
-        self.fileOutput = fileOutput
-        self.dataOutput = dataOutput
-        self.recordingDelegate = recordingDelegate
-        self.sampleDelegate = sampleDelegate
-        recordingURL = url
-
-        captureSession.startRunning()
-        guard captureSession.isRunning else {
-            dataOutput.setSampleBufferDelegate(nil, queue: nil)
-            await sampleDelegate.finishAfterDraining()
-            stopCaptureSession()
-            recordingURL = nil
-            try? FileManager.default.removeItem(at: url)
-            throw AudioRecorderError.recordingUnavailable
-        }
-
-        fileOutput.startRecording(to: url, outputFileType: .m4a, recordingDelegate: recordingDelegate)
+        let capture = ActiveCapture(id: UUID(), backend: backend, recordingURL: recordingURL)
+        activeCapture = capture
         do {
-            try await recordingDelegate.waitUntilStarted()
+            try await backend.startRecording(to: recordingURL)
         } catch {
-            dataOutput.setSampleBufferDelegate(nil, queue: nil)
-            await sampleDelegate.finishAfterDraining()
-            stopCaptureSession()
-            recordingURL = nil
-            try? FileManager.default.removeItem(at: url)
-            throw AudioRecorderError.recordingUnavailable
+            if let ownedCapture = takeActiveCapture(id: capture.id) {
+                await terminate(ownedCapture, deletingRecording: true)
+            }
+            throw mappedRecorderError(error)
         }
 
-        return sampleDelegate.makeStream()
+        guard activeCapture?.id == capture.id else {
+            throw AudioRecorderError.recordingUnavailable
+        }
+        return backend.stream
     }
 
     func stop() async throws -> URL {
-        guard let fileOutput,
-              let dataOutput,
-              let recordingDelegate,
-              let sampleDelegate,
-              let recordingURL
-        else {
+        guard let capture = takeActiveCapture() else {
             throw AudioRecorderError.recordingUnavailable
         }
 
-        dataOutput.setSampleBufferDelegate(nil, queue: nil)
-        await sampleDelegate.finishAfterDraining()
-        fileOutput.stopRecording()
+        await capture.backend.detachRealtimeAndDrain()
         do {
-            try await recordingDelegate.waitUntilFinished()
+            try await capture.backend.finalizeFile()
         } catch {
-            stopCaptureSession()
-            self.recordingURL = nil
-            try? FileManager.default.removeItem(at: recordingURL)
+            capture.backend.stopSession()
+            removeRecording(capture.recordingURL)
             throw AudioRecorderError.recordingUnavailable
         }
 
-        stopCaptureSession()
-        self.recordingURL = nil
-        return recordingURL
+        capture.backend.stopSession()
+        return capture.recordingURL
     }
 
     func cancel() async {
-        let fileOutput = fileOutput
-        let dataOutput = dataOutput
-        let recordingDelegate = recordingDelegate
-        let sampleDelegate = sampleDelegate
-        let recordingURL = recordingURL
-        dataOutput?.setSampleBufferDelegate(nil, queue: nil)
-        await sampleDelegate?.finishAfterDraining()
-        if fileOutput?.isRecording == true {
-            fileOutput?.stopRecording()
-            try? await recordingDelegate?.waitUntilFinished()
-        }
-        stopCaptureSession()
-        if let recordingURL {
-            try? FileManager.default.removeItem(at: recordingURL)
-        }
-        self.recordingURL = nil
+        guard let capture = takeActiveCapture() else { return }
+        await terminate(capture, deletingRecording: true)
     }
 
-    private func stopCaptureSession() {
-        captureSession?.stopRunning()
-        captureSession = nil
-        fileOutput = nil
-        dataOutput = nil
-        recordingDelegate = nil
-        sampleDelegate = nil
+    private func takeActiveCapture(id: UUID? = nil) -> ActiveCapture? {
+        guard let activeCapture else { return nil }
+        if let id, activeCapture.id != id {
+            return nil
+        }
+        self.activeCapture = nil
+        return activeCapture
+    }
+
+    private func terminate(
+        _ capture: ActiveCapture,
+        deletingRecording: Bool
+    ) async {
+        await capture.backend.detachRealtimeAndDrain()
+        try? await capture.backend.finalizeFile()
+        capture.backend.stopSession()
+        if deletingRecording {
+            removeRecording(capture.recordingURL)
+        }
+    }
+
+    private func mappedRecorderError(_ error: Error) -> AudioRecorderError {
+        (error as? AudioRecorderError) ?? .recordingUnavailable
     }
 
     private func audioDevice(matching deviceID: String?) -> AVCaptureDevice? {
@@ -203,6 +204,83 @@ final class AudioRecorder: DictationAudioCapturing {
                 continuation.resume(returning: granted)
             }
         }
+    }
+}
+
+@MainActor
+final class AVFoundationAudioRecorderCaptureBackend: AudioRecorderCaptureBackend {
+    private let captureSession: AVCaptureSession
+    private let fileOutput: AVCaptureAudioFileOutput
+    private let dataOutput: AVCaptureAudioDataOutput
+    private let recordingDelegate: AudioRecordingDelegate
+    private let sampleDelegate: RealtimeAudioSampleDelegate
+    private var didRequestFileRecording = false
+    private var didDetachRealtime = false
+    private var didFinalizeFile = false
+    private var didStopSession = false
+
+    var stream: AsyncThrowingStream<Data, Error> {
+        sampleDelegate.makeStream()
+    }
+
+    init(device: AVCaptureDevice) throws {
+        let captureSession = AVCaptureSession()
+        let input = try AVCaptureDeviceInput(device: device)
+        let fileOutput = AVCaptureAudioFileOutput()
+        let dataOutput = AVCaptureAudioDataOutput()
+        dataOutput.audioSettings = AudioRecorder.realtimeAudioSettings
+        guard captureSession.canAddInput(input),
+              captureSession.canAddOutput(fileOutput),
+              captureSession.canAddOutput(dataOutput)
+        else {
+            throw AudioRecorder.AudioRecorderError.recordingUnavailable
+        }
+
+        let recordingDelegate = AudioRecordingDelegate()
+        let sampleDelegate = RealtimeAudioSampleDelegate(bufferLimit: 96)
+        dataOutput.setSampleBufferDelegate(sampleDelegate, queue: sampleDelegate.queue)
+        captureSession.beginConfiguration()
+        captureSession.addInput(input)
+        captureSession.addOutput(fileOutput)
+        captureSession.addOutput(dataOutput)
+        captureSession.commitConfiguration()
+
+        self.captureSession = captureSession
+        self.fileOutput = fileOutput
+        self.dataOutput = dataOutput
+        self.recordingDelegate = recordingDelegate
+        self.sampleDelegate = sampleDelegate
+    }
+
+    func startRecording(to url: URL) async throws {
+        captureSession.startRunning()
+        guard captureSession.isRunning else {
+            throw AudioRecorder.AudioRecorderError.recordingUnavailable
+        }
+
+        didRequestFileRecording = true
+        fileOutput.startRecording(to: url, outputFileType: .m4a, recordingDelegate: recordingDelegate)
+        try await recordingDelegate.waitUntilStarted()
+    }
+
+    func detachRealtimeAndDrain() async {
+        guard !didDetachRealtime else { return }
+        didDetachRealtime = true
+        dataOutput.setSampleBufferDelegate(nil, queue: nil)
+        await sampleDelegate.finishAfterDraining()
+    }
+
+    func finalizeFile() async throws {
+        guard didRequestFileRecording, !didFinalizeFile else { return }
+        didFinalizeFile = true
+        fileOutput.stopRecording()
+        try await recordingDelegate.waitUntilFinished()
+    }
+
+    func stopSession() {
+        guard !didStopSession else { return }
+        didStopSession = true
+        captureSession.stopRunning()
     }
 }
 
