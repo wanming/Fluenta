@@ -144,6 +144,13 @@ final class UpdateCheckDocumentationTests: XCTestCase {
             [
                 "production",
                 "Inklet Local",
+                "automated fixtures",
+                "swift test --filter GitHubReleaseUpdateCheckerTests",
+                "malformed",
+                "no live-app fixture switch",
+                "genuinely newer stable release",
+                "remain unverified",
+                "not passed",
                 "up to date",
                 "newer",
                 "draft",
@@ -202,9 +209,15 @@ final class UpdateCheckDocumentationTests: XCTestCase {
             "Inklet will automatically install an update.",
             "Inklet downloads updates automatically.",
             "Inklet will download and install updates automatically.",
+            "New Inklet versions are downloaded and installed automatically.",
+            "Updates download automatically in Inklet.",
+            "Updates are downloaded automatically.",
+            "Inklet updates are automatically installed.",
             "Inklet 会自动下载并安装更新。",
             "Inklet 将自动安装更新。",
-            "Inklet自动下载更新。"
+            "Inklet自动下载更新。",
+            "本应用会自动下载并安装 Inklet 更新。",
+            "更新会自动下载并安装。"
         ]
         for claim in forbiddenClaims {
             XCTAssertNotNil(
@@ -217,8 +230,14 @@ final class UpdateCheckDocumentationTests: XCTestCase {
             "Inklet never downloads or installs updates automatically.",
             "Inklet does not automatically download or install updates.",
             "Inklet will not automatically install an update.",
+            "Updates are not downloaded automatically.",
+            "Inklet automatically downloads public release metadata.",
+            "Inklet automatically downloads update metadata.",
+            "Inklet automatically checks public release metadata.",
             "Inklet 不会自动下载或安装更新。",
-            "Inklet 从不自动下载或安装更新。"
+            "Inklet 从不自动下载或安装更新。",
+            "Inklet 会自动下载公开的 release 元数据。",
+            "Inklet 会自动检查公开的 release 元数据。"
         ]
         for claim in allowedClaims {
             XCTAssertNil(
@@ -290,10 +309,22 @@ final class UpdateCheckDocumentationTests: XCTestCase {
     }
 
     private func automaticDownloadOrInstallationClaim(in text: String) -> String? {
+        let englishPackage = #"(?:updates?(?!\s+metadata\b)|(?:(?:new|latest)\s+)?(?:Inklet\s+)?versions?(?!\s+metadata\b)|(?:Inklet\s+)?DMGs?|(?:Inklet\s+)?(?:update\s+)?packages?|(?:Inklet\s+)?installers?)"#
+        let englishPackageWithArticle = #"(?:an?\s+|the\s+)?\#(englishPackage)"#
+        let englishAppSubject = #"(?:Inklet|the\s+app|this\s+app)"#
+        let englishVerb = #"(?:downloads?|installs?)"#
+        let englishPastParticiple = #"(?:downloaded|installed)"#
+        let chinesePackage = #"(?:Inklet\s*)?(?:(?:(?:新|最新)\s*)?版本(?!\s*(?:的\s*)?元数据)|更新(?!\s*元数据)|DMG|安装包|更新包|应用安装包)"#
+        let chineseAppSubject = #"(?:Inklet|本应用|该应用|此应用)"#
+        let chineseVerb = #"(?:下载|安装)"#
         let forbiddenClaimPatterns = [
-            #"\bInklet\s+(?:(?:will|does|can)\s+)?automatically\s+(?:downloads?|installs?)\b"#,
-            #"\bInklet\s+(?:(?:will|does|can)\s+)?(?:downloads?|installs?)(?:\s+(?:and|or)\s+(?:downloads?|installs?))?\s+(?:an?\s+)?updates?\s+automatically\b"#,
-            #"Inklet\s*(?:(?:将会|会|将)\s*)?自动\s*(?:下载|安装)(?:\s*(?:并|和|或)\s*(?:下载|安装))?\s*更新"#
+            #"\b\#(englishAppSubject)\s+(?:(?:will|does|can)\s+)?automatically\s+\#(englishVerb)(?:\s+(?:and|or)\s+\#(englishVerb))?\s+\#(englishPackageWithArticle)\b"#,
+            #"\b\#(englishAppSubject)\s+(?:(?:will|does|can)\s+)?\#(englishVerb)(?:\s+(?:and|or)\s+\#(englishVerb))?\s+\#(englishPackageWithArticle)\s+automatically\b"#,
+            #"\b(?:an?\s+|the\s+)?\#(englishPackage)\s+(?:(?:(?:will|can)\s+)?\#(englishVerb)\s+automatically|(?:is|are|will\s+be|can\s+be)\s+(?:automatically\s+\#(englishPastParticiple)(?:\s+(?:and|or)\s+\#(englishPastParticiple))?|\#(englishPastParticiple)(?:\s+(?:and|or)\s+\#(englishPastParticiple))?\s+automatically))\b"#,
+            #"(?im)(?:^|\n)\s*(?:[-*]\s*)?automatically\s+\#(englishVerb)(?:\s+(?:and|or)\s+\#(englishVerb))?\s+\#(englishPackageWithArticle)\b"#,
+            #"\b\#(chineseAppSubject)\s*(?:(?:将会|会|将|可以)\s*)?自动\s*\#(chineseVerb)(?:\s*(?:并|和|或)\s*\#(chineseVerb))?\s*\#(chinesePackage)"#,
+            #"\#(chinesePackage)\s*(?:(?:(?:将会|会|将|可以)\s*)?自动\s*\#(chineseVerb)(?:\s*(?:并|和|或)\s*\#(chineseVerb))?|(?:(?:将会|会|将|可以)\s*)?被\s*自动\s*\#(chineseVerb)(?:\s*(?:并|和|或)\s*\#(chineseVerb))?)"#,
+            #"(?m)(?:^|\n)\s*(?:[-*]\s*)?自动\s*\#(chineseVerb)(?:\s*(?:并|和|或)\s*\#(chineseVerb))?\s*\#(chinesePackage)"#
         ]
 
         for pattern in forbiddenClaimPatterns {
