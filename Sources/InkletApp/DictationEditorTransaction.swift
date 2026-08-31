@@ -30,6 +30,7 @@ final class WritingSourceEditorBridge {
     typealias TransactionFactory = @MainActor (
         _ textView: NSTextView,
         _ synchronizeProvisional: @escaping (String) -> Void,
+        _ synchronizePersistent: @escaping (String) -> Void,
         _ commitSourceChange: @escaping (String) -> Void,
         _ restoreModelSnapshot: @escaping () -> Void
     ) -> (any DictationEditorTransacting)?
@@ -42,10 +43,16 @@ final class WritingSourceEditorBridge {
     }
 
     init(
-        transactionFactory: @escaping TransactionFactory = { textView, synchronize, commit, restore in
+        transactionFactory: @escaping TransactionFactory = {
+            textView,
+            synchronizeProvisional,
+            synchronizePersistent,
+            commit,
+            restore in
             DictationEditorTransaction(
                 textView: textView,
-                synchronizeProvisional: synchronize,
+                synchronizeProvisional: synchronizeProvisional,
+                synchronizePersistent: synchronizePersistent,
                 commitSourceChange: commit,
                 restoreModelSnapshot: restore
             )
@@ -58,8 +65,8 @@ final class WritingSourceEditorBridge {
         sourceTextView = textView
     }
 
-    func detach(_ textView: NSTextView? = nil) {
-        guard textView == nil || sourceTextView === textView else {
+    func detach(_ textView: NSTextView) {
+        guard sourceTextView === textView else {
             return
         }
         sourceTextView = nil
@@ -96,6 +103,9 @@ final class WritingSourceEditorBridge {
             sourceTextView,
             { [weak model] source in
                 model?.synchronizeSourceTextDuringDictation(source)
+            },
+            { [weak model] source in
+                model?.synchronizeSourceTextAfterDictation(source)
             },
             { [weak model] _ in
                 model?.commitSourceDictationPresentation()
@@ -142,6 +152,7 @@ final class DictationEditorTransaction: DictationEditorTransacting {
     private let originalIsSelectable: Bool
     private let originalWasFirstResponder: Bool
     private let synchronizeProvisional: (String) -> Void
+    private let synchronizePersistent: (String) -> Void
     private let commitSourceChange: (String) -> Void
     private let restoreModelSnapshot: () -> Void
     private var terminal = false
@@ -149,6 +160,7 @@ final class DictationEditorTransaction: DictationEditorTransacting {
     convenience init?(
         textView: NSTextView,
         synchronizeProvisional: @escaping (String) -> Void,
+        synchronizePersistent: ((String) -> Void)? = nil,
         commitSourceChange: @escaping (String) -> Void,
         restoreModelSnapshot: @escaping () -> Void
     ) {
@@ -156,6 +168,7 @@ final class DictationEditorTransaction: DictationEditorTransacting {
             textView: textView,
             editorReference: WeakObjectReference(textView),
             synchronizeProvisional: synchronizeProvisional,
+            synchronizePersistent: synchronizePersistent,
             commitSourceChange: commitSourceChange,
             restoreModelSnapshot: restoreModelSnapshot
         )
@@ -165,6 +178,7 @@ final class DictationEditorTransaction: DictationEditorTransacting {
         textView: NSTextView,
         editorReference: WeakObjectReference<NSTextView>,
         synchronizeProvisional: @escaping (String) -> Void,
+        synchronizePersistent: ((String) -> Void)? = nil,
         commitSourceChange: @escaping (String) -> Void,
         restoreModelSnapshot: @escaping () -> Void
     ) {
@@ -199,6 +213,7 @@ final class DictationEditorTransaction: DictationEditorTransacting {
         self.originalIsSelectable = textView.isSelectable
         self.originalWasFirstResponder = textView.window?.firstResponder === textView
         self.synchronizeProvisional = synchronizeProvisional
+        self.synchronizePersistent = synchronizePersistent ?? synchronizeProvisional
         self.commitSourceChange = commitSourceChange
         self.restoreModelSnapshot = restoreModelSnapshot
 
@@ -370,7 +385,7 @@ final class DictationEditorTransaction: DictationEditorTransacting {
         let target = UndoTarget(
             editorReference: editorReference,
             undoManager: undoManager,
-            synchronizeSource: synchronizeProvisional
+            synchronizeSource: synchronizePersistent
         )
         target.register(current: current, replacement: previous)
     }

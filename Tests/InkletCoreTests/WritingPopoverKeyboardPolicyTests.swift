@@ -152,6 +152,54 @@ final class WritingPopoverKeyboardPolicyTests: XCTestCase {
         XCTAssertFalse(newlineBlock.contains("!model.isInserting"))
     }
 
+    func testNativeEditorAttachmentEventsAlwaysCarryConcreteIdentity() throws {
+        let source = try popoverSource()
+        let representableStart = try XCTUnwrap(source.range(of: "private struct InkletTextView"))
+        let handlerStart = try XCTUnwrap(source.range(
+            of: "private struct PopoverKeyEventHandler",
+            range: representableStart.upperBound..<source.endIndex
+        ))
+        let representable = source[representableStart.lowerBound..<handlerStart.lowerBound]
+
+        XCTAssertTrue(source.contains("enum InkletTextViewAttachmentEvent"))
+        XCTAssertTrue(source.contains("case attach(NSTextView)"))
+        XCTAssertTrue(source.contains("case detach(NSTextView)"))
+        XCTAssertTrue(representable.contains(".attach(textView)"))
+        XCTAssertTrue(representable.contains(".detach(textView)"))
+        XCTAssertFalse(representable.contains("((NSTextView?) -> Void)?"))
+        XCTAssertFalse(representable.contains("onResolveTextView?(nil)"))
+    }
+
+    func testActiveDictationDisablesLockedButtonsButLeavesEscapeEnabled() throws {
+        let source = try popoverSource()
+        let headerStart = try XCTUnwrap(source.range(of: "private var header"))
+        let actionStart = try XCTUnwrap(source.range(
+            of: "private var actionBar",
+            range: headerStart.upperBound..<source.endIndex
+        ))
+        let dictationStatusStart = try XCTUnwrap(source.range(
+            of: "private var dictationStatus",
+            range: actionStart.upperBound..<source.endIndex
+        ))
+        let headerBlock = source[headerStart.lowerBound..<actionStart.lowerBound]
+        let actionBlock = source[actionStart.lowerBound..<dictationStatusStart.lowerBound]
+        let escapeStart = try XCTUnwrap(actionBlock.range(of: "shortcutHint(keys: [\"esc\"]"))
+        let lockedActions = actionBlock[actionBlock.startIndex..<escapeStart.lowerBound]
+        let escapeAction = actionBlock[escapeStart.lowerBound...]
+
+        XCTAssertEqual(
+            headerBlock.components(separatedBy: ".disabled(isBusy)").count - 1,
+            2
+        )
+        XCTAssertEqual(
+            lockedActions.components(
+                separatedBy: ".disabled(model.dictationPhase.isActive)"
+            ).count - 1,
+            4
+        )
+        XCTAssertFalse(escapeAction.contains(".disabled(model.dictationPhase.isActive)"))
+    }
+
     func testEditorShortcutsPreserveExistingActions() {
         let cases: [(UInt16, WritingPopoverKeyboardModifiers, WritingPopoverKeyboardAction)] = [
             (126, [.command], .cycleMode(-1)),

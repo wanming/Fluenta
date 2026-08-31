@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import XCTest
 @testable import Inklet
 @testable import InkletCore
@@ -128,6 +129,47 @@ final class WritingPopoverDictationViewModelTests: XCTestCase {
         harness.model.submit()
         XCTAssertTrue(harness.model.isInserting == false)
         XCTAssertEqual(harness.model.errorMessage, L10n.text("popover.error.missingTarget"))
+    }
+
+    func testRestoreRejectsSynchronousSnapshotReentryUntilEveryPublicationFinishes() async throws {
+        let harness = try makeHarness(output: "Original result")
+        try await prepareVisibleResult(in: harness.model)
+        let originalSession = harness.model.popoverSession
+        harness.model.errorMessage = "Previous error"
+        XCTAssertTrue(harness.model.beginSourceDictationPresentation())
+        harness.model.synchronizeSourceTextDuringDictation("Temporary source")
+        harness.model.resultText = "Temporary result"
+        harness.model.errorMessage = "Temporary error"
+
+        var isRestoring = false
+        var reentrantBeginResults: [Bool] = []
+        var cancellables: Set<AnyCancellable> = []
+        for publisher in [
+            harness.model.$sourceText.map { _ in () }.eraseToAnyPublisher(),
+            harness.model.$resultText.map { _ in () }.eraseToAnyPublisher(),
+            harness.model.$errorMessage.map { _ in () }.eraseToAnyPublisher(),
+            harness.model.$popoverSession.map { _ in () }.eraseToAnyPublisher()
+        ] {
+            publisher.sink { _ in
+                guard isRestoring else { return }
+                reentrantBeginResults.append(
+                    harness.model.beginSourceDictationPresentation()
+                )
+            }
+            .store(in: &cancellables)
+        }
+
+        isRestoring = true
+        harness.model.restoreSourceDictationPresentation()
+        isRestoring = false
+
+        XCTAssertGreaterThanOrEqual(reentrantBeginResults.count, 4)
+        XCTAssertTrue(reentrantBeginResults.allSatisfy { !$0 })
+        XCTAssertEqual(harness.model.sourceText, "Original source")
+        XCTAssertEqual(harness.model.resultText, "Original result")
+        XCTAssertEqual(harness.model.errorMessage, "Previous error")
+        XCTAssertEqual(harness.model.popoverSession, originalSession)
+        XCTAssertTrue(harness.model.beginSourceDictationPresentation())
     }
 
     func testFailedPhasePublishesLocalizedErrorAfterRestoration() async throws {
@@ -283,12 +325,67 @@ final class WritingPopoverDictationViewModelTests: XCTestCase {
         let textView = NSTextView()
         window.contentView = textView
         XCTAssertTrue(window.makeFirstResponder(textView))
-        let bridge = WritingSourceEditorBridge(transactionFactory: { _, _, _, _ in nil })
+        let bridge = WritingSourceEditorBridge(transactionFactory: { _, _, _, _, _ in nil })
         bridge.attach(textView)
 
         XCTAssertNil(bridge.beginTransaction(model: harness.model))
         XCTAssertEqual(harness.model.sourceText, "Original source")
         XCTAssertEqual(harness.model.errorMessage, "Previous error")
+        XCTAssertTrue(harness.model.beginSourceDictationPresentation())
+    }
+
+    func testSourceBridgeKeepsNewAttachmentWhenOldEditorDetachesLate() {
+        let bridge = WritingSourceEditorBridge()
+        let oldTextView = NSTextView()
+        let newTextView = NSTextView()
+
+        bridge.attach(oldTextView)
+        bridge.attach(newTextView)
+        bridge.detach(oldTextView)
+
+        XCTAssertTrue(bridge.attachedTextView === newTextView)
+    }
+
+    func testCommittedDictationUndoRedoPersistentlySynchronizesTheModel() async throws {
+        let harness = try makeHarness(output: "Original result")
+        try await prepareVisibleResult(in: harness.model)
+        let window = AlwaysKeyWindow()
+        let textView = NSTextView()
+        textView.string = harness.model.sourceText
+        textView.allowsUndo = true
+        textView.setSelectedRange(NSRange(
+            location: 0,
+            length: (textView.string as NSString).length
+        ))
+        textView.undoManager?.removeAllActions()
+        window.contentView = textView
+        XCTAssertTrue(window.makeFirstResponder(textView))
+        let bridge = WritingSourceEditorBridge()
+        bridge.attach(textView)
+        let transaction = try XCTUnwrap(bridge.beginTransaction(model: harness.model))
+
+        try transaction.commitFinal("Dictated source")
+
+        XCTAssertEqual(textView.string, "Dictated source")
+        XCTAssertEqual(harness.model.sourceText, textView.string)
+        XCTAssertEqual(harness.model.resultText, "")
+        XCTAssertNil(harness.model.popoverSession.resultModeID)
+
+        let undoManager = try XCTUnwrap(textView.undoManager)
+        undoManager.undo()
+
+        XCTAssertEqual(textView.string, "Original source")
+        XCTAssertEqual(harness.model.sourceText, textView.string)
+        XCTAssertEqual(harness.model.resultText, "")
+        XCTAssertNil(harness.model.popoverSession.resultModeID)
+
+        harness.model.resultText = "Later result"
+        undoManager.redo()
+
+        XCTAssertEqual(textView.string, "Dictated source")
+        XCTAssertEqual(harness.model.sourceText, textView.string)
+        XCTAssertEqual(harness.model.resultText, "")
+        XCTAssertNil(harness.model.popoverSession.resultModeID)
         XCTAssertTrue(harness.model.beginSourceDictationPresentation())
     }
 

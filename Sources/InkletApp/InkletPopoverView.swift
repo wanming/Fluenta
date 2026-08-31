@@ -117,6 +117,7 @@ final class InkletPopoverViewModel: ObservableObject {
     private var hasTransformedInSession = false
     private var sourceFocusGeneration = FocusRequestGeneration()
     private var sourceDictationPresentationSnapshot: SourceDictationPresentationSnapshot?
+    private var isRestoringSourceDictationPresentation = false
 
     init(
         stateMachine: PopoverStateMachine = PopoverStateMachine(),
@@ -216,6 +217,7 @@ final class InkletPopoverViewModel: ObservableObject {
     func beginSourceDictationPresentation() -> Bool {
         guard route == .editor,
               !isBusy,
+              !isRestoringSourceDictationPresentation,
               sourceDictationPresentationSnapshot == nil
         else {
             return false
@@ -256,11 +258,29 @@ final class InkletPopoverViewModel: ObservableObject {
         )
     }
 
+    func synchronizeSourceTextAfterDictation(_ text: String) {
+        sourceText = text
+        resultText = ""
+        errorMessage = nil
+        mutatePopoverSession { $0.clearResult() }
+        draftSourceText = text
+        hasTransformedInSession = false
+        stateMachine = PopoverStateMachine(
+            state: .editingSource(source: text, errorMessage: nil)
+        )
+    }
+
     func restoreSourceDictationPresentation() {
-        guard let snapshot = sourceDictationPresentationSnapshot else {
+        guard let snapshot = sourceDictationPresentationSnapshot,
+              !isRestoringSourceDictationPresentation
+        else {
             return
         }
-        sourceDictationPresentationSnapshot = nil
+        isRestoringSourceDictationPresentation = true
+        defer {
+            sourceDictationPresentationSnapshot = nil
+            isRestoringSourceDictationPresentation = false
+        }
         sourceText = snapshot.sourceText
         resultText = snapshot.resultText
         errorMessage = snapshot.errorMessage
@@ -803,9 +823,14 @@ private extension Error {
     }
 }
 
+enum InkletTextViewAttachmentEvent {
+    case attach(NSTextView)
+    case detach(NSTextView)
+}
+
 struct InkletPopoverView: View {
     @ObservedObject var model: InkletPopoverViewModel
-    private let onResolveSourceTextView: (NSTextView?) -> Void
+    private let onSourceTextViewAttachment: (InkletTextViewAttachmentEvent) -> Void
     @FocusState private var isSourceFocused: Bool
     @FocusState private var isResultFocused: Bool
     @State private var sourceMeasuredHeight: CGFloat = 0
@@ -813,10 +838,10 @@ struct InkletPopoverView: View {
 
     init(
         model: InkletPopoverViewModel,
-        onResolveSourceTextView: @escaping (NSTextView?) -> Void = { _ in }
+        onSourceTextViewAttachment: @escaping (InkletTextViewAttachmentEvent) -> Void = { _ in }
     ) {
         self.model = model
-        self.onResolveSourceTextView = onResolveSourceTextView
+        self.onSourceTextViewAttachment = onSourceTextViewAttachment
     }
 
     private let minEditorRows: CGFloat = 2
@@ -968,7 +993,7 @@ struct InkletPopoverView: View {
                 onSubmit: { model.submit() },
                 onInsertOriginal: { model.insertOriginal() },
                 onEscape: { model.escape() },
-                onResolveTextView: onResolveSourceTextView
+                onTextViewAttachment: onSourceTextViewAttachment
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.horizontal, 16)
@@ -1015,7 +1040,7 @@ struct InkletPopoverView: View {
                         onSubmit: { model.submit() },
                         onInsertOriginal: { model.insertOriginal() },
                         onEscape: { model.escape() },
-                        onResolveTextView: nil
+                        onTextViewAttachment: nil
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.horizontal, 16)
@@ -1102,6 +1127,7 @@ struct InkletPopoverView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .disabled(isBusy)
             .help(L10n.text("app.menu.settings"))
             .accessibilityLabel(L10n.text("app.menu.settings"))
         }
@@ -1118,15 +1144,19 @@ struct InkletPopoverView: View {
                 shortcutHint(keys: ["↵"], label: primaryActionTitle, primary: !model.sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.resultText.isEmpty) {
                     model.submit()
                 }
+                .disabled(model.dictationPhase.isActive)
                 shortcutHint(keys: ["⌘", "↵"], label: L10n.text("popover.action.insertOriginal")) {
                     model.insertOriginal()
                 }
+                .disabled(model.dictationPhase.isActive)
                 shortcutHint(keys: ["⇧", "↵"], label: L10n.text("popover.hint.newLine")) {
                     insertNewLine()
                 }
+                .disabled(model.dictationPhase.isActive)
                 shortcutHint(keys: ["⌘", "↑/↓"], label: L10n.text("popover.hint.mode")) {
                     model.cyclePromptMode(direction: 1)
                 }
+                .disabled(model.dictationPhase.isActive)
 
                 Spacer()
 
@@ -1386,7 +1416,7 @@ private struct InkletTextView: NSViewRepresentable {
     var onSubmit: (() -> Void)?
     var onInsertOriginal: (() -> Void)?
     var onEscape: (() -> Void)?
-    var onResolveTextView: ((NSTextView?) -> Void)?
+    var onTextViewAttachment: ((InkletTextViewAttachmentEvent) -> Void)?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -1394,7 +1424,7 @@ private struct InkletTextView: NSViewRepresentable {
             onSubmit: onSubmit,
             onInsertOriginal: onInsertOriginal,
             onEscape: onEscape,
-            onResolveTextView: onResolveTextView
+            onTextViewAttachment: onTextViewAttachment
         )
     }
 
@@ -1448,7 +1478,7 @@ private struct InkletTextView: NSViewRepresentable {
 
         scrollView.documentView = textView
         context.coordinator.textView = textView
-        onResolveTextView?(textView)
+        onTextViewAttachment?(.attach(textView))
         container.placeholderLabel.stringValue = placeholder ?? ""
         container.updatePlaceholderVisibility()
         return container
@@ -1464,9 +1494,9 @@ private struct InkletTextView: NSViewRepresentable {
         context.coordinator.onSubmit = onSubmit
         context.coordinator.onInsertOriginal = onInsertOriginal
         context.coordinator.onEscape = onEscape
-        context.coordinator.onResolveTextView = onResolveTextView
+        context.coordinator.onTextViewAttachment = onTextViewAttachment
         context.coordinator.textView = textView
-        onResolveTextView?(textView)
+        onTextViewAttachment?(.attach(textView))
 
         textView.isEditable = isEditable
         textView.font = .systemFont(ofSize: 14)
@@ -1484,7 +1514,9 @@ private struct InkletTextView: NSViewRepresentable {
         _ container: InkletTextContainerView,
         coordinator: Coordinator
     ) {
-        coordinator.onResolveTextView?(nil)
+        if let textView = container.scrollView.documentView as? NSTextView {
+            coordinator.onTextViewAttachment?(.detach(textView))
+        }
         coordinator.textView = nil
     }
 
@@ -1493,7 +1525,7 @@ private struct InkletTextView: NSViewRepresentable {
         var onSubmit: (() -> Void)?
         var onInsertOriginal: (() -> Void)?
         var onEscape: (() -> Void)?
-        var onResolveTextView: ((NSTextView?) -> Void)?
+        var onTextViewAttachment: ((InkletTextViewAttachmentEvent) -> Void)?
         weak var textView: NSTextView?
 
         init(
@@ -1501,13 +1533,13 @@ private struct InkletTextView: NSViewRepresentable {
             onSubmit: (() -> Void)?,
             onInsertOriginal: (() -> Void)?,
             onEscape: (() -> Void)?,
-            onResolveTextView: ((NSTextView?) -> Void)?
+            onTextViewAttachment: ((InkletTextViewAttachmentEvent) -> Void)?
         ) {
             self.text = text
             self.onSubmit = onSubmit
             self.onInsertOriginal = onInsertOriginal
             self.onEscape = onEscape
-            self.onResolveTextView = onResolveTextView
+            self.onTextViewAttachment = onTextViewAttachment
             super.init()
         }
 
