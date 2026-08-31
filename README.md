@@ -48,9 +48,9 @@ Text workflow:
 Dictation workflow:
 
 1. **Open Writing Assistant** with `Option+Space`.
-2. **Confirm a Prompt Mode** and focus the editable source draft. Dictation is unavailable in the mode picker and result editor.
-3. **Hold the configured Dictation shortcut** (Right Option by default) while the source editor is active. A short press does nothing.
-4. Speak normally while the draft updates in place. If the realtime connection fails, keep holding and speaking while Inklet keeps one temporary recovery recording.
+2. **Confirm a Prompt Mode**. Dictation is unavailable in the mode picker and result editor.
+3. **Put the caret in the source draft, or select text to replace.** Dictation inserts at the caret or replaces the selection.
+4. **Hold the configured Dictation shortcut** (Right Option by default) and speak normally while the draft updates in place. A short press does nothing. If the realtime connection fails, keep holding and speaking while Inklet keeps one temporary recovery recording.
 5. **Release to finalize** the transcript. Inklet makes at most one file-transcription recovery attempt, then deletes the temporary recording when the session ends.
 6. Review and edit the dictated draft. Dictation by itself does not run the Prompt Mode or insert text into another app.
 7. **Press Return only when ready** to run the confirmed Prompt Mode; press Return again only when you want to insert the result.

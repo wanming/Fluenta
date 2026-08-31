@@ -174,6 +174,18 @@ final class DirectDistributionContractTests: XCTestCase {
         ] {
             XCTAssertTrue(english.contains(required), required)
         }
+        for step in [
+            "1. **Open Writing Assistant**",
+            "2. **Confirm a Prompt Mode**",
+            "3. **Put the caret in the source draft, or select text to replace.**",
+            "4. **Hold the configured Dictation shortcut**",
+            "5. **Release to finalize**",
+            "6. Review and edit the dictated draft.",
+            "7. **Press Return only when ready**",
+            "Dictation inserts at the caret or replaces the selection.",
+        ] {
+            XCTAssertTrue(english.contains(step), step)
+        }
         for required in [
             "打开写作助手",
             "确认一个 Prompt 模式",
@@ -184,6 +196,18 @@ final class DirectDistributionContractTests: XCTestCase {
             "不会运行 Prompt 模式，也不会把文本插入其他 App",
         ] {
             XCTAssertTrue(chinese.contains(required), required)
+        }
+        for step in [
+            "1. 用 `Option+Space` **打开写作助手**",
+            "2. **确认一个 Prompt 模式**",
+            "3. **把光标放入原文草稿，或选中要替换的文本。**",
+            "4. **长按已配置的听写快捷键**",
+            "5. **松开以完成转写**",
+            "6. 检查并编辑听写草稿。",
+            "7. **准备好后再按 Return**",
+            "听写会在光标处插入，或替换选区。",
+        ] {
+            XCTAssertTrue(chinese.contains(step), step)
         }
         for retired in [
             "Voice Write Assistant",

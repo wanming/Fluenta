@@ -438,6 +438,17 @@ for dictation_text in \
   "does not run the Prompt Mode or insert text into another app"; do
   require_documentation_prose "$english_readme" "$dictation_text" "$dictation_text"
 done
+for dictation_step in \
+  '1. **Open Writing Assistant**' \
+  '2. **Confirm a Prompt Mode**' \
+  '3. **Put the caret in the source draft, or select text to replace.**' \
+  '4. **Hold the configured Dictation shortcut**' \
+  '5. **Release to finalize**' \
+  '6. Review and edit the dictated draft.' \
+  '7. **Press Return only when ready**' \
+  'Dictation inserts at the caret or replaces the selection.'; do
+  require_documentation_prose "$english_readme" "$dictation_step" "$dictation_step"
+done
 
 chinese_readme="${repo_root}/README.zh-CN.md"
 require_documentation_prose "$chinese_readme" \
@@ -494,6 +505,17 @@ for dictation_text in \
   "短按不会执行任何操作" \
   "不会运行 Prompt 模式，也不会把文本插入其他 App"; do
   require_documentation_prose "$chinese_readme" "$dictation_text" "$dictation_text"
+done
+for dictation_step in \
+  '1. 用 `Option+Space` **打开写作助手**' \
+  '2. **确认一个 Prompt 模式**' \
+  '3. **把光标放入原文草稿，或选中要替换的文本。**' \
+  '4. **长按已配置的听写快捷键**' \
+  '5. **松开以完成转写**' \
+  '6. 检查并编辑听写草稿。' \
+  '7. **准备好后再按 Return**' \
+  '听写会在光标处插入，或替换选区。'; do
+  require_documentation_prose "$chinese_readme" "$dictation_step" "$dictation_step"
 done
 
 contributing="${repo_root}/CONTRIBUTING.md"
