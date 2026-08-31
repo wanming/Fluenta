@@ -138,6 +138,20 @@ final class WritingPopoverKeyboardPolicyTests: XCTestCase {
         XCTAssertTrue(cancelBlock.contains("super.cancelOperation(sender)"))
     }
 
+    func testNewlineHelperUsesUnifiedBusyGuardDuringDictation() throws {
+        let source = try popoverSource()
+        let newlineStart = try XCTUnwrap(source.range(of: "private func insertNewLine()"))
+        let heightStart = try XCTUnwrap(source.range(
+            of: "private func editorHeight",
+            range: newlineStart.upperBound..<source.endIndex
+        ))
+        let newlineBlock = source[newlineStart.lowerBound..<heightStart.lowerBound]
+
+        XCTAssertTrue(newlineBlock.contains("guard !model.isBusy else"))
+        XCTAssertFalse(newlineBlock.contains("!model.isTransforming"))
+        XCTAssertFalse(newlineBlock.contains("!model.isInserting"))
+    }
+
     func testEditorShortcutsPreserveExistingActions() {
         let cases: [(UInt16, WritingPopoverKeyboardModifiers, WritingPopoverKeyboardAction)] = [
             (126, [.command], .cycleMode(-1)),

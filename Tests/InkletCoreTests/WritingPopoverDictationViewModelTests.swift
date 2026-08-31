@@ -195,6 +195,29 @@ final class WritingPopoverDictationViewModelTests: XCTestCase {
         XCTAssertFalse(harness.model.isInserting)
     }
 
+    func testActiveDictationBlocksEveryModePickerStateMutation() throws {
+        let harness = try makeHarness()
+        enterEditor(harness.model)
+        let originalPickerState = harness.model.modePickerState
+        let otherModeID = try XCTUnwrap(
+            harness.model.modes.last(where: {
+                $0.id != originalPickerState.highlightedModeID
+            })?.id
+        )
+
+        XCTAssertTrue(harness.model.beginSourceDictationPresentation())
+        harness.model.setDictationPhase(.listening)
+
+        harness.model.updateModeSearchQuery("no matching writing mode")
+        XCTAssertEqual(harness.model.modePickerState, originalPickerState)
+
+        harness.model.moveModeHighlight(by: 1)
+        XCTAssertEqual(harness.model.modePickerState, originalPickerState)
+
+        harness.model.highlightMode(modeID: otherModeID)
+        XCTAssertEqual(harness.model.modePickerState, originalPickerState)
+    }
+
     func testEscapeCancelsActiveDictationOnceBeforeClearingResultOrNavigating() throws {
         let harness = try makeHarness()
         enterEditor(harness.model)

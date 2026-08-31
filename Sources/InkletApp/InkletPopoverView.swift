@@ -309,14 +309,23 @@ final class InkletPopoverViewModel: ObservableObject {
     }
 
     func updateModeSearchQuery(_ query: String) {
+        guard !isBusy else {
+            return
+        }
         mutateModePickerState { $0.setQuery(query) }
     }
 
     func moveModeHighlight(by offset: Int) {
+        guard !isBusy else {
+            return
+        }
         mutateModePickerState { $0.moveHighlight(by: offset) }
     }
 
     func highlightMode(modeID: String) {
+        guard !isBusy else {
+            return
+        }
         mutateModePickerState { _ = $0.highlight(modeID: modeID) }
     }
 
@@ -1205,7 +1214,7 @@ struct InkletPopoverView: View {
     }
 
     private func insertNewLine() {
-        guard !model.isTransforming, !model.isInserting else {
+        guard !model.isBusy else {
             return
         }
 
