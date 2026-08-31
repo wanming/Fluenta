@@ -247,6 +247,31 @@ final class DictationEditorTransactionTests: XCTestCase {
         )
     }
 
+    func testRestorePreservesExactTemporaryAttributesInsideOriginalRange() throws {
+        let fixture = makeInsideTemporaryAttributeFixture()
+        let originalTemporaryAttributes = temporaryAttributes(
+            in: fixture.textView,
+            range: fixture.selection
+        )
+        let subject = try XCTUnwrap(makeTransaction(fixture.textView))
+
+        try subject.replaceProvisional(with: "a much longer draft")
+        assertSingleUnderline(
+            in: fixture.textView,
+            expectedRange: NSRange(
+                location: fixture.selection.location,
+                length: ("a much longer draft" as NSString).length
+            )
+        )
+        subject.restore()
+
+        assertTemporaryAttributes(
+            originalTemporaryAttributes,
+            in: fixture.textView,
+            range: fixture.selection
+        )
+    }
+
     func testUndoRedoPreservesAttributedRunsAndOutsideTemporaryAttributes() throws {
         let fixture = makeAttributedFixture()
         let subject = try XCTUnwrap(makeTransaction(fixture.textView))
@@ -277,6 +302,42 @@ final class DictationEditorTransactionTests: XCTestCase {
         assertOutsideTemporaryAttributes(
             in: fixture.textView,
             key: fixture.temporaryKey
+        )
+    }
+
+    func testUndoRestoresExactTemporaryAttributesInsideOriginalRangeAndRedo() throws {
+        let fixture = makeInsideTemporaryAttributeFixture()
+        let originalTemporaryAttributes = temporaryAttributes(
+            in: fixture.textView,
+            range: fixture.selection
+        )
+        let subject = try XCTUnwrap(makeTransaction(fixture.textView))
+
+        try subject.replaceProvisional(with: "draft")
+        try subject.commitFinal("final voice")
+        let committedRange = NSRange(
+            location: fixture.selection.location,
+            length: ("final voice" as NSString).length
+        )
+        let committedTemporaryAttributes = temporaryAttributes(
+            in: fixture.textView,
+            range: committedRange
+        )
+
+        fixture.textView.testUndoManager.undo()
+
+        assertTemporaryAttributes(
+            originalTemporaryAttributes,
+            in: fixture.textView,
+            range: fixture.selection
+        )
+
+        fixture.textView.testUndoManager.redo()
+
+        assertTemporaryAttributes(
+            committedTemporaryAttributes,
+            in: fixture.textView,
+            range: committedRange
         )
     }
 
@@ -490,6 +551,34 @@ final class DictationEditorTransactionTests: XCTestCase {
         )
     }
 
+    private func makeInsideTemporaryAttributeFixture() -> (
+        textView: TestTextView,
+        selection: NSRange
+    ) {
+        let string = "before MIDDLE after"
+        let selection = (string as NSString).range(of: "MIDDLE")
+        let textView = makeTextView(string, selection: selection)
+        let temporaryKey = NSAttributedString.Key(
+            "DictationEditorTransactionTests.insideTemporary"
+        )
+        textView.layoutManager?.addTemporaryAttribute(
+            temporaryKey,
+            value: "left",
+            forCharacterRange: NSRange(location: selection.location, length: 3)
+        )
+        textView.layoutManager?.addTemporaryAttribute(
+            temporaryKey,
+            value: "right",
+            forCharacterRange: NSRange(location: selection.location + 3, length: 3)
+        )
+        textView.layoutManager?.addTemporaryAttribute(
+            .underlineStyle,
+            value: NSUnderlineStyle.double.rawValue,
+            forCharacterRange: NSRange(location: selection.location + 2, length: 2)
+        )
+        return (textView, selection)
+    }
+
     private func makeTransaction(
         _ textView: NSTextView
     ) -> DictationEditorTransaction? {
@@ -608,6 +697,41 @@ final class DictationEditorTransactionTests: XCTestCase {
                     effectiveRange: nil
                 ) as? String,
                 value,
+                file: file,
+                line: line
+            )
+        }
+    }
+
+    private func temporaryAttributes(
+        in textView: NSTextView,
+        range: NSRange
+    ) -> [NSDictionary] {
+        guard let layoutManager = textView.layoutManager else {
+            return []
+        }
+        return (range.location..<NSMaxRange(range)).map { index in
+            layoutManager.temporaryAttributes(
+                atCharacterIndex: index,
+                effectiveRange: nil
+            ) as NSDictionary
+        }
+    }
+
+    private func assertTemporaryAttributes(
+        _ expected: [NSDictionary],
+        in textView: NSTextView,
+        range: NSRange,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let actual = temporaryAttributes(in: textView, range: range)
+        XCTAssertEqual(actual.count, expected.count, file: file, line: line)
+        for (index, pair) in zip(actual, expected).enumerated() {
+            XCTAssertEqual(
+                pair.0,
+                pair.1,
+                "Temporary attributes differ at offset \(index)",
                 file: file,
                 line: line
             )

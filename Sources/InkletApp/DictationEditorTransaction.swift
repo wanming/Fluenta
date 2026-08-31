@@ -35,7 +35,13 @@ final class DictationEditorTransaction: DictationEditorTransacting {
     private struct AttributedRangeState {
         let range: NSRange
         let fragment: NSAttributedString
+        let temporaryAttributeRuns: [TemporaryAttributeRun]
         let selectedRange: NSRange
+    }
+
+    private struct TemporaryAttributeRun {
+        let range: NSRange
+        let attributes: [NSAttributedString.Key: Any]
     }
 
     private let editorReference: WeakObjectReference<NSTextView>
@@ -44,6 +50,7 @@ final class DictationEditorTransaction: DictationEditorTransacting {
     private let originalRangeState: AttributedRangeState
     private var ownedRange: NSRange
     private var underlinedRange: NSRange?
+    private var replacedUnderlineRuns: [TemporaryAttributeRun] = []
     private let originalIsEditable: Bool
     private let originalIsSelectable: Bool
     private let originalWasFirstResponder: Bool
@@ -94,6 +101,10 @@ final class DictationEditorTransaction: DictationEditorTransacting {
             fragment: NSAttributedString(
                 attributedString: textStorage.attributedSubstring(from: selection)
             ),
+            temporaryAttributeRuns: Self.temporaryAttributeRuns(
+                in: selection,
+                from: textView.layoutManager
+            ),
             selectedRange: selection
         )
         self.ownedRange = selection
@@ -140,6 +151,10 @@ final class DictationEditorTransaction: DictationEditorTransacting {
             range: ownedRange,
             fragment: NSAttributedString(
                 attributedString: textStorage.attributedSubstring(from: ownedRange)
+            ),
+            temporaryAttributeRuns: Self.temporaryAttributeRuns(
+                in: ownedRange,
+                from: textView.layoutManager
             ),
             selectedRange: committed.selectedRange
         )
@@ -205,6 +220,11 @@ final class DictationEditorTransaction: DictationEditorTransacting {
         textView.setSelectedRange(NSRange(location: NSMaxRange(ownedRange), length: 0))
 
         if shouldUnderline, ownedRange.length > 0 {
+            replacedUnderlineRuns = Self.temporaryAttributeRuns(
+                in: ownedRange,
+                from: textView.layoutManager,
+                including: [.underlineStyle]
+            )
             textView.layoutManager?.addTemporaryAttribute(
                 .underlineStyle,
                 value: NSUnderlineStyle.single.rawValue,
@@ -218,11 +238,22 @@ final class DictationEditorTransaction: DictationEditorTransacting {
         guard let underlinedRange else {
             return
         }
-        textView.layoutManager?.removeTemporaryAttribute(
-            .underlineStyle,
-            forCharacterRange: underlinedRange
-        )
+        if Self.isValid(
+            underlinedRange,
+            within: (textView.string as NSString).length
+        ), let layoutManager = textView.layoutManager {
+            layoutManager.removeTemporaryAttribute(
+                .underlineStyle,
+                forCharacterRange: underlinedRange
+            )
+            Self.addTemporaryAttributeRuns(
+                replacedUnderlineRuns,
+                in: underlinedRange,
+                to: layoutManager
+            )
+        }
         self.underlinedRange = nil
+        replacedUnderlineRuns = []
     }
 
     private func restoreInteraction(on textView: NSTextView) {
@@ -265,6 +296,77 @@ final class DictationEditorTransaction: DictationEditorTransacting {
             && range.length <= stringLength - range.location
     }
 
+    private static func temporaryAttributeRuns(
+        in range: NSRange,
+        from layoutManager: NSLayoutManager?,
+        including keys: Set<NSAttributedString.Key>? = nil
+    ) -> [TemporaryAttributeRun] {
+        guard range.length > 0,
+              let layoutManager,
+              isValid(range, within: layoutManager.textStorage?.length ?? 0)
+        else {
+            return []
+        }
+
+        var runs: [TemporaryAttributeRun] = []
+        var location = range.location
+        while location < NSMaxRange(range) {
+            var effectiveRange = NSRange()
+            let allAttributes = layoutManager.temporaryAttributes(
+                atCharacterIndex: location,
+                effectiveRange: &effectiveRange
+            )
+            let attributes: [NSAttributedString.Key: Any]
+            if let keys {
+                attributes = allAttributes.filter { keys.contains($0.key) }
+            } else {
+                attributes = allAttributes
+            }
+            let intersection = NSIntersectionRange(effectiveRange, range)
+            if !attributes.isEmpty, intersection.length > 0 {
+                runs.append(TemporaryAttributeRun(
+                    range: NSRange(
+                        location: intersection.location - range.location,
+                        length: intersection.length
+                    ),
+                    attributes: attributes
+                ))
+            }
+            location = max(NSMaxRange(effectiveRange), location + 1)
+        }
+        return runs
+    }
+
+    private static func restoreTemporaryAttributeRuns(
+        _ runs: [TemporaryAttributeRun],
+        in range: NSRange,
+        to layoutManager: NSLayoutManager
+    ) {
+        guard range.length > 0,
+              isValid(range, within: layoutManager.textStorage?.length ?? 0)
+        else {
+            return
+        }
+        layoutManager.setTemporaryAttributes([:], forCharacterRange: range)
+        addTemporaryAttributeRuns(runs, in: range, to: layoutManager)
+    }
+
+    private static func addTemporaryAttributeRuns(
+        _ runs: [TemporaryAttributeRun],
+        in range: NSRange,
+        to layoutManager: NSLayoutManager
+    ) {
+        for run in runs where isValid(run.range, within: range.length) {
+            layoutManager.addTemporaryAttributes(
+                run.attributes,
+                forCharacterRange: NSRange(
+                    location: range.location + run.range.location,
+                    length: run.range.length
+                )
+            )
+        }
+    }
+
     @discardableResult
     private static func apply(
         replacing currentRange: NSRange,
@@ -285,6 +387,17 @@ final class DictationEditorTransaction: DictationEditorTransacting {
                 with: replacement.fragment
             )
             textStorage.endEditing()
+            let replacementRange = NSRange(
+                location: currentRange.location,
+                length: replacement.fragment.length
+            )
+            if let layoutManager = textView.layoutManager {
+                restoreTemporaryAttributeRuns(
+                    replacement.temporaryAttributeRuns,
+                    in: replacementRange,
+                    to: layoutManager
+                )
+            }
             textView.setSelectedRange(replacement.selectedRange)
         }
         return true
