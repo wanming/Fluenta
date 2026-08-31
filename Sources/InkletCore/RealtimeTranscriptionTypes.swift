@@ -31,12 +31,8 @@ public enum RealtimeTranscriptionError: Error, Equatable, LocalizedError, Sendab
             "The transcription message is invalid."
         case .invalidState:
             "The transcription client is in an invalid state."
-        case let .server(code, message):
-            if let code {
-                "The transcription server returned \(code): \(message)"
-            } else {
-                "The transcription server returned an error: \(message)"
-            }
+        case .server:
+            "The transcription server returned an error."
         }
     }
 }

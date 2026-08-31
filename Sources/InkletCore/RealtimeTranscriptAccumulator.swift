@@ -60,6 +60,7 @@ public struct RealtimeTranscriptAccumulator: Equatable, Sendable {
             transcript.append(text)
             return .provisional(transcript)
         case let .completed(_, _, _, _, authoritativeTranscript):
+            transcript = authoritativeTranscript
             isComplete = true
             return .final(authoritativeTranscript)
         }

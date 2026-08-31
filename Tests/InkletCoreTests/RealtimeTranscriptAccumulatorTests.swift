@@ -117,4 +117,33 @@ final class RealtimeTranscriptAccumulatorTests: XCTestCase {
             eventID: "next", sequence: 3, itemID: "item", contentIndex: 0, text: " next"
         )), .provisional("startaccepted next"))
     }
+
+    func testCompletedTranscriptIsStoredInAccumulatorEquality() {
+        var first = RealtimeTranscriptAccumulator()
+        var second = RealtimeTranscriptAccumulator()
+
+        _ = first.accept(.completed(
+            eventID: "done", sequence: 1, itemID: "item", contentIndex: 0, transcript: "first final"
+        ))
+        _ = second.accept(.completed(
+            eventID: "done", sequence: 1, itemID: "item", contentIndex: 0, transcript: "second final"
+        ))
+
+        XCTAssertNotEqual(first, second)
+    }
+
+    func testRejectedSequenceDoesNotConsumeEventID() {
+        var accumulator = RealtimeTranscriptAccumulator()
+
+        _ = accumulator.accept(.delta(
+            eventID: "first", sequence: 2, itemID: "item", contentIndex: 0, text: "start"
+        ))
+        XCTAssertEqual(accumulator.accept(.delta(
+            eventID: "reusable", sequence: 1, itemID: "item", contentIndex: 0, text: "rejected"
+        )), .ignored)
+
+        XCTAssertEqual(accumulator.accept(.delta(
+            eventID: "reusable", sequence: 3, itemID: "item", contentIndex: 0, text: "accepted"
+        )), .provisional("startaccepted"))
+    }
 }
