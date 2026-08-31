@@ -74,6 +74,11 @@ final class UpdateCheckCoordinator {
         let task: Task<Void, Never>
     }
 
+    private struct PendingAutomaticUpdate {
+        let id = UUID()
+        let release: InkletRelease
+    }
+
     private enum Outcome {
         case success(AppUpdateCheckResult)
         case failure
@@ -94,7 +99,7 @@ final class UpdateCheckCoordinator {
     private var isStarted = false
     private var lifecycleGeneration: UInt64 = 0
     private var activeRequest: ActiveRequest?
-    private var pendingAutomaticUpdate: InkletRelease?
+    private var pendingAutomaticUpdate: PendingAutomaticUpdate?
 
     init(
         automaticChecksEnabled: Bool,
@@ -155,14 +160,24 @@ final class UpdateCheckCoordinator {
     func presentPendingAutomaticUpdateIfPossible() {
         guard isStarted,
               activeRequest == nil,
-              let release = pendingAutomaticUpdate,
-              canPresentAutomatically()
+              let pendingUpdate = pendingAutomaticUpdate
+        else {
+            return
+        }
+
+        let generation = lifecycleGeneration
+        let canPresent = canPresentAutomatically()
+        guard canPresent,
+              isStarted,
+              lifecycleGeneration == generation,
+              activeRequest == nil,
+              pendingAutomaticUpdate?.id == pendingUpdate.id
         else {
             return
         }
 
         pendingAutomaticUpdate = nil
-        presenter.presentUpdate(release, currentVersion: currentVersion)
+        presenter.presentUpdate(pendingUpdate.release, currentVersion: currentVersion)
     }
 
     private func scheduleAutomaticIntent(after delay: TimeInterval) {
@@ -225,7 +240,7 @@ final class UpdateCheckCoordinator {
         if request.intents.contains(.manual) {
             presentManualOutcome(outcome, generation: generation)
         } else {
-            presentAutomaticOutcome(outcome)
+            presentAutomaticOutcome(outcome, generation: generation)
         }
     }
 
@@ -250,14 +265,24 @@ final class UpdateCheckCoordinator {
         }
     }
 
-    private func presentAutomaticOutcome(_ outcome: Outcome) {
+    private func presentAutomaticOutcome(_ outcome: Outcome, generation: UInt64) {
         switch outcome {
         case let .success(.updateAvailable(release)):
-            if canPresentAutomatically() {
+            let pendingUpdateID = pendingAutomaticUpdate?.id
+            let canPresent = canPresentAutomatically()
+            guard isStarted,
+                  lifecycleGeneration == generation,
+                  activeRequest == nil,
+                  pendingAutomaticUpdate?.id == pendingUpdateID
+            else {
+                return
+            }
+
+            if canPresent {
                 pendingAutomaticUpdate = nil
                 presenter.presentUpdate(release, currentVersion: currentVersion)
             } else {
-                pendingAutomaticUpdate = release
+                pendingAutomaticUpdate = PendingAutomaticUpdate(release: release)
             }
         case .success(.upToDate):
             pendingAutomaticUpdate = nil
