@@ -17,11 +17,13 @@ final class InkletPopoverViewModel: ObservableObject {
     @Published var preferredPopoverHeight: CGFloat = 168
     @Published var appearance: AppAppearance
     @Published var voiceShortcutHint: VoiceInputConfig.Shortcut?
+    @Published private(set) var dictationPhase: WritingDictationCoordinator.Phase = .idle
 
     var onHidePopover: (() -> Void)?
     var onFocusPopover: (() -> Void)?
     var onFocusSourceInput: ((FocusRequestGeneration.Request) -> Void)?
     var onOpenSettings: (() -> Void)?
+    var onCancelDictation: (() -> Void)?
 
     var route: WritingPopoverSessionState.Route {
         popoverSession.route
@@ -51,6 +53,54 @@ final class InkletPopoverViewModel: ObservableObject {
         config.model
     }
 
+    var currentVoiceInputConfig: VoiceInputConfig {
+        config.voiceInput
+    }
+
+    var shouldShowDictationStatus: Bool {
+        voiceShortcutHint != nil || dictationPhase.isActive
+    }
+
+    var dictationStatusText: String {
+        switch dictationPhase {
+        case .connecting:
+            L10n.text("dictation.status.connecting")
+        case .listening:
+            L10n.text("dictation.status.listening")
+        case .recordingForFallback:
+            L10n.text("dictation.status.recordingFallback")
+        case .finalizing:
+            L10n.text("dictation.status.finalizing")
+        case .recovering:
+            L10n.text("dictation.status.recovering")
+        case .idle, .complete, .failed:
+            L10n.format("dictation.hint.hold", voiceShortcutHint?.localizedName ?? "")
+        }
+    }
+
+    var dictationStatusAccessibilityLabel: String {
+        switch dictationPhase {
+        case .listening:
+            L10n.text("dictation.accessibility.listening")
+        case .recordingForFallback:
+            L10n.text("dictation.accessibility.recordingFallback")
+        case .connecting, .finalizing, .recovering:
+            dictationStatusText
+        case .idle, .complete, .failed:
+            L10n.text("dictation.accessibility.ready")
+        }
+    }
+
+    private struct SourceDictationPresentationSnapshot {
+        let sourceText: String
+        let resultText: String
+        let errorMessage: String?
+        let popoverSession: WritingPopoverSessionState
+        let stateMachineState: PopoverStateMachine.State
+        let draftSourceText: String
+        let hasTransformedInSession: Bool
+    }
+
     private var stateMachine: PopoverStateMachine
     private let configStore: UserDefaultsConfigStore
     private let apiKeyStore: LocalAPIKeyStore
@@ -66,6 +116,7 @@ final class InkletPopoverViewModel: ObservableObject {
     private var draftSourceText = ""
     private var hasTransformedInSession = false
     private var sourceFocusGeneration = FocusRequestGeneration()
+    private var sourceDictationPresentationSnapshot: SourceDictationPresentationSnapshot?
 
     init(
         stateMachine: PopoverStateMachine = PopoverStateMachine(),
@@ -131,6 +182,8 @@ final class InkletPopoverViewModel: ObservableObject {
         isTransforming = false
         isInserting = false
         hasTransformedInSession = false
+        sourceDictationPresentationSnapshot = nil
+        dictationPhase = .idle
         preferredPopoverHeight = WritingModePickerView.preferredHeight(
             resultCount: modePickerState.filteredItems.count
         )
@@ -142,7 +195,7 @@ final class InkletPopoverViewModel: ObservableObject {
     }
 
     var isBusy: Bool {
-        isTransforming || isInserting
+        isTransforming || isInserting || dictationPhase.isActive
     }
 
     func cancelForMigrationMaintenance() {
@@ -156,15 +209,76 @@ final class InkletPopoverViewModel: ObservableObject {
     }
 
     private func refreshVoiceShortcutHint() {
-        let openAIAPIKey = apiKeyStore.loadAPIKey(forProviderID: LLMProviderPreset.openAI.id)
-        voiceShortcutHint = OnboardingPolicy.shouldShowVoiceShortcutHint(
-            openAIAPIKey: openAIAPIKey,
-            shortcut: config.voiceInput.shortcut
-        ) ? config.voiceInput.shortcut : nil
+        let shortcut = config.voiceInput.shortcut
+        voiceShortcutHint = shortcut == .disabled ? nil : shortcut
+    }
+
+    func beginSourceDictationPresentation() -> Bool {
+        guard route == .editor,
+              !isBusy,
+              sourceDictationPresentationSnapshot == nil
+        else {
+            return false
+        }
+
+        sourceDictationPresentationSnapshot = SourceDictationPresentationSnapshot(
+            sourceText: sourceText,
+            resultText: resultText,
+            errorMessage: errorMessage,
+            popoverSession: popoverSession,
+            stateMachineState: stateMachine.state,
+            draftSourceText: draftSourceText,
+            hasTransformedInSession: hasTransformedInSession
+        )
+        errorMessage = nil
+        return true
+    }
+
+    func synchronizeSourceTextDuringDictation(_ text: String) {
+        guard sourceDictationPresentationSnapshot != nil else {
+            return
+        }
+        sourceText = text
+    }
+
+    func commitSourceDictationPresentation() {
+        guard sourceDictationPresentationSnapshot != nil else {
+            return
+        }
+        sourceDictationPresentationSnapshot = nil
+        resultText = ""
+        errorMessage = nil
+        mutatePopoverSession { $0.clearResult() }
+        draftSourceText = sourceText
+        hasTransformedInSession = false
+        stateMachine = PopoverStateMachine(
+            state: .editingSource(source: sourceText, errorMessage: nil)
+        )
+    }
+
+    func restoreSourceDictationPresentation() {
+        guard let snapshot = sourceDictationPresentationSnapshot else {
+            return
+        }
+        sourceDictationPresentationSnapshot = nil
+        sourceText = snapshot.sourceText
+        resultText = snapshot.resultText
+        errorMessage = snapshot.errorMessage
+        popoverSession = snapshot.popoverSession
+        stateMachine = PopoverStateMachine(state: snapshot.stateMachineState)
+        draftSourceText = snapshot.draftSourceText
+        hasTransformedInSession = snapshot.hasTransformedInSession
+    }
+
+    func setDictationPhase(_ phase: WritingDictationCoordinator.Phase) {
+        dictationPhase = phase
+        if case .failed(let errorKey) = phase {
+            errorMessage = L10n.text(errorKey)
+        }
     }
 
     func updateSourceText(_ text: String) {
-        guard !isTransforming, !isInserting else {
+        guard !isBusy else {
             return
         }
 
@@ -178,7 +292,7 @@ final class InkletPopoverViewModel: ObservableObject {
     }
 
     func updateResultText(_ text: String) {
-        guard !isTransforming, !isInserting else {
+        guard !isBusy else {
             return
         }
 
@@ -215,7 +329,7 @@ final class InkletPopoverViewModel: ObservableObject {
     }
 
     func commitMode(modeID: String) {
-        guard !isTransforming, !isInserting,
+        guard !isBusy,
               modes.contains(where: { $0.id == modeID })
         else {
             return
@@ -227,7 +341,7 @@ final class InkletPopoverViewModel: ObservableObject {
     }
 
     func returnToModePicker() {
-        guard !isTransforming, !isInserting else {
+        guard !isBusy else {
             return
         }
 
@@ -251,7 +365,7 @@ final class InkletPopoverViewModel: ObservableObject {
     }
 
     func submit() {
-        guard !isTransforming, !isInserting else {
+        guard !isBusy else {
             return
         }
 
@@ -301,7 +415,7 @@ final class InkletPopoverViewModel: ObservableObject {
     }
 
     func insertOriginal() {
-        guard !isTransforming, !isInserting else {
+        guard !isBusy else {
             return
         }
 
@@ -329,6 +443,11 @@ final class InkletPopoverViewModel: ObservableObject {
     }
 
     func escape() {
+        if dictationPhase.isActive {
+            onCancelDictation?()
+            return
+        }
+
         if isTransforming {
             cancelTransformationAndStayInEditor()
             return
@@ -359,6 +478,9 @@ final class InkletPopoverViewModel: ObservableObject {
     }
 
     func openSettings() {
+        guard !isBusy else {
+            return
+        }
         onHidePopover?()
         onOpenSettings?()
     }
@@ -674,10 +796,19 @@ private extension Error {
 
 struct InkletPopoverView: View {
     @ObservedObject var model: InkletPopoverViewModel
+    private let onResolveSourceTextView: (NSTextView?) -> Void
     @FocusState private var isSourceFocused: Bool
     @FocusState private var isResultFocused: Bool
     @State private var sourceMeasuredHeight: CGFloat = 0
     @State private var resultMeasuredHeight: CGFloat = 0
+
+    init(
+        model: InkletPopoverViewModel,
+        onResolveSourceTextView: @escaping (NSTextView?) -> Void = { _ in }
+    ) {
+        self.model = model
+        self.onResolveSourceTextView = onResolveSourceTextView
+    }
 
     private let minEditorRows: CGFloat = 2
     private let maxSourceEditorRows: CGFloat = 7
@@ -691,7 +822,7 @@ struct InkletPopoverView: View {
     private let statusHeight: CGFloat = 34
     private let staleResultBannerHeight: CGFloat = 24
     private var isBusy: Bool {
-        model.isTransforming || model.isInserting
+        model.isBusy
     }
 
     private var selectedMode: PromptMode? {
@@ -827,7 +958,8 @@ struct InkletPopoverView: View {
                 isEditable: !isBusy,
                 onSubmit: { model.submit() },
                 onInsertOriginal: { model.insertOriginal() },
-                onEscape: { model.escape() }
+                onEscape: { model.escape() },
+                onResolveTextView: onResolveSourceTextView
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.horizontal, 16)
@@ -873,7 +1005,8 @@ struct InkletPopoverView: View {
                         isEditable: !isBusy,
                         onSubmit: { model.submit() },
                         onInsertOriginal: { model.insertOriginal() },
-                        onEscape: { model.escape() }
+                        onEscape: { model.escape() },
+                        onResolveTextView: nil
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.horizontal, 16)
@@ -970,7 +1103,7 @@ struct InkletPopoverView: View {
 
     private var actionBar: some View {
         HStack(alignment: .center, spacing: 3) {
-            if isBusy {
+            if model.isTransforming || model.isInserting {
                 loadingIndicator
             } else {
                 shortcutHint(keys: ["↵"], label: primaryActionTitle, primary: !model.sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.resultText.isEmpty) {
@@ -988,8 +1121,8 @@ struct InkletPopoverView: View {
 
                 Spacer()
 
-                if let voiceShortcutHint = model.voiceShortcutHint {
-                    voiceHint(shortcut: voiceShortcutHint)
+                if model.shouldShowDictationStatus {
+                    dictationStatus
                 }
 
                 shortcutHint(keys: ["esc"], label: L10n.text("popover.hint.back")) {
@@ -1003,18 +1136,32 @@ struct InkletPopoverView: View {
         .accessibilityLabel(L10n.text("popover.hint.accessibility"))
     }
 
-    private func voiceHint(shortcut: VoiceInputConfig.Shortcut) -> some View {
-        HStack(spacing: 2) {
-            Image(systemName: "mic")
-                .font(.system(size: 8))
-            Keycap(title: shortcut.localizedName, compact: true)
-            Text(L10n.text("popover.hint.voice"))
+    private var dictationStatus: some View {
+        HStack(spacing: 3) {
+            Group {
+                switch model.dictationPhase {
+                case .connecting, .finalizing, .recovering:
+                    ProgressView()
+                        .controlSize(.mini)
+                case .listening:
+                    Image(systemName: "waveform")
+                case .recordingForFallback:
+                    Image(systemName: "mic.badge.plus")
+                case .idle, .complete, .failed:
+                    Image(systemName: "mic")
+                }
+            }
+            .font(.system(size: 8))
+            .frame(width: 16, height: 16)
+
+            Text(model.dictationStatusText)
                 .font(.system(size: 8))
                 .lineLimit(1)
         }
         .foregroundStyle(InkletTheme.textSecondary.opacity(0.78))
         .padding(.horizontal, 2)
-        .accessibilityLabel("\(L10n.text("settings.quickStart.voice")): \(shortcut.localizedName)")
+        .help(model.dictationStatusAccessibilityLabel)
+        .accessibilityLabel(model.dictationStatusAccessibilityLabel)
     }
 
     private var loadingIndicator: some View {
@@ -1230,13 +1377,15 @@ private struct InkletTextView: NSViewRepresentable {
     var onSubmit: (() -> Void)?
     var onInsertOriginal: (() -> Void)?
     var onEscape: (() -> Void)?
+    var onResolveTextView: ((NSTextView?) -> Void)?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             text: $text,
             onSubmit: onSubmit,
             onInsertOriginal: onInsertOriginal,
-            onEscape: onEscape
+            onEscape: onEscape,
+            onResolveTextView: onResolveTextView
         )
     }
 
@@ -1290,6 +1439,7 @@ private struct InkletTextView: NSViewRepresentable {
 
         scrollView.documentView = textView
         context.coordinator.textView = textView
+        onResolveTextView?(textView)
         container.placeholderLabel.stringValue = placeholder ?? ""
         container.updatePlaceholderVisibility()
         return container
@@ -1305,7 +1455,9 @@ private struct InkletTextView: NSViewRepresentable {
         context.coordinator.onSubmit = onSubmit
         context.coordinator.onInsertOriginal = onInsertOriginal
         context.coordinator.onEscape = onEscape
+        context.coordinator.onResolveTextView = onResolveTextView
         context.coordinator.textView = textView
+        onResolveTextView?(textView)
 
         textView.isEditable = isEditable
         textView.font = .systemFont(ofSize: 14)
@@ -1313,10 +1465,18 @@ private struct InkletTextView: NSViewRepresentable {
         textView.insertionPointColor = .controlAccentColor
         container.placeholderLabel.stringValue = placeholder ?? ""
 
-        if !textView.hasMarkedText(), textView.string != text {
+        if textView.isEditable, !textView.hasMarkedText(), textView.string != text {
             textView.string = text
         }
         container.updatePlaceholderVisibility()
+    }
+
+    static func dismantleNSView(
+        _ container: InkletTextContainerView,
+        coordinator: Coordinator
+    ) {
+        coordinator.onResolveTextView?(nil)
+        coordinator.textView = nil
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate, @unchecked Sendable {
@@ -1324,18 +1484,21 @@ private struct InkletTextView: NSViewRepresentable {
         var onSubmit: (() -> Void)?
         var onInsertOriginal: (() -> Void)?
         var onEscape: (() -> Void)?
+        var onResolveTextView: ((NSTextView?) -> Void)?
         weak var textView: NSTextView?
 
         init(
             text: Binding<String>,
             onSubmit: (() -> Void)?,
             onInsertOriginal: (() -> Void)?,
-            onEscape: (() -> Void)?
+            onEscape: (() -> Void)?,
+            onResolveTextView: ((NSTextView?) -> Void)?
         ) {
             self.text = text
             self.onSubmit = onSubmit
             self.onInsertOriginal = onInsertOriginal
             self.onEscape = onEscape
+            self.onResolveTextView = onResolveTextView
             super.init()
         }
 

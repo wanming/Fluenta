@@ -59,6 +59,79 @@ final class WritingModeLauncherSourceTests: XCTestCase {
         XCTAssertTrue(makeNSViewBlock.contains("coordinator?.onEscape?()"))
     }
 
+    func testOnlySourceEditorRegistersTheResolvedNativeTextView() throws {
+        let source = try popoverSource()
+        let commandStart = try XCTUnwrap(source.range(of: "private var commandInput"))
+        let resultStart = try XCTUnwrap(source.range(
+            of: "private var resultPanel",
+            range: commandStart.upperBound..<source.endIndex
+        ))
+        let statusStart = try XCTUnwrap(source.range(
+            of: "private var statusStrip",
+            range: resultStart.upperBound..<source.endIndex
+        ))
+        let commandBlock = source[commandStart.lowerBound..<resultStart.lowerBound]
+        let resultBlock = source[resultStart.lowerBound..<statusStart.lowerBound]
+
+        XCTAssertTrue(commandBlock.contains("onResolveTextView:"))
+        XCTAssertTrue(commandBlock.contains("onResolveTextView: onResolveSourceTextView"))
+        XCTAssertTrue(resultBlock.contains("onResolveTextView: nil"))
+        XCTAssertFalse(resultBlock.contains("onResolveSourceTextView"))
+    }
+
+    func testNativeTextViewResolutionTracksMakeUpdateAndDismantle() throws {
+        let source = try popoverSource()
+        let representableStart = try XCTUnwrap(source.range(of: "private struct InkletTextView"))
+        let handlerStart = try XCTUnwrap(source.range(
+            of: "private struct PopoverKeyEventHandler",
+            range: representableStart.upperBound..<source.endIndex
+        ))
+        let representable = source[representableStart.lowerBound..<handlerStart.lowerBound]
+
+        XCTAssertTrue(representable.contains("var onResolveTextView: ((NSTextView?) -> Void)?"))
+        XCTAssertTrue(representable.contains("onResolveTextView?(textView)"))
+        XCTAssertTrue(representable.contains("onResolveTextView?(nil)"))
+        XCTAssertTrue(representable.contains("static func dismantleNSView"))
+    }
+
+    func testWholeStringSynchronizationDoesNotOverwriteLockedTransactionEditor() throws {
+        let source = try popoverSource()
+        let updateStart = try XCTUnwrap(source.range(of: "func updateNSView(_ container: InkletTextContainerView"))
+        let coordinatorStart = try XCTUnwrap(source.range(
+            of: "final class Coordinator",
+            range: updateStart.upperBound..<source.endIndex
+        ))
+        let updateBlock = source[updateStart.lowerBound..<coordinatorStart.lowerBound]
+
+        XCTAssertTrue(updateBlock.contains("textView.isEditable"))
+        XCTAssertTrue(updateBlock.contains("!textView.hasMarkedText()"))
+        XCTAssertTrue(updateBlock.contains("textView.string != text"))
+        XCTAssertTrue(updateBlock.contains("textView.string = text"))
+    }
+
+    func testActionBarUsesFixedDictationStatusSlotWithoutChangingPopoverHeight() throws {
+        let source = try popoverSource()
+        let actionStart = try XCTUnwrap(source.range(of: "private var actionBar"))
+        let shortcutStart = try XCTUnwrap(source.range(
+            of: "private func shortcutHint",
+            range: actionStart.upperBound..<source.endIndex
+        ))
+        let actionBlock = source[actionStart.lowerBound..<shortcutStart.lowerBound]
+
+        XCTAssertTrue(actionBlock.contains("model.shouldShowDictationStatus"))
+        XCTAssertTrue(actionBlock.contains("dictationStatus"))
+        XCTAssertTrue(actionBlock.contains("case .connecting, .finalizing, .recovering:"))
+        XCTAssertTrue(actionBlock.contains("ProgressView()"))
+        XCTAssertTrue(actionBlock.contains("case .listening:"))
+        XCTAssertTrue(actionBlock.contains("waveform"))
+        XCTAssertTrue(actionBlock.contains("case .recordingForFallback:"))
+        XCTAssertTrue(actionBlock.contains("mic.badge"))
+        XCTAssertTrue(actionBlock.contains("case .idle, .complete, .failed:"))
+        XCTAssertTrue(actionBlock.contains(".frame(width: 16, height: 16)"))
+        XCTAssertFalse(actionBlock.contains("preferredPopoverHeight"))
+        XCTAssertFalse(actionBlock.contains("actionBarHeight +"))
+    }
+
     func testPickerSearchFieldAlignsNativeTextEditingWithPlaceholder() throws {
         let source = try pickerSource()
         let cellStart = try XCTUnwrap(source.range(
@@ -502,11 +575,11 @@ final class WritingModeLauncherSourceTests: XCTestCase {
     func testEditorEscapeHintAlwaysDescribesBackNavigation() throws {
         let source = try popoverSource()
         let actionBarStart = try XCTUnwrap(source.range(of: "private var actionBar"))
-        let voiceHintStart = try XCTUnwrap(source.range(
-            of: "private func voiceHint",
+        let dictationStatusStart = try XCTUnwrap(source.range(
+            of: "private var dictationStatus",
             range: actionBarStart.upperBound..<source.endIndex
         ))
-        let actionBar = source[actionBarStart.lowerBound..<voiceHintStart.lowerBound]
+        let actionBar = source[actionBarStart.lowerBound..<dictationStatusStart.lowerBound]
 
         XCTAssertTrue(actionBar.contains(
             "shortcutHint(keys: [\"esc\"], label: L10n.text(\"popover.hint.back\"))"

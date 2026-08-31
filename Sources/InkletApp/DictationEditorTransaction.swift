@@ -26,6 +26,93 @@ enum DictationEditorTransactionError: Error, Equatable {
 }
 
 @MainActor
+final class WritingSourceEditorBridge {
+    typealias TransactionFactory = @MainActor (
+        _ textView: NSTextView,
+        _ synchronizeProvisional: @escaping (String) -> Void,
+        _ commitSourceChange: @escaping (String) -> Void,
+        _ restoreModelSnapshot: @escaping () -> Void
+    ) -> (any DictationEditorTransacting)?
+
+    private weak var sourceTextView: NSTextView?
+    private let transactionFactory: TransactionFactory
+
+    var attachedTextView: NSTextView? {
+        sourceTextView
+    }
+
+    init(
+        transactionFactory: @escaping TransactionFactory = { textView, synchronize, commit, restore in
+            DictationEditorTransaction(
+                textView: textView,
+                synchronizeProvisional: synchronize,
+                commitSourceChange: commit,
+                restoreModelSnapshot: restore
+            )
+        }
+    ) {
+        self.transactionFactory = transactionFactory
+    }
+
+    func attach(_ textView: NSTextView) {
+        sourceTextView = textView
+    }
+
+    func detach(_ textView: NSTextView? = nil) {
+        guard textView == nil || sourceTextView === textView else {
+            return
+        }
+        sourceTextView = nil
+    }
+
+    func isEligible(
+        in window: NSWindow,
+        model: InkletPopoverViewModel
+    ) -> Bool {
+        guard let sourceTextView else {
+            return false
+        }
+
+        return window.isKeyWindow
+            && sourceTextView.window === window
+            && window.firstResponder === sourceTextView
+            && model.route == .editor
+            && !model.isBusy
+            && !sourceTextView.hasMarkedText()
+    }
+
+    func beginTransaction(
+        model: InkletPopoverViewModel
+    ) -> (any DictationEditorTransacting)? {
+        guard let sourceTextView,
+              let window = sourceTextView.window,
+              isEligible(in: window, model: model),
+              model.beginSourceDictationPresentation()
+        else {
+            return nil
+        }
+
+        let transaction = transactionFactory(
+            sourceTextView,
+            { [weak model] source in
+                model?.synchronizeSourceTextDuringDictation(source)
+            },
+            { [weak model] _ in
+                model?.commitSourceDictationPresentation()
+            },
+            { [weak model] in
+                model?.restoreSourceDictationPresentation()
+            }
+        )
+        guard let transaction else {
+            model.restoreSourceDictationPresentation()
+            return nil
+        }
+        return transaction
+    }
+}
+
+@MainActor
 final class DictationEditorTransaction: DictationEditorTransacting {
     struct Snapshot: Equatable {
         let string: String
