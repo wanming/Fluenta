@@ -290,7 +290,7 @@ final class UpdateCheckCoordinator {
         case .success(.upToDate):
             pendingAutomaticUpdate = nil
         case .failure:
-            break
+            presentPendingAutomaticUpdateIfPossible()
         }
     }
 

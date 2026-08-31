@@ -631,6 +631,34 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
         XCTAssertEqual(fixture.presenter.events, [.update(2, "1.0.0")])
     }
 
+    func testAutomaticFailureFlushesDeferredUpdateWhenGateBecomesAvailableMidCheck() async {
+        let fixture = makeFixture(automaticChecksEnabled: true)
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        fixture.gate.value = false
+        await completeAutomaticCheck(
+            fixture,
+            result: .success(.updateAvailable(makeRelease(buildNumber: 2))),
+            callIndex: 0,
+            startCoordinator: true
+        )
+
+        fixture.clock.date = fixture.clock.date.addingTimeInterval(UpdateCheckSchedulePolicy.interval)
+        let secondStart = fixture.checker.expectStart(description: "second automatic check starts")
+        let secondFinished = expectation(description: "second automatic check finishes")
+        fixture.coordinator.onCheckingStateChange = { if !$0 { secondFinished.fulfill() } }
+        fixture.scheduler.fire()
+        await fulfillment(of: [secondStart], timeout: 1)
+
+        fixture.gate.value = true
+        fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
+        XCTAssertTrue(fixture.presenter.events.isEmpty)
+
+        fixture.checker.fail(TestError.failed, at: 1)
+        await fulfillment(of: [secondFinished], timeout: 1)
+
+        XCTAssertEqual(fixture.presenter.events, [.update(2, "1.0.0")])
+    }
+
     func testManualFailureRetainsPreviouslyDeferredUpdate() async {
         let fixture = makeFixture(automaticChecksEnabled: true)
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
