@@ -98,6 +98,7 @@ final class WritingDictationShortcutMonitor {
         onCancel: @escaping @MainActor () -> Void
     ) {
         resetInteraction(cancelActiveHold: true)
+        modifierPressTracker.resetForLifecycleBoundary()
         isEditorContextActive = false
         isAwaitingFreshRelease = false
         self.shortcut = shortcut
@@ -130,7 +131,7 @@ final class WritingDictationShortcutMonitor {
 
     func activateEditorContext(modifierAlreadyDown: Bool) {
         resetInteraction(cancelActiveHold: true)
-        modifierPressTracker = VoiceShortcutModifierPressTracker()
+        modifierPressTracker.resetForLifecycleBoundary()
         isEditorContextActive = true
         isAwaitingFreshRelease = modifierAlreadyDown
     }
@@ -164,7 +165,7 @@ final class WritingDictationShortcutMonitor {
         if isAwaitingFreshRelease {
             guard !isConfiguredKeyDown else { return }
             isAwaitingFreshRelease = false
-            modifierPressTracker = VoiceShortcutModifierPressTracker()
+            modifierPressTracker.resetForLifecycleBoundary()
             return
         }
 

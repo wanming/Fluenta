@@ -42,7 +42,14 @@ public struct VoiceShortcutModifierPressTracker: Equatable, Sendable {
     public mutating func reset() {
         if let activeKeyCode {
             ignoredReleaseKeyCode = activeKeyCode
+        } else {
+            ignoredReleaseKeyCode = nil
         }
         activeKeyCode = nil
+    }
+
+    public mutating func resetForLifecycleBoundary() {
+        activeKeyCode = nil
+        ignoredReleaseKeyCode = nil
     }
 }

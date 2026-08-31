@@ -271,13 +271,41 @@ final class WritingDictationShortcutMonitorTests: XCTestCase {
         subject?.stop()
         XCTAssertEqual(eventMonitors.removeCount, 1)
 
+        let detachedOwnsReference = AsyncTestGate()
+        let releaseDetachedReference = AsyncTestGate()
         let releaseTask = Task.detached { [subject] in
+            await detachedOwnsReference.open()
+            await releaseDetachedReference.wait()
             withExtendedLifetime(subject) {}
         }
+        await detachedOwnsReference.wait()
         subject = nil
+        XCTAssertNotNil(weakSubject)
+
+        await releaseDetachedReference.open()
         await releaseTask.value
 
         XCTAssertNil(weakSubject)
+    }
+}
+
+private actor AsyncTestGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func open() {
+        guard !isOpen else { return }
+        isOpen = true
+        let waiters = waiters
+        self.waiters.removeAll()
+        waiters.forEach { $0.resume() }
     }
 }
 
