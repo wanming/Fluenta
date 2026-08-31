@@ -3,22 +3,33 @@ import InkletCore
 
 @MainActor
 final class UpdateCheckAlertPresenter: UpdateCheckPresenting {
+    enum AlertStyle: Equatable {
+        case informational
+        case warning
+    }
+
     struct AlertContent: Equatable {
         let messageText: String
         let informativeText: String
         let primaryButtonTitle: String
         let secondaryButtonTitle: String?
+        let alertStyle: AlertStyle
     }
 
     private let alertRunner: @MainActor (AlertContent) -> NSApplication.ModalResponse
     private let urlOpener: @MainActor (URL) -> Void
+    private let applicationActivator: @MainActor () -> Void
 
     init(
         alertRunner: @escaping @MainActor (AlertContent) -> NSApplication.ModalResponse = defaultAlertRunner,
-        urlOpener: @escaping @MainActor (URL) -> Void = { NSWorkspace.shared.open($0) }
+        urlOpener: @escaping @MainActor (URL) -> Void = { NSWorkspace.shared.open($0) },
+        applicationActivator: @escaping @MainActor () -> Void = {
+            NSApp.activate(ignoringOtherApps: true)
+        }
     ) {
         self.alertRunner = alertRunner
         self.urlOpener = urlOpener
+        self.applicationActivator = applicationActivator
     }
 
     func presentUpdate(_ release: InkletRelease, currentVersion: String) {
@@ -26,7 +37,7 @@ final class UpdateCheckAlertPresenter: UpdateCheckPresenting {
             L10n.format(
                 "update.available.latestVersion",
                 release.version.marketingVersion,
-                release.version.buildNumber
+                String(release.version.buildNumber)
             ),
             L10n.format("update.available.currentVersion", currentVersion),
         ]
@@ -39,49 +50,55 @@ final class UpdateCheckAlertPresenter: UpdateCheckPresenting {
                 ?? L10n.text("update.available.noNotes")
         )
 
-        let response = alertRunner(
-            AlertContent(
-                messageText: L10n.text("update.available.title"),
-                informativeText: components.joined(separator: "\n\n"),
-                primaryButtonTitle: L10n.text("update.action.viewOnGitHub"),
-                secondaryButtonTitle: L10n.text("update.action.later")
-            )
+        let content = AlertContent(
+            messageText: L10n.text("update.available.title"),
+            informativeText: components.joined(separator: "\n\n"),
+            primaryButtonTitle: L10n.text("update.action.viewOnGitHub"),
+            secondaryButtonTitle: L10n.text("update.action.later"),
+            alertStyle: .informational
         )
+        applicationActivator()
+        let response = alertRunner(content)
         if response == .alertFirstButtonReturn {
             urlOpener(release.pageURL)
         }
     }
 
     func presentUpToDate(currentVersion: String) {
-        _ = alertRunner(
-            AlertContent(
-                messageText: L10n.text("update.upToDate.title"),
-                informativeText: L10n.format("update.upToDate.message", currentVersion),
-                primaryButtonTitle: L10n.text("update.action.cancel"),
-                secondaryButtonTitle: nil
-            )
+        let content = AlertContent(
+            messageText: L10n.text("update.upToDate.title"),
+            informativeText: L10n.format("update.upToDate.message", currentVersion),
+            primaryButtonTitle: L10n.text("update.action.ok"),
+            secondaryButtonTitle: nil,
+            alertStyle: .informational
         )
+        applicationActivator()
+        _ = alertRunner(content)
     }
 
     func presentFailure(retry: @escaping @MainActor () -> Void) {
-        let response = alertRunner(
-            AlertContent(
-                messageText: L10n.text("update.error.title"),
-                informativeText: L10n.text("update.error.message"),
-                primaryButtonTitle: L10n.text("update.action.retry"),
-                secondaryButtonTitle: L10n.text("update.action.cancel")
-            )
+        let content = AlertContent(
+            messageText: L10n.text("update.error.title"),
+            informativeText: L10n.text("update.error.message"),
+            primaryButtonTitle: L10n.text("update.action.retry"),
+            secondaryButtonTitle: L10n.text("update.action.cancel"),
+            alertStyle: .warning
         )
+        applicationActivator()
+        let response = alertRunner(content)
         if response == .alertFirstButtonReturn {
             retry()
         }
     }
 
     private static func defaultAlertRunner(_ content: AlertContent) -> NSApplication.ModalResponse {
-        NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = content.messageText
         alert.informativeText = content.informativeText
+        alert.alertStyle = switch content.alertStyle {
+        case .informational: .informational
+        case .warning: .warning
+        }
         alert.addButton(withTitle: content.primaryButtonTitle)
         if let secondaryButtonTitle = content.secondaryButtonTitle {
             alert.addButton(withTitle: secondaryButtonTitle)

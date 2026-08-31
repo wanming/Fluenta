@@ -6,42 +6,65 @@ import XCTest
 
 @MainActor
 final class UpdateCheckAlertPresenterTests: XCTestCase {
-    nonisolated(unsafe) private var savedLanguage: String?
+    nonisolated(unsafe) private var savedArgumentDomain: [String: Any] = [:]
 
     override func setUp() {
         super.setUp()
-        savedLanguage = UserDefaults.standard.string(forKey: InkletPreferenceKeys.interfaceLanguage)
-        InkletLanguageStore.selectedLanguage = .english
+        savedArgumentDomain = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        var argumentDomain = savedArgumentDomain
+        argumentDomain[InkletPreferenceKeys.interfaceLanguage] = InterfaceLanguage.english.rawValue
+        UserDefaults.standard.setVolatileDomain(argumentDomain, forName: UserDefaults.argumentDomain)
+        NotificationCenter.default.post(name: .inkletLanguageDidChange, object: nil)
     }
 
     override func tearDown() {
-        if let savedLanguage {
-            UserDefaults.standard.set(savedLanguage, forKey: InkletPreferenceKeys.interfaceLanguage)
-        } else {
-            UserDefaults.standard.removeObject(forKey: InkletPreferenceKeys.interfaceLanguage)
-        }
+        UserDefaults.standard.setVolatileDomain(savedArgumentDomain, forName: UserDefaults.argumentDomain)
         NotificationCenter.default.post(name: .inkletLanguageDidChange, object: nil)
         super.tearDown()
     }
 
     func testPresentUpdateAssemblesVersionDescriptionAndNotes() {
+        for releaseName in ["Faster dictation", "Inklet 2.0.0 — Faster dictation"] {
+            let recorder = AlertRecorder(response: .alertSecondButtonReturn)
+            let presenter = makePresenter(recorder: recorder)
+
+            presenter.presentUpdate(
+                release(name: releaseName, notes: "Dictation is now noticeably faster."),
+                currentVersion: "1.2.3 (45)"
+            )
+
+            XCTAssertEqual(recorder.contents, [
+                .init(
+                    messageText: "An Inklet update is available",
+                    informativeText: "Latest: 2.0.0 (build 200)\n\nCurrent: 1.2.3 (45)\n\n\(releaseName)\n\nDictation is now noticeably faster.",
+                    primaryButtonTitle: "View on GitHub",
+                    secondaryButtonTitle: "Later",
+                    alertStyle: .informational
+                ),
+            ])
+            XCTAssertTrue(recorder.openedURLs.isEmpty)
+        }
+    }
+
+    func testPresentUpdatePreservesLargeBuildNumber() {
         let recorder = AlertRecorder(response: .alertSecondButtonReturn)
-        let presenter = makePresenter(recorder: recorder)
+        for buildNumber in [2_147_483_648, Int.max] {
+            let tagName = "v2.0.0-\(buildNumber)"
+            let release = InkletRelease(
+                version: try! InkletReleaseVersion(tagName: tagName),
+                tagName: tagName,
+                name: nil,
+                notes: "Release notes",
+                pageURL: URL(string: "https://github.com/wanming/Inklet/releases/tag/\(tagName)")!
+            )
 
-        presenter.presentUpdate(
-            release(name: "Faster dictation", notes: "Dictation is now noticeably faster."),
-            currentVersion: "1.2.3 (45)"
-        )
+            makePresenter(recorder: recorder).presentUpdate(release, currentVersion: "1.2.3")
 
-        XCTAssertEqual(recorder.contents, [
-            .init(
-                messageText: "An Inklet update is available",
-                informativeText: "Latest: 2.0.0 (build 200)\n\nCurrent: 1.2.3 (45)\n\nFaster dictation\n\nDictation is now noticeably faster.",
-                primaryButtonTitle: "View on GitHub",
-                secondaryButtonTitle: "Later"
-            ),
-        ])
-        XCTAssertTrue(recorder.openedURLs.isEmpty)
+            XCTAssertEqual(
+                recorder.contents.last?.informativeText.components(separatedBy: "\n\n").first,
+                "Latest: 2.0.0 (build \(buildNumber))"
+            )
+        }
     }
 
     func testPresentUpdateOmitsWorkflowReleaseNameAndUsesNoNotesFallback() {
@@ -117,8 +140,9 @@ final class UpdateCheckAlertPresenterTests: XCTestCase {
             .init(
                 messageText: "Inklet is up to date",
                 informativeText: "You’re using 1.2.3 (45).",
-                primaryButtonTitle: "Cancel",
-                secondaryButtonTitle: nil
+                primaryButtonTitle: "OK",
+                secondaryButtonTitle: nil,
+                alertStyle: .informational
             ),
         ])
         XCTAssertTrue(recorder.openedURLs.isEmpty)
@@ -130,42 +154,37 @@ final class UpdateCheckAlertPresenterTests: XCTestCase {
         makePresenter(recorder: retryRecorder).presentFailure { retries += 1 }
         XCTAssertEqual(retries, 1)
         XCTAssertEqual(retryRecorder.contents.first?.messageText, "Couldn’t check for updates")
-        XCTAssertEqual(retryRecorder.contents.first?.informativeText, "Check your internet connection and try again.")
+        XCTAssertEqual(retryRecorder.contents.first?.informativeText, "Try again in a moment.")
         XCTAssertEqual(retryRecorder.contents.first?.primaryButtonTitle, "Retry")
         XCTAssertEqual(retryRecorder.contents.first?.secondaryButtonTitle, "Cancel")
+        XCTAssertEqual(retryRecorder.contents.first?.alertStyle, .warning)
 
         let cancelRecorder = AlertRecorder(response: .alertSecondButtonReturn)
         makePresenter(recorder: cancelRecorder).presentFailure { retries += 1 }
         XCTAssertEqual(retries, 1)
     }
 
-    func testProductionAlertRunnerActivatesApplicationBeforeShowingAlert() throws {
-        let runnerSource = try defaultAlertRunnerSource()
-        let activationRange = try XCTUnwrap(
-            runnerSource.range(of: "NSApp.activate(ignoringOtherApps: true)")
-        )
-        let modalReturnRange = try XCTUnwrap(runnerSource.range(of: "return alert.runModal()"))
-        XCTAssertLessThan(activationRange.upperBound, modalReturnRange.lowerBound)
+    func testPresenterActivatesImmediatelyBeforeEveryAlert() {
+        let recorder = AlertRecorder(response: .alertSecondButtonReturn)
+        let presenter = makePresenter(recorder: recorder)
+
+        presenter.presentUpdate(release(), currentVersion: "1.2.3")
+        presenter.presentUpToDate(currentVersion: "1.2.3")
+        presenter.presentFailure { }
+
+        XCTAssertEqual(recorder.events, [.activation, .alert, .activation, .alert, .activation, .alert])
     }
 
     private func makePresenter(recorder: AlertRecorder) -> UpdateCheckAlertPresenter {
         UpdateCheckAlertPresenter(
-            alertRunner: { content in recorder.contents.append(content); return recorder.response },
-            urlOpener: { recorder.openedURLs.append($0) }
+            alertRunner: {
+                recorder.events.append(.alert)
+                recorder.contents.append($0)
+                return recorder.response
+            },
+            urlOpener: { recorder.openedURLs.append($0) },
+            applicationActivator: { recorder.events.append(.activation) }
         )
-    }
-
-    private func defaultAlertRunnerSource() throws -> String {
-        let source = try String(
-            contentsOf: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-                .appendingPathComponent("Sources/InkletApp/UpdateCheckAlertPresenter.swift"),
-            encoding: .utf8
-        )
-        let start = try XCTUnwrap(source.range(of: "    private static func defaultAlertRunner"))
-        let end = try XCTUnwrap(
-            source.range(of: "\n    private func usefulReleaseName", range: start.upperBound..<source.endIndex)
-        )
-        return String(source[start.lowerBound..<end.lowerBound])
     }
 
     private func release(name: String? = "Faster dictation", notes: String = "Notes") -> InkletRelease {
@@ -182,7 +201,13 @@ final class UpdateCheckAlertPresenterTests: XCTestCase {
 
 @MainActor
 private final class AlertRecorder {
+    enum Event: Equatable {
+        case activation
+        case alert
+    }
+
     let response: NSApplication.ModalResponse
+    var events: [Event] = []
     var contents: [UpdateCheckAlertPresenter.AlertContent] = []
     var openedURLs: [URL] = []
 
