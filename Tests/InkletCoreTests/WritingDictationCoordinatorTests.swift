@@ -716,6 +716,35 @@ final class WritingDictationCoordinatorTests: XCTestCase {
         XCTAssertTrue(harness.capture.createdURLs.isEmpty)
     }
 
+    func testCancelPublishesIdleBeforePendingCaptureStartCleanupDrains() async {
+        let harness = DictationHarness()
+        harness.capture.blockStart()
+        let begin = Task { await harness.subject.beginHold() }
+        await harness.capture.waitUntilStartWasCalled()
+
+        await harness.subject.cancel()
+
+        XCTAssertEqual(harness.transaction.restoreCount, 1)
+        XCTAssertEqual(harness.subject.phase, .idle)
+        XCTAssertEqual(harness.phases.last, .idle)
+
+        var cleanupCompleted = false
+        let cleanup = Task {
+            await harness.subject.cancelAndWait()
+            cleanupCompleted = true
+        }
+        await harness.client.waitUntilClosed()
+
+        XCTAssertFalse(cleanupCompleted)
+
+        harness.capture.resumeStart()
+        await begin.value
+        await cleanup.value
+
+        XCTAssertTrue(cleanupCompleted)
+        XCTAssertTrue(harness.subject.isIdle)
+    }
+
     func testCaptureAndStopFailureRestoreCloseAndNeverFallback() async {
         let capture = DictationHarness()
         capture.capture.startError = AudioRecorder.AudioRecorderError.recordingUnavailable

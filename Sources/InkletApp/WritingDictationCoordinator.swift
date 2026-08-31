@@ -752,6 +752,7 @@ final class WritingDictationCoordinator {
         current.finalWaiter?.resume(throwing: CancellationError())
         current.finalWaiter = nil
 
+        let publishTerminalPhaseImmediately: Bool
         switch outcome {
         case let .success(text):
             do {
@@ -761,12 +762,15 @@ final class WritingDictationCoordinator {
                 current.transaction.restore()
                 current.terminalPhase = .failed(errorKey(error))
             }
+            publishTerminalPhaseImmediately = false
         case let .failure(key):
             current.transaction.restore()
             current.terminalPhase = .failed(key)
+            publishTerminalPhaseImmediately = false
         case .cancelled:
             current.transaction.restore()
             current.terminalPhase = .idle
+            publishTerminalPhaseImmediately = true
         }
         session = current
 
@@ -788,8 +792,12 @@ final class WritingDictationCoordinator {
             await cleanupTask.value
             await self?.finishTerminalHandoff(
                 generation: cleanupGeneration,
-                terminalPhase: terminalPhase
+                terminalPhase: terminalPhase,
+                shouldPublishTerminalPhase: !publishTerminalPhaseImmediately
             )
+        }
+        if publishTerminalPhaseImmediately {
+            publish(terminalPhase)
         }
     }
 
@@ -823,10 +831,13 @@ final class WritingDictationCoordinator {
 
     private func finishTerminalHandoff(
         generation: UUID,
-        terminalPhase: Phase
+        terminalPhase: Phase,
+        shouldPublishTerminalPhase: Bool
     ) async {
         guard cleanupFinishingGeneration == generation else { return }
-        publish(terminalPhase)
+        if shouldPublishTerminalPhase {
+            publish(terminalPhase)
+        }
         await terminalHandoffWaiter.wait()
         guard cleanupFinishingGeneration == generation else { return }
         cleanupFinishingGeneration = nil
