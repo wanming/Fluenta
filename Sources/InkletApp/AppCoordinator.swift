@@ -45,6 +45,13 @@ private struct PendingUserCopyRead {
 }
 
 @MainActor
+enum UpdateCheckMenuConfiguration {
+    static func apply(to menu: NSMenu) {
+        menu.autoenablesItems = false
+    }
+}
+
+@MainActor
 final class AppCoordinator: NSObject, NSMenuDelegate {
     private static let systemSettingsBundleIdentifier = "com.apple.systempreferences"
 
@@ -104,6 +111,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
     private lazy var updateCheckAlertPresenter: UpdateCheckAlertPresenter = {
         let presenter = UpdateCheckAlertPresenter()
         presenter.onPresentationStateChange = { [weak self] isPresenting in
+            self?.refreshUpdateCheckMenuItems()
             guard !isPresenting else { return }
             Task { @MainActor [weak self] in
                 self?.refreshMigrationImportEligibility()
@@ -430,6 +438,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
 
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
+        UpdateCheckMenuConfiguration.apply(to: appMenu)
         appMenu.delegate = self
         let aboutItem = NSMenuItem(
             title: L10n.text("app.menu.about"),
@@ -1451,6 +1460,11 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
         return item
     }
 
+    private var isUpdateCheckAvailable: Bool {
+        !updateCheckCoordinator.isChecking
+            && !updateCheckAlertPresenter.isPresentingAlert
+    }
+
     private func refreshUpdateCheckMenuItems() {
         let isChecking = updateCheckCoordinator.isChecking
         let title = L10n.text(
@@ -1458,12 +1472,13 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
         )
         for item in [mainUpdateCheckMenuItem, statusUpdateCheckMenuItem].compactMap({ $0 }) {
             item.title = title
-            item.isEnabled = !isChecking
+            item.isEnabled = isUpdateCheckAvailable
         }
     }
 
     private func configureStatusItemMenu() {
         let menu = NSMenu()
+        UpdateCheckMenuConfiguration.apply(to: menu)
         menu.delegate = self
         menu.addItem(
             NSMenuItem(
@@ -1513,6 +1528,10 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
     }
 
     @objc func checkForUpdates() {
+        guard isUpdateCheckAvailable else {
+            refreshUpdateCheckMenuItems()
+            return
+        }
         updateCheckCoordinator.checkManually()
     }
 

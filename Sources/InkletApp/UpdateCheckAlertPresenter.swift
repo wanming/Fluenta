@@ -106,7 +106,10 @@ final class UpdateCheckAlertPresenter: UpdateCheckPresenting {
         return alert.runModal()
     }
 
-    private func runAlert(_ content: AlertContent) -> NSApplication.ModalResponse {
+    private func runAlert(_ content: AlertContent) -> NSApplication.ModalResponse? {
+        guard !isPresentingAlert else {
+            return nil
+        }
         isPresentingAlert = true
         onPresentationStateChange?(true)
         defer {

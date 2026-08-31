@@ -51,6 +51,9 @@ final class AppCoordinatorSourceTests: XCTestCase {
         ))
         let presenterBlock = source[presenterStart.lowerBound..<coordinatorStart.lowerBound]
         XCTAssertTrue(presenterBlock.contains("presenter.onPresentationStateChange = { [weak self] isPresenting in"))
+        let menuRefresh = try XCTUnwrap(presenterBlock.range(of: "self?.refreshUpdateCheckMenuItems()"))
+        let presentationEndGuard = try XCTUnwrap(presenterBlock.range(of: "guard !isPresenting else { return }"))
+        XCTAssertLessThan(menuRefresh.lowerBound, presentationEndGuard.lowerBound)
         XCTAssertTrue(presenterBlock.contains("guard !isPresenting else { return }"))
         XCTAssertTrue(presenterBlock.contains("Task { @MainActor [weak self] in"))
         XCTAssertTrue(presenterBlock.contains("self?.refreshMigrationImportEligibility()"))
@@ -110,8 +113,11 @@ final class AppCoordinatorSourceTests: XCTestCase {
         XCTAssertTrue(refreshItemsBlock.contains("\"app.menu.checkingForUpdates\""))
         XCTAssertTrue(refreshItemsBlock.contains("\"app.menu.checkForUpdates\""))
         XCTAssertTrue(refreshItemsBlock.contains("item.title = title"))
-        XCTAssertTrue(refreshItemsBlock.contains("item.isEnabled = !isChecking"))
+        XCTAssertTrue(refreshItemsBlock.contains("item.isEnabled = isUpdateCheckAvailable"))
         XCTAssertTrue(refreshItemsBlock.contains("[mainUpdateCheckMenuItem, statusUpdateCheckMenuItem]"))
+        XCTAssertTrue(helperBlock.contains("private var isUpdateCheckAvailable: Bool"))
+        XCTAssertTrue(helperBlock.contains("!updateCheckCoordinator.isChecking"))
+        XCTAssertTrue(helperBlock.contains("!updateCheckAlertPresenter.isPresentingAlert"))
 
         let mainMenuStart = try XCTUnwrap(source.range(of: "private func configureMainMenu()"))
         let settingsShortcutStart = try XCTUnwrap(source.range(
@@ -119,6 +125,10 @@ final class AppCoordinatorSourceTests: XCTestCase {
             range: mainMenuStart.upperBound..<source.endIndex
         ))
         let mainMenuBlock = source[mainMenuStart.lowerBound..<settingsShortcutStart.lowerBound]
+        XCTAssertTrue(mainMenuBlock.contains("UpdateCheckMenuConfiguration.apply(to: appMenu)"))
+        XCTAssertTrue(mainMenuBlock.contains("let editMenu = NSMenu(title: \"Edit\")"))
+        XCTAssertFalse(mainMenuBlock.contains("UpdateCheckMenuConfiguration.apply(to: editMenu)"))
+        XCTAssertFalse(mainMenuBlock.contains("editMenu.autoenablesItems"))
         let aboutAdd = try XCTUnwrap(mainMenuBlock.range(of: "appMenu.addItem(aboutItem)"))
         let mainUpdateReference = try XCTUnwrap(mainMenuBlock.range(
             of: "mainUpdateCheckMenuItem = updateItem"
@@ -142,6 +152,7 @@ final class AppCoordinatorSourceTests: XCTestCase {
             range: statusMenuStart.upperBound..<source.endIndex
         ))
         let statusMenuBlock = source[statusMenuStart.lowerBound..<actionStart.lowerBound]
+        XCTAssertTrue(statusMenuBlock.contains("UpdateCheckMenuConfiguration.apply(to: menu)"))
         let statusOpen = try XCTUnwrap(statusMenuBlock.range(
             of: "title: L10n.text(\"app.menu.openPopover\")"
         ))
@@ -284,6 +295,11 @@ final class AppCoordinatorSourceTests: XCTestCase {
             range: checkActionStart.upperBound..<source.endIndex
         ))
         let checkActionBlock = source[checkActionStart.lowerBound..<openPopoverStart.lowerBound]
+        let availabilityGuard = try XCTUnwrap(checkActionBlock.range(of: "guard isUpdateCheckAvailable else"))
+        let menuRefresh = try XCTUnwrap(checkActionBlock.range(of: "refreshUpdateCheckMenuItems()"))
+        let manualCheck = try XCTUnwrap(checkActionBlock.range(of: "updateCheckCoordinator.checkManually()"))
+        XCTAssertLessThan(availabilityGuard.lowerBound, menuRefresh.lowerBound)
+        XCTAssertLessThan(menuRefresh.lowerBound, manualCheck.lowerBound)
         XCTAssertTrue(checkActionBlock.contains("updateCheckCoordinator.checkManually()"))
     }
 

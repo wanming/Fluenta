@@ -256,6 +256,40 @@ final class UpdateCheckAlertPresenterTests: XCTestCase {
         ])
     }
 
+    func testReentrantPresentationIsDroppedWhileOuterAlertRemainsActive() {
+        var alertRunCount = 0
+        var activationCount = 0
+        var presentationStates: [Bool] = []
+        var openedURLs: [URL] = []
+        var retryCount = 0
+        var presenter: UpdateCheckAlertPresenter!
+        presenter = UpdateCheckAlertPresenter(
+            alertRunner: { _ in
+                alertRunCount += 1
+                XCTAssertTrue(presenter.isPresentingAlert)
+                if alertRunCount == 1 {
+                    presenter.presentUpdate(self.release(), currentVersion: "1.2.3")
+                    XCTAssertTrue(presenter.isPresentingAlert)
+                    presenter.presentFailure { retryCount += 1 }
+                    XCTAssertTrue(presenter.isPresentingAlert)
+                }
+                return .alertFirstButtonReturn
+            },
+            urlOpener: { openedURLs.append($0) },
+            applicationActivator: { activationCount += 1 }
+        )
+        presenter.onPresentationStateChange = { presentationStates.append($0) }
+
+        presenter.presentUpToDate(currentVersion: "1.2.3")
+
+        XCTAssertEqual(alertRunCount, 1)
+        XCTAssertEqual(activationCount, 1)
+        XCTAssertEqual(presentationStates, [true, false])
+        XCTAssertTrue(openedURLs.isEmpty)
+        XCTAssertEqual(retryCount, 0)
+        XCTAssertFalse(presenter.isPresentingAlert)
+    }
+
     private func makePresenter(recorder: AlertRecorder) -> UpdateCheckAlertPresenter {
         UpdateCheckAlertPresenter(
             alertRunner: {
