@@ -24,6 +24,12 @@ Alternatively, use the install script below. The install script downloads the la
 curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install.sh | bash
 ```
 
+## Updates
+
+Inklet uses GitHub Releases as its only update source. Production builds check GitHub for public metadata for the latest stable release about once every 24 hours. An update is announced only after that release has an uploaded `Inklet.dmg`; **View on GitHub** opens that exact release page. Inklet never downloads or installs updates automatically.
+
+Use **Check for Updates…** from the app menu to check manually in either the production app or Inklet Local. Inklet Local never schedules automatic checks. Automatic check failures are silent, while a manual check offers **Retry**. If writing, voice, Selection Actions, migration, a modal, or an open menu makes Inklet busy, an automatic update notice waits until the app is idle.
+
 ## First-Time Setup
 
 1. Open Inklet from your Applications folder. For a source build, run `scripts/run-local-app.sh` from the repository root, then use `/Applications/Inklet Local.app`.
@@ -75,7 +81,7 @@ The default voice shortcut is Right Option with press-and-hold recording. In Set
 - Lets you edit prompt modes, OpenAI model, timeout, writing shortcut, voice shortcut, voice recording mode, microphone, speech preset, speech endpoint, speech model, post-transcription handling, selection translation language, selection Translate prompt, Force Selection mode, simulated-copy permission, AI pronunciation voice, and AI pronunciation speed.
 - Shows local History for successful Write, Voice, and Selection results, with consecutive duplicate entries collapsed, selectable source/result text, a result copy control, and a clear-all action.
 - Uses one shared OpenAI API key for writing, voice transcription, selection translation, and pronunciation.
-- Provides English and Chinese app UI localization.
+- Provides English, Simplified Chinese, Traditional Chinese, Japanese, Korean, Spanish, French, German, Portuguese, and Italian app UI localization.
 
 ## Current Status
 

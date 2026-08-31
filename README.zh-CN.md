@@ -24,6 +24,12 @@ GitHub Releases 是 Inklet 唯一支持的发布渠道。请从 [GitHub Releases
 curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install.sh | bash
 ```
 
+## 更新
+
+Inklet 仅通过 GitHub Releases 检查更新。正式版大约每 24 小时从 GitHub 获取一次最新稳定版的公开元数据。只有该 release 已上传 `Inklet.dmg` 时才会提示更新；选择**在 GitHub 上查看**会打开这个 release 的准确页面。Inklet 不会自动下载或安装更新。
+
+正式版和 Inklet Local 都可以从 App 菜单选择**检查更新…**手动检查；Inklet Local 不会安排自动检查。自动检查失败时保持静默，手动检查失败时可选择**重试**。写作、语音、选区动作、迁移、模态窗口或已打开的菜单使 Inklet 忙碌时，自动更新提示会等到 App 空闲后再显示。
+
 ## 首次设置
 
 1. 从 Applications 文件夹打开 Inklet。需要运行源码构建时，请在仓库根目录执行 `scripts/run-local-app.sh`，然后使用 `/Applications/Inklet Local.app`。
@@ -75,7 +81,7 @@ curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install
 - 可以编辑 prompt modes、OpenAI 模型、timeout、写作快捷键、语音快捷键、语音录音方式、麦克风、speech preset、speech endpoint、speech model、转写后处理方式、选区翻译语言、选区 Translate prompt、强制取词模式、模拟复制权限、AI 发音声音和 AI 发音速度。
 - 在本地 History 中查看成功的写作、语音和选区结果，连续重复项会自动合并，原文/结果文本可选择，可一键复制结果或清空全部历史。
 - 使用一把共享的 OpenAI API key 处理写作、语音转写、选区翻译和发音。
-- 提供英文和中文应用界面。
+- 提供英文、简体中文、繁体中文、日文、韩文、西班牙文、法文、德文、葡萄牙文和意大利文应用界面。
 
 ## 当前状态
 

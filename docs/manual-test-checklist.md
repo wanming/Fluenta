@@ -112,6 +112,19 @@ Run every item below in Chrome, Safari, Edge, and a native AppKit text view. Rep
 - Translate selected text and confirm the result remains visible with copy, original-audio, and translated-audio controls.
 - Translate the same text with the same settings again and confirm the cached result appears. Confirm a successful action is recorded in Settings > History, but mere selection without an action is not.
 
+## Update Checks
+
+- Online, use both app-menu locations in a production build and choose **Check for Updates…** against the current release. Confirm both menu items change to the same disabled checking state, then a manual result says Inklet is up to date.
+- Online, check manually from Inklet Local against the current release and confirm the same up-to-date feedback is available.
+- Exercise a newer stable release fixture with an uploaded `Inklet.dmg`. Confirm the alert shows the latest version and build, current version, useful release name, and release-note excerpt.
+- Exercise draft, prerelease, missing `Inklet.dmg`, and non-uploaded `Inklet.dmg` fixtures alongside a stable fixture with an uploaded `Inklet.dmg`. Confirm only the stable release with the uploaded asset is announced.
+- From the newer-release alert, choose **View on GitHub** and confirm the exact GitHub Release URL opens in the default browser. Repeat with **Later** and confirm the alert dismisses. In both cases, confirm no DMG or other asset is downloaded or installed.
+- Go offline and check manually. Confirm the failure alert contains no internal details, **Retry** starts one new manual request after the first finishes, and **Cancel** dismisses it. Trigger an automatic check offline and confirm the failure is silent.
+- In a production build, confirm an automatic check is attempted about once every 24 hours and is not repeated on each launch after a failed attempt. Confirm Inklet Local never schedules automatic checks while its manual command continues to work.
+- Make a newer automatic result complete separately while a writing transformation, voice recording, Selection Actions panel, migration, tracked menu, and modal window is active. Confirm the alert does not interrupt or dismiss the active workflow, then appears exactly once after Inklet becomes idle in each case.
+- Use empty and long release notes. Confirm empty notes use the localized fallback, long release notes are bounded with an ellipsis, and the alert remains readable.
+- Repeat the menu, checking-state, update-available, up-to-date, failure, Retry, and Later paths in English, Simplified Chinese, Traditional Chinese, Japanese, Korean, Spanish, French, German, Portuguese, and Italian. Confirm each resolves without fallback and that Chinese and English copy fits without overlap.
+
 ## Settings And History
 
 - `Command+,`: open Settings while Inklet is active.

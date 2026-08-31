@@ -1,6 +1,6 @@
 # Inklet Privacy Policy
 
-Last updated: August 12, 2026
+Last updated: August 30, 2026
 
 ## Overview
 
@@ -42,6 +42,12 @@ Text may be sent to the selected AI provider for rewriting, summarization, or cl
 Provider handling of your data is governed by the provider's own privacy policy and account terms. Do not send private text or audio to a provider unless you trust that provider.
 
 Inklet may fetch the public model catalog from `models.dev` periodically, currently no more than once per day. This request does not include your text, audio, API keys, or app settings.
+
+## Update Checks
+
+Production builds check GitHub Releases for public metadata about the latest stable Inklet release about once every 24 hours. Inklet Local does not schedule automatic checks, although both builds can check manually. GitHub receives ordinary connection metadata associated with this network request. The request does not include Inklet prompts, text, audio, History, API keys, provider configuration, or settings.
+
+Inklet announces only a release with an uploaded `Inklet.dmg`; it never downloads or installs an update automatically.
 
 ## Selection Actions
 
