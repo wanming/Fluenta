@@ -162,6 +162,43 @@ final class DictationEditorTransactionTests: XCTestCase {
         XCTAssertEqual(committed, ["avoicec"])
     }
 
+    func testCommitPreservesPriorUndoAndRedoOrderWithDefaultGrouping() throws {
+        let textView = makeTextView("abc", selection: NSRange(location: 1, length: 1))
+        let undoManager = textView.testUndoManager
+        undoManager.groupsByEvent = true
+        XCTAssertTrue(undoManager.groupsByEvent)
+        let counter = UndoableCounter(undoManager: undoManager)
+        counter.change(to: 1)
+        XCTAssertEqual(undoManager.groupingLevel, 1)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
+        XCTAssertEqual(undoManager.groupingLevel, 0)
+        let subject = try XCTUnwrap(makeTransaction(textView))
+
+        try subject.commitFinal("voice")
+
+        undoManager.undo()
+        XCTAssertEqual(textView.string, "abc")
+        XCTAssertEqual(counter.value, 1)
+        XCTAssertTrue(undoManager.canUndo)
+        XCTAssertTrue(undoManager.canRedo)
+
+        undoManager.undo()
+        XCTAssertEqual(textView.string, "abc")
+        XCTAssertEqual(counter.value, 0)
+        XCTAssertFalse(undoManager.canUndo)
+        XCTAssertTrue(undoManager.canRedo)
+
+        undoManager.redo()
+        XCTAssertEqual(textView.string, "abc")
+        XCTAssertEqual(counter.value, 1)
+        XCTAssertTrue(undoManager.canRedo)
+
+        undoManager.redo()
+        XCTAssertEqual(textView.string, "avoicec")
+        XCTAssertEqual(counter.value, 1)
+        XCTAssertFalse(undoManager.canRedo)
+    }
+
     func testRestoreReturnsExactTextSelectionInteractionAndCallbacks() throws {
         let original = "before"
         let selection = NSRange(location: 2, length: 3)
@@ -196,6 +233,53 @@ final class DictationEditorTransactionTests: XCTestCase {
         XCTAssertThrowsError(try subject.replaceProvisional(with: "late"))
     }
 
+    func testRestorePreservesAttributedRunsAndOutsideTemporaryAttributes() throws {
+        let fixture = makeAttributedFixture()
+        let subject = try XCTUnwrap(makeTransaction(fixture.textView))
+
+        try subject.replaceProvisional(with: "a much longer draft")
+        subject.restore()
+
+        XCTAssertEqual(fixture.textView.attributedString(), fixture.original)
+        assertOutsideTemporaryAttributes(
+            in: fixture.textView,
+            key: fixture.temporaryKey
+        )
+    }
+
+    func testUndoRedoPreservesAttributedRunsAndOutsideTemporaryAttributes() throws {
+        let fixture = makeAttributedFixture()
+        let subject = try XCTUnwrap(makeTransaction(fixture.textView))
+
+        try subject.replaceProvisional(with: "draft")
+        try subject.commitFinal("final voice")
+        let committed = fixture.textView.attributedString()
+        assertOutsidePersistentAttributes(
+            in: fixture.textView,
+            key: fixture.runKey
+        )
+        assertOutsideTemporaryAttributes(
+            in: fixture.textView,
+            key: fixture.temporaryKey
+        )
+
+        fixture.textView.testUndoManager.undo()
+
+        XCTAssertEqual(fixture.textView.attributedString(), fixture.original)
+        assertOutsideTemporaryAttributes(
+            in: fixture.textView,
+            key: fixture.temporaryKey
+        )
+
+        fixture.textView.testUndoManager.redo()
+
+        XCTAssertEqual(fixture.textView.attributedString(), committed)
+        assertOutsideTemporaryAttributes(
+            in: fixture.textView,
+            key: fixture.temporaryKey
+        )
+    }
+
     func testRestoreReturnsOriginalNonEditableNonSelectableState() throws {
         let textView = makeTextView("locked", selection: NSRange(location: 0, length: 0))
         textView.isEditable = false
@@ -228,20 +312,31 @@ final class DictationEditorTransactionTests: XCTestCase {
         XCTAssertFalse(undoManager.canUndo)
     }
 
-    func testRestoreStillRestoresModelAfterWeakTextViewInvalidation() throws {
+    func testWeakObjectReferenceDoesNotRetainItsObject() throws {
+        var object: LifetimeProbe? = LifetimeProbe()
+        let reference = WeakObjectReference(try XCTUnwrap(object))
+
+        object = nil
+
+        XCTAssertNil(reference.value)
+    }
+
+    func testDetachedEditorRestoreStillRestoresModelOnce() throws {
         var synchronized: [String] = []
         var restoreCount = 0
         let textView = makeTextView(
             "original",
             selection: NSRange(location: 3, length: 0)
         )
+        let editorReference = WeakObjectReference<NSTextView>(textView)
         let subject = try XCTUnwrap(DictationEditorTransaction(
             textView: textView,
+            editorReference: editorReference,
             synchronizeProvisional: { synchronized.append($0) },
             commitSourceChange: { _ in },
             restoreModelSnapshot: { restoreCount += 1 }
         ))
-        subject.invalidateEditorReferenceForTesting()
+        editorReference.clear()
 
         subject.restore()
         subject.restore()
@@ -250,17 +345,24 @@ final class DictationEditorTransactionTests: XCTestCase {
         XCTAssertEqual(restoreCount, 1)
     }
 
-    func testUndoRegistrationDoesNotRetainTheTextView() throws {
+    func testUndoBecomesNoOpWhenEditorReferenceIsDetached() throws {
         let textView = makeTextView(
             "abc",
             selection: NSRange(location: 1, length: 1)
         )
         let undoManager = textView.testUndoManager
-        let subject = try XCTUnwrap(makeTransaction(textView))
+        let editorReference = WeakObjectReference<NSTextView>(textView)
+        let subject = try XCTUnwrap(DictationEditorTransaction(
+            textView: textView,
+            editorReference: editorReference,
+            synchronizeProvisional: { _ in },
+            commitSourceChange: { _ in },
+            restoreModelSnapshot: {}
+        ))
         try subject.commitFinal("voice")
         XCTAssertTrue(undoManager.canUndo)
 
-        subject.invalidateEditorReferenceForTesting()
+        editorReference.clear()
         undoManager.undo()
 
         XCTAssertEqual(textView.string, "avoicec")
@@ -339,6 +441,55 @@ final class DictationEditorTransactionTests: XCTestCase {
         return (window, textView)
     }
 
+    private func makeAttributedFixture() -> (
+        textView: TestTextView,
+        original: NSAttributedString,
+        runKey: NSAttributedString.Key,
+        temporaryKey: NSAttributedString.Key
+    ) {
+        let string = "before MIDDLE after"
+        let source = string as NSString
+        let selection = source.range(of: "MIDDLE")
+        let textView = makeTextView(string, selection: selection)
+        let runKey = NSAttributedString.Key("DictationEditorTransactionTests.run")
+        textView.textStorage?.addAttribute(
+            runKey,
+            value: "before",
+            range: source.range(of: "before")
+        )
+        textView.textStorage?.addAttribute(
+            runKey,
+            value: "inside",
+            range: selection
+        )
+        textView.textStorage?.addAttribute(
+            runKey,
+            value: "after",
+            range: source.range(of: "after")
+        )
+
+        let temporaryKey = NSAttributedString.Key(
+            "DictationEditorTransactionTests.outsideTemporary"
+        )
+        textView.layoutManager?.addTemporaryAttribute(
+            temporaryKey,
+            value: "leading",
+            forCharacterRange: NSRange(location: 0, length: 1)
+        )
+        textView.layoutManager?.addTemporaryAttribute(
+            temporaryKey,
+            value: "trailing",
+            forCharacterRange: NSRange(location: source.length - 1, length: 1)
+        )
+
+        return (
+            textView,
+            NSAttributedString(attributedString: textView.attributedString()),
+            runKey,
+            temporaryKey
+        )
+    }
+
     private func makeTransaction(
         _ textView: NSTextView
     ) -> DictationEditorTransaction? {
@@ -407,6 +558,61 @@ final class DictationEditorTransactionTests: XCTestCase {
             )
         }
     }
+
+    private func assertOutsideTemporaryAttributes(
+        in textView: NSTextView,
+        key: NSAttributedString.Key,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard let layoutManager = textView.layoutManager else {
+            return XCTFail("Expected an NSLayoutManager", file: file, line: line)
+        }
+        let lastIndex = (textView.string as NSString).length - 1
+        XCTAssertEqual(
+            layoutManager.temporaryAttribute(
+                key,
+                atCharacterIndex: 0,
+                effectiveRange: nil
+            ) as? String,
+            "leading",
+            file: file,
+            line: line
+        )
+        XCTAssertEqual(
+            layoutManager.temporaryAttribute(
+                key,
+                atCharacterIndex: lastIndex,
+                effectiveRange: nil
+            ) as? String,
+            "trailing",
+            file: file,
+            line: line
+        )
+    }
+
+    private func assertOutsidePersistentAttributes(
+        in textView: NSTextView,
+        key: NSAttributedString.Key,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let source = textView.string as NSString
+        for (substring, value) in [("before", "before"), ("after", "after")] {
+            let range = source.range(of: substring)
+            XCTAssertNotEqual(range.location, NSNotFound, file: file, line: line)
+            XCTAssertEqual(
+                textView.textStorage?.attribute(
+                    key,
+                    at: range.location,
+                    effectiveRange: nil
+                ) as? String,
+                value,
+                file: file,
+                line: line
+            )
+        }
+    }
 }
 
 @MainActor
@@ -427,3 +633,23 @@ private final class TestTextView: NSTextView {
 private final class UndoProbe: NSObject {
     var invocationCount = 0
 }
+
+@MainActor
+private final class UndoableCounter: NSObject {
+    private let undoManager: UndoManager
+    private(set) var value = 0
+
+    init(undoManager: UndoManager) {
+        self.undoManager = undoManager
+    }
+
+    func change(to newValue: Int) {
+        let previousValue = value
+        undoManager.registerUndo(withTarget: self) { counter in
+            counter.change(to: previousValue)
+        }
+        value = newValue
+    }
+}
+
+private final class LifetimeProbe {}

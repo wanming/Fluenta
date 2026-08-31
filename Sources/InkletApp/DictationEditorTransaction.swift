@@ -1,5 +1,17 @@
 import AppKit
 
+final class WeakObjectReference<Object: AnyObject> {
+    private(set) weak var value: Object?
+
+    init(_ value: Object) {
+        self.value = value
+    }
+
+    func clear() {
+        value = nil
+    }
+}
+
 @MainActor
 protocol DictationEditorTransacting: AnyObject {
     func replaceProvisional(with cumulativeText: String) throws
@@ -20,10 +32,16 @@ final class DictationEditorTransaction: DictationEditorTransacting {
         let selectedRange: NSRange
     }
 
-    private weak var textView: NSTextView?
-    private let editorReference: EditorReference
+    private struct AttributedRangeState {
+        let range: NSRange
+        let fragment: NSAttributedString
+        let selectedRange: NSRange
+    }
+
+    private let editorReference: WeakObjectReference<NSTextView>
     private weak var originalWindow: NSWindow?
     private let original: Snapshot
+    private let originalRangeState: AttributedRangeState
     private var ownedRange: NSRange
     private var underlinedRange: NSRange?
     private let originalIsEditable: Bool
@@ -34,24 +52,48 @@ final class DictationEditorTransaction: DictationEditorTransacting {
     private let restoreModelSnapshot: () -> Void
     private var terminal = false
 
+    convenience init?(
+        textView: NSTextView,
+        synchronizeProvisional: @escaping (String) -> Void,
+        commitSourceChange: @escaping (String) -> Void,
+        restoreModelSnapshot: @escaping () -> Void
+    ) {
+        self.init(
+            textView: textView,
+            editorReference: WeakObjectReference(textView),
+            synchronizeProvisional: synchronizeProvisional,
+            commitSourceChange: commitSourceChange,
+            restoreModelSnapshot: restoreModelSnapshot
+        )
+    }
+
     init?(
         textView: NSTextView,
+        editorReference: WeakObjectReference<NSTextView>,
         synchronizeProvisional: @escaping (String) -> Void,
         commitSourceChange: @escaping (String) -> Void,
         restoreModelSnapshot: @escaping () -> Void
     ) {
         let selection = textView.selectedRange()
         let stringLength = (textView.string as NSString).length
-        guard Self.isValid(selection, within: stringLength) else {
+        guard editorReference.value === textView,
+              Self.isValid(selection, within: stringLength),
+              let textStorage = textView.textStorage
+        else {
             return nil
         }
 
-        let editorReference = EditorReference(textView)
-        self.textView = textView
         self.editorReference = editorReference
         self.originalWindow = textView.window
         self.original = Snapshot(
             string: textView.string,
+            selectedRange: selection
+        )
+        self.originalRangeState = AttributedRangeState(
+            range: selection,
+            fragment: NSAttributedString(
+                attributedString: textStorage.attributedSubstring(from: selection)
+            ),
             selectedRange: selection
         )
         self.ownedRange = selection
@@ -68,7 +110,7 @@ final class DictationEditorTransaction: DictationEditorTransacting {
 
     func replaceProvisional(with cumulativeText: String) throws {
         try ensureActive()
-        guard let textView else {
+        guard let textView = editorReference.value else {
             throw DictationEditorTransactionError.editorUnavailable
         }
 
@@ -82,19 +124,33 @@ final class DictationEditorTransaction: DictationEditorTransacting {
 
     func commitFinal(_ text: String) throws {
         try ensureActive()
-        guard let textView else {
+        guard let textView = editorReference.value else {
             throw DictationEditorTransactionError.editorUnavailable
         }
 
         try replaceOwnedRange(in: textView, with: text, shouldUnderline: false)
+        guard let textStorage = textView.textStorage else {
+            throw DictationEditorTransactionError.editorUnavailable
+        }
         let committed = Snapshot(
             string: textView.string,
             selectedRange: textView.selectedRange()
         )
+        let committedRangeState = AttributedRangeState(
+            range: ownedRange,
+            fragment: NSAttributedString(
+                attributedString: textStorage.attributedSubstring(from: ownedRange)
+            ),
+            selectedRange: committed.selectedRange
+        )
         terminal = true
         restoreInteraction(on: textView)
         synchronizeProvisional(committed.string)
-        registerUndo(from: committed, to: original, for: textView)
+        registerUndo(
+            from: committedRangeState,
+            to: originalRangeState,
+            for: textView
+        )
         commitSourceChange(committed.string)
     }
 
@@ -104,24 +160,21 @@ final class DictationEditorTransaction: DictationEditorTransacting {
         }
         terminal = true
 
-        if let textView {
+        if let textView = editorReference.value {
             removeOwnedUnderline(from: textView)
-            Self.apply(original, to: textView)
+            Self.apply(
+                replacing: ownedRange,
+                with: originalRangeState,
+                to: textView
+            )
             restoreInteraction(on: textView)
+            synchronizeProvisional(textView.string)
+        } else {
+            synchronizeProvisional(original.string)
         }
 
-        synchronizeProvisional(original.string)
         restoreModelSnapshot()
     }
-
-    #if DEBUG
-    /// AppKit retains standalone text-view fixtures, so tests invalidate the
-    /// shared weak reference directly to exercise the detached-editor path.
-    func invalidateEditorReferenceForTesting() {
-        textView = nil
-        editorReference.invalidate()
-    }
-    #endif
 
     private func ensureActive() throws {
         guard !terminal else {
@@ -135,15 +188,17 @@ final class DictationEditorTransaction: DictationEditorTransacting {
         shouldUnderline: Bool
     ) throws {
         let stringLength = (textView.string as NSString).length
-        guard Self.isValid(ownedRange, within: stringLength) else {
+        guard Self.isValid(ownedRange, within: stringLength),
+              let textStorage = textView.textStorage
+        else {
             throw DictationEditorTransactionError.invalidOwnedRange
         }
 
         removeOwnedUnderline(from: textView)
         Self.withAutomaticUndoDisabled(for: textView) {
-            textView.textStorage?.beginEditing()
-            textView.textStorage?.replaceCharacters(in: ownedRange, with: replacement)
-            textView.textStorage?.endEditing()
+            textStorage.beginEditing()
+            textStorage.replaceCharacters(in: ownedRange, with: replacement)
+            textStorage.endEditing()
         }
 
         ownedRange.length = (replacement as NSString).length
@@ -184,8 +239,8 @@ final class DictationEditorTransaction: DictationEditorTransacting {
     }
 
     private func registerUndo(
-        from current: Snapshot,
-        to previous: Snapshot,
+        from current: AttributedRangeState,
+        to previous: AttributedRangeState,
         for textView: NSTextView
     ) {
         guard let undoManager = textView.undoManager,
@@ -210,20 +265,29 @@ final class DictationEditorTransaction: DictationEditorTransacting {
             && range.length <= stringLength - range.location
     }
 
-    private static func apply(_ snapshot: Snapshot, to textView: NSTextView) {
-        withAutomaticUndoDisabled(for: textView) {
-            let fullRange = NSRange(
-                location: 0,
-                length: (textView.string as NSString).length
-            )
-            textView.textStorage?.beginEditing()
-            textView.textStorage?.replaceCharacters(
-                in: fullRange,
-                with: snapshot.string
-            )
-            textView.textStorage?.endEditing()
-            textView.setSelectedRange(snapshot.selectedRange)
+    @discardableResult
+    private static func apply(
+        replacing currentRange: NSRange,
+        with replacement: AttributedRangeState,
+        to textView: NSTextView
+    ) -> Bool {
+        let stringLength = (textView.string as NSString).length
+        guard isValid(currentRange, within: stringLength),
+              let textStorage = textView.textStorage
+        else {
+            return false
         }
+
+        withAutomaticUndoDisabled(for: textView) {
+            textStorage.beginEditing()
+            textStorage.replaceCharacters(
+                in: currentRange,
+                with: replacement.fragment
+            )
+            textStorage.endEditing()
+            textView.setSelectedRange(replacement.selectedRange)
+        }
+        return true
     }
 
     private static func withAutomaticUndoDisabled(
@@ -244,28 +308,13 @@ final class DictationEditorTransaction: DictationEditorTransacting {
     }
 
     @MainActor
-    private final class EditorReference {
-        private(set) weak var textView: NSTextView?
-
-        init(_ textView: NSTextView) {
-            self.textView = textView
-        }
-
-        #if DEBUG
-        func invalidate() {
-            textView = nil
-        }
-        #endif
-    }
-
-    @MainActor
     private final class UndoTarget {
-        private let editorReference: EditorReference
+        private let editorReference: WeakObjectReference<NSTextView>
         private weak var undoManager: UndoManager?
         private let synchronizeSource: (String) -> Void
 
         init(
-            editorReference: EditorReference,
+            editorReference: WeakObjectReference<NSTextView>,
             undoManager: UndoManager,
             synchronizeSource: @escaping (String) -> Void
         ) {
@@ -274,7 +323,10 @@ final class DictationEditorTransaction: DictationEditorTransacting {
             self.synchronizeSource = synchronizeSource
         }
 
-        func register(current: Snapshot, replacement: Snapshot) {
+        func register(
+            current: AttributedRangeState,
+            replacement: AttributedRangeState
+        ) {
             guard let undoManager else {
                 return
             }
@@ -290,15 +342,24 @@ final class DictationEditorTransaction: DictationEditorTransacting {
             }
         }
 
-        private func replace(current: Snapshot, with replacement: Snapshot) {
-            guard let textView = editorReference.textView,
+        private func replace(
+            current: AttributedRangeState,
+            with replacement: AttributedRangeState
+        ) {
+            guard let textView = editorReference.value,
                   let undoManager
             else {
                 return
             }
 
-            DictationEditorTransaction.apply(replacement, to: textView)
-            synchronizeSource(replacement.string)
+            guard DictationEditorTransaction.apply(
+                replacing: current.range,
+                with: replacement,
+                to: textView
+            ) else {
+                return
+            }
+            synchronizeSource(textView.string)
             undoManager.registerUndo(withTarget: self) { [self] _ in
                 replace(current: replacement, with: current)
             }
