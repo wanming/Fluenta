@@ -266,6 +266,41 @@ final class WritingDictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.transaction.committed, ["fallback"])
     }
 
+    func testTimeoutLatchesRealtimeLossBeforeLateFinalCanWin() async {
+        let harness = DictationHarness(manualTimeout: true)
+        harness.client.blockNextEvent()
+        await harness.startListening()
+        await harness.subject.endHold()
+        await harness.client.waitUntilCommitted()
+        await harness.waitUntilTimeoutStarts()
+
+        harness.client.send(
+            .completed(
+                eventID: "late-final",
+                sequence: nil,
+                itemID: "item",
+                contentIndex: 0,
+                transcript: "late realtime"
+            )
+        )
+        await harness.client.waitUntilNextEventIsBlocked()
+
+        harness.resumeTimeout()
+        harness.client.resumeNextEvent()
+        let terminalContender = await harness.waitUntilPhase([.recovering, .complete])
+
+        XCTAssertEqual(terminalContender, .recovering)
+        if terminalContender == .recovering {
+            await harness.waitUntilFallbackStarts()
+            harness.resumeFallback()
+            await harness.transaction.waitUntilCommitted()
+        }
+        await harness.subject.cancelAndWait()
+
+        XCTAssertEqual(harness.transaction.committed, ["fallback"])
+        XCTAssertEqual(harness.deletedURLs, [harness.capture.recordingURL])
+    }
+
     func testCancelAndWaitJoinsBlockedTimeoutTaskBeforeBecomingIdle() async {
         let harness = DictationHarness(manualTimeout: true)
         await harness.startListening()
@@ -457,10 +492,11 @@ final class WritingDictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.capture.cancelCount, 1)
     }
 
-    func testMissingAndZeroByteFinalizedFilesNeverInvokeFallbackAndDeleteOnce() async {
+    func testInvalidFinalizedFilesNeverInvokeFallbackAndDeleteOnce() async {
         for recordingFile in [
             FakeDictationCapture.RecordingFile.missing,
-            .empty
+            .empty,
+            .unreadable
         ] {
             let harness = DictationHarness()
             harness.capture.recordingFile = recordingFile
@@ -476,6 +512,18 @@ final class WritingDictationCoordinatorTests: XCTestCase {
             XCTAssertEqual(harness.subject.phase, .failed("dictation.error.noSpeech"))
             XCTAssertEqual(harness.deletedURLs, [harness.capture.recordingURL])
         }
+    }
+
+    func testFallbackEligibilityDoesNotReadTheWholeRecordingOnMainActor() throws {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = packageRoot
+            .appendingPathComponent("Sources/InkletApp/WritingDictationCoordinator.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("Data(contentsOf: recordingURL)"))
     }
 
     func testFinalEditorFailureRestoresWithoutFallbackAndDeletesOnce() async {
@@ -621,6 +669,8 @@ final class WritingDictationCoordinatorTests: XCTestCase {
         await harness.subject.endHold()
         XCTAssertEqual(harness.transaction.restoreCount, 1)
         XCTAssertFalse(harness.subject.isIdle)
+        await harness.client.waitUntilClosed()
+        XCTAssertEqual(harness.capture.cancelCount, 1)
 
         await harness.subject.beginHold()
         XCTAssertEqual(harness.capture.startCount, 1)
@@ -633,6 +683,7 @@ final class WritingDictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.transaction.restoreCount, 1)
         XCTAssertEqual(harness.capture.cancelCount, 1)
         XCTAssertEqual(harness.client.closeCount, 1)
+        XCTAssertTrue(harness.capture.createdURLs.isEmpty)
         XCTAssertFalse(harness.phases.contains(.listening))
     }
 
@@ -648,9 +699,11 @@ final class WritingDictationCoordinatorTests: XCTestCase {
             cancelCompleted = true
         }
         await harness.transaction.waitUntilRestored()
+        await harness.client.waitUntilClosed()
 
         XCTAssertFalse(cancelCompleted)
         XCTAssertFalse(harness.subject.isIdle)
+        XCTAssertEqual(harness.capture.cancelCount, 1)
 
         harness.capture.resumeStart()
         await begin.value
@@ -660,6 +713,7 @@ final class WritingDictationCoordinatorTests: XCTestCase {
         XCTAssertTrue(harness.subject.isIdle)
         XCTAssertEqual(harness.capture.cancelCount, 1)
         XCTAssertEqual(harness.client.closeCount, 1)
+        XCTAssertTrue(harness.capture.createdURLs.isEmpty)
     }
 
     func testCaptureAndStopFailureRestoreCloseAndNeverFallback() async {
@@ -807,6 +861,12 @@ private final class DictationHarness {
     private let terminalHandoffWaiter: FakeTerminalHandoffWaiter
     private var fallbackStartWaiters: [CheckedContinuation<Void, Never>] = []
     private var fallbackErrorWaiters: [CheckedContinuation<Void, Never>] = []
+    private var phaseWaiters: [PhaseWaiter] = []
+
+    private struct PhaseWaiter {
+        let candidates: [WritingDictationCoordinator.Phase]
+        let continuation: CheckedContinuation<WritingDictationCoordinator.Phase, Never>
+    }
 
     lazy var subject = WritingDictationCoordinator(
         configProvider: { VoiceInputConfig.defaultConfig() },
@@ -843,7 +903,7 @@ private final class DictationHarness {
             self?.deleteHandler?(url)
         },
         phaseHandler: { [weak self] phase in
-            self?.phases.append(phase)
+            self?.record(phase)
             self?.phaseCallback?(phase)
         },
         errorKey: { error in
@@ -904,6 +964,26 @@ private final class DictationHarness {
 
     func resumeTerminalHandoff() {
         terminalHandoffWaiter.resume()
+    }
+
+    func waitUntilPhase(
+        _ candidates: [WritingDictationCoordinator.Phase]
+    ) async -> WritingDictationCoordinator.Phase {
+        if let phase = phases.last(where: { candidates.contains($0) }) {
+            return phase
+        }
+        return await withCheckedContinuation { continuation in
+            phaseWaiters.append(
+                PhaseWaiter(candidates: candidates, continuation: continuation)
+            )
+        }
+    }
+
+    private func record(_ phase: WritingDictationCoordinator.Phase) {
+        phases.append(phase)
+        let ready = phaseWaiters.filter { $0.candidates.contains(phase) }
+        phaseWaiters.removeAll { $0.candidates.contains(phase) }
+        ready.forEach { $0.continuation.resume(returning: phase) }
     }
 
 }
@@ -1020,6 +1100,7 @@ private final class FakeDictationCapture: DictationAudioCapturing {
         case nonempty
         case empty
         case missing
+        case unreadable
     }
 
     let recordingURL = FileManager.default.temporaryDirectory
@@ -1033,6 +1114,8 @@ private final class FakeDictationCapture: DictationAudioCapturing {
     var recordingFile: RecordingFile = .nonempty
     private var frameSource: FakeFrameSource?
     private var startBlocked = false
+    private var startInFlight = false
+    private var startCancellationRequested = false
     private var startContinuation: CheckedContinuation<Void, Never>?
     private var startWaiters: [CheckedContinuation<Void, Never>] = []
     private var stopWaiters: [CheckedContinuation<Void, Never>] = []
@@ -1042,12 +1125,16 @@ private final class FakeDictationCapture: DictationAudioCapturing {
 
     func startStreaming(microphoneDeviceID: String?) async throws -> AsyncThrowingStream<Data, Error> {
         startCount += 1
+        startInFlight = true
+        startCancellationRequested = false
+        defer { startInFlight = false }
         let waiters = startWaiters
         startWaiters.removeAll()
         waiters.forEach { $0.resume() }
         if startBlocked {
             await withCheckedContinuation { startContinuation = $0 }
         }
+        if startCancellationRequested { throw CancellationError() }
         if let startError { throw startError }
         createdURLs = [recordingURL]
         let source = FakeFrameSource()
@@ -1080,12 +1167,21 @@ private final class FakeDictationCapture: DictationAudioCapturing {
             try Data().write(to: recordingURL)
         case .missing:
             try? FileManager.default.removeItem(at: recordingURL)
+        case .unreadable:
+            try Data([1]).write(to: recordingURL)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0],
+                ofItemAtPath: recordingURL.path
+            )
         }
         return recordingURL
     }
 
     func cancel() async {
         cancelCount += 1
+        if startInFlight {
+            startCancellationRequested = true
+        }
         await frameSource?.finish()
         frameSource = nil
     }
@@ -1244,6 +1340,9 @@ private final class FakeRealtimeClient: RealtimeTranscriptionClient, @unchecked 
     private var connectErrorWaiters: [CheckedContinuation<Void, Never>] = []
     private var eventQueue: [Result<RealtimeTranscriptionEvent, Error>] = []
     private var eventWaiter: CheckedContinuation<RealtimeTranscriptionEvent, Error>?
+    private var shouldBlockNextEvent = false
+    private var nextEventGate: ManualGate?
+    private var nextEventBlockWaiters: [CheckedContinuation<Void, Never>] = []
     private var receiveStarted = false
     private var receiveStartWaiters: [CheckedContinuation<Void, Never>] = []
     private var shouldBlockNextAppend = false
@@ -1330,11 +1429,42 @@ private final class FakeRealtimeClient: RealtimeTranscriptionClient, @unchecked 
         let waiters = receiveStartWaiters
         receiveStartWaiters.removeAll()
         waiters.forEach { $0.resume() }
-        if !eventQueue.isEmpty { return try eventQueue.removeFirst().get() }
-        return try await withCheckedThrowingContinuation { eventWaiter = $0 }
+        let result: Result<RealtimeTranscriptionEvent, Error>
+        if !eventQueue.isEmpty {
+            result = eventQueue.removeFirst()
+        } else {
+            do {
+                result = .success(
+                    try await withCheckedThrowingContinuation { eventWaiter = $0 }
+                )
+            } catch {
+                result = .failure(error)
+            }
+        }
+        if shouldBlockNextEvent {
+            shouldBlockNextEvent = false
+            let gate = ManualGate()
+            nextEventGate = gate
+            let waiters = nextEventBlockWaiters
+            nextEventBlockWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+            await gate.wait()
+        }
+        return try result.get()
     }
     func send(_ event: RealtimeTranscriptionEvent) { enqueue(.success(event)) }
     func failReceive(with error: Error) { enqueue(.failure(error)) }
+    func blockNextEvent() { shouldBlockNextEvent = true }
+    func waitUntilNextEventIsBlocked() async {
+        if nextEventGate == nil {
+            await withCheckedContinuation { nextEventBlockWaiters.append($0) }
+        }
+        await nextEventGate?.waitUntilEntered()
+    }
+    func resumeNextEvent() {
+        nextEventGate?.open()
+        nextEventGate = nil
+    }
 
     func close() async {
         closeCount += 1

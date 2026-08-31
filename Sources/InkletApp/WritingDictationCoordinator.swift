@@ -88,6 +88,7 @@ final class WritingDictationCoordinator {
         let client: any RealtimeTranscriptionClient
         var accumulator = RealtimeTranscriptAccumulator()
         var earlyAudio = Data()
+        var captureStartInFlight = false
         var captureStarted = false
         var captureStopped = false
         var captureCancelled = false
@@ -236,12 +237,14 @@ final class WritingDictationCoordinator {
         publish(.connecting)
 
         let startOperationID = registerOperation(sessionID: sessionID, kind: .captureStart)
+        session?.captureStartInFlight = true
         defer { completeOperation(startOperationID) }
 
         do {
             let stream = try await audioCapture.startStreaming(
                 microphoneDeviceID: config.microphoneDeviceID
             )
+            session?.captureStartInFlight = false
             guard session?.id == sessionID else {
                 await audioCapture.cancel()
                 return
@@ -265,12 +268,14 @@ final class WritingDictationCoordinator {
             }
             session?.connectOperationID = connectOperationID
         } catch let error as CancellationError {
+            session?.captureStartInFlight = false
             guard session?.id == sessionID, session?.terminalWon == false else { return }
             winTerminal(
                 sessionID: sessionID,
                 outcome: Task.isCancelled ? .cancelled : .failure(errorKey(error))
             )
         } catch {
+            session?.captureStartInFlight = false
             guard session?.id == sessionID, session?.terminalWon == false else { return }
             winTerminal(sessionID: sessionID, outcome: .failure(errorKey(error)))
         }
@@ -597,11 +602,11 @@ final class WritingDictationCoordinator {
     }
 
     private func finalTranscriptTimedOut(sessionID: UUID) {
-        guard session?.id == sessionID, session?.terminalWon == false else { return }
-        session?.finalWaiter?.resume(
-            throwing: RealtimeTranscriptionError.finalTranscriptTimedOut
+        _ = latchRealtimeUnavailable(
+            sessionID: sessionID,
+            finalWaiterError: RealtimeTranscriptionError.finalTranscriptTimedOut,
+            cancelTimeoutOperation: false
         )
-        session?.finalWaiter = nil
     }
 
     private func resumeFinalWaiter(sessionID: UUID) {
@@ -614,17 +619,17 @@ final class WritingDictationCoordinator {
     private func loseRealtime(sessionID: UUID) async {
         guard let current = session,
               current.id == sessionID,
-              current.realtimeAvailable,
               !current.terminalWon
         else { return }
 
-        session?.realtimeAvailable = false
-        session?.earlyAudio.removeAll(keepingCapacity: false)
-        cancelOperation(current.connectOperationID)
-        cancelOperation(current.receiveOperationID)
-        cancelOperation(current.timeoutOperationID)
-        current.finalWaiter?.resume(throwing: RealtimeTranscriptionError.connectionClosed)
-        session?.finalWaiter = nil
+        let newlyLost = current.realtimeAvailable
+        if newlyLost {
+            _ = latchRealtimeUnavailable(
+                sessionID: sessionID,
+                finalWaiterError: RealtimeTranscriptionError.connectionClosed,
+                cancelTimeoutOperation: true
+            )
+        }
         await closeRealtime(sessionID: sessionID)
 
         guard let updated = session,
@@ -633,9 +638,33 @@ final class WritingDictationCoordinator {
         else { return }
         if updated.releaseRequested, updated.recordingURL != nil {
             startFallback(sessionID: sessionID)
-        } else if !updated.releaseRequested {
+        } else if newlyLost, !updated.releaseRequested {
             publish(.recordingForFallback)
         }
+    }
+
+    @discardableResult
+    private func latchRealtimeUnavailable(
+        sessionID: UUID,
+        finalWaiterError: Error,
+        cancelTimeoutOperation: Bool
+    ) -> Bool {
+        guard let current = session,
+              current.id == sessionID,
+              current.realtimeAvailable,
+              !current.terminalWon
+        else { return false }
+
+        session?.realtimeAvailable = false
+        session?.earlyAudio.removeAll(keepingCapacity: false)
+        cancelOperation(current.connectOperationID)
+        cancelOperation(current.receiveOperationID)
+        if cancelTimeoutOperation {
+            cancelOperation(current.timeoutOperationID)
+        }
+        current.finalWaiter?.resume(throwing: finalWaiterError)
+        session?.finalWaiter = nil
+        return true
     }
 
     private func startFallback(sessionID: UUID) {
@@ -647,7 +676,7 @@ final class WritingDictationCoordinator {
         else { return }
 
         guard let recordingURL = current.recordingURL,
-              (try? Data(contentsOf: recordingURL)).map({ !$0.isEmpty }) == true
+              isReadableNonemptyRecording(at: recordingURL)
         else {
             winTerminal(
                 sessionID: sessionID,
@@ -667,6 +696,19 @@ final class WritingDictationCoordinator {
             )
         }
         session?.fallbackOperationID = operationID
+    }
+
+    private func isReadableNonemptyRecording(at recordingURL: URL) -> Bool {
+        let fileManager = FileManager.default
+        guard let attributes = try? fileManager.attributesOfItem(
+            atPath: recordingURL.path
+        ),
+        attributes[.type] as? FileAttributeType == .typeRegular,
+        let fileSize = attributes[.size] as? NSNumber,
+        fileSize.uint64Value > 0,
+        fileManager.isReadableFile(atPath: recordingURL.path)
+        else { return false }
+        return true
     }
 
     private func runFallback(
@@ -757,7 +799,7 @@ final class WritingDictationCoordinator {
     ) async {
         guard session?.id == sessionID, session?.terminalWon == true else { return }
 
-        if session?.captureStarted == true,
+        if session?.captureStartInFlight == true || session?.captureStarted == true,
            session?.captureStopped == false,
            session?.captureCancelled == false {
             await cancelCaptureIfNeeded(sessionID: sessionID)
@@ -795,7 +837,7 @@ final class WritingDictationCoordinator {
     private func cancelCaptureIfNeeded(sessionID: UUID) async {
         guard var current = session,
               current.id == sessionID,
-              current.captureStarted,
+              current.captureStartInFlight || current.captureStarted,
               !current.captureStopped,
               !current.captureCancelled
         else { return }
