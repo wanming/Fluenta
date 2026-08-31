@@ -486,7 +486,7 @@ require_documentation_prose "$contributing" \
 
 privacy_policy="${repo_root}/docs/privacy-policy.md"
 require_documentation_prose "$privacy_policy" \
-  "Last updated: August 12, 2026" \
+  "Last updated: August 30, 2026" \
   "the current policy date"
 for privacy_text in \
   "~/Library/Application Support/com.tomwan.inklet/" \
