@@ -98,6 +98,7 @@ final class AppCoordinator: NSObject {
     private var selectionPronunciationReturnState = SelectionPronunciationReturnState.menu
     private var panelDismissalPolicy = SelectionPanelDismissalPolicy()
     private lazy var voiceCoordinator = makeVoiceInputCoordinator()
+    private lazy var updateCheckCoordinator = makeUpdateCheckCoordinator()
 
     init(
         migrationOutcome: LegacySandboxMigrationOutcome,
@@ -265,6 +266,28 @@ final class AppCoordinator: NSObject {
         }
     }
 
+    private func makeUpdateCheckCoordinator() -> UpdateCheckCoordinator {
+        let checker = GitHubReleaseUpdateChecker()
+        let currentBuildNumber = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        let coordinator = UpdateCheckCoordinator(
+            automaticChecksEnabled: storagePaths.bundleIdentifier == InkletStoragePaths.productionBundleIdentifier,
+            currentVersion: BuildInfo.displayVersion,
+            scheduler: FoundationUpdateCheckOneShotScheduler(),
+            presenter: UpdateCheckAlertPresenter(),
+            canPresentAutomatically: { [weak self] in
+                self?.canPresentAutomaticUpdate ?? false
+            },
+            check: {
+                try await checker.check(currentBuildNumber: currentBuildNumber)
+            }
+        )
+        coordinator.onCheckingStateChange = { [weak self] _ in
+            self?.configureMainMenu()
+            self?.configureStatusItemMenu()
+        }
+        return coordinator
+    }
+
     func start() {
         configureMainMenu()
         configureStatusItemIcon()
@@ -347,9 +370,11 @@ final class AppCoordinator: NSObject {
         installSettingsShortcutMonitor()
         refreshMigrationImportEligibility()
         settingsController.showMigrationNotice()
+        updateCheckCoordinator.start()
     }
 
     func stop() {
+        updateCheckCoordinator.stop()
         if let configObserver {
             NotificationCenter.default.removeObserver(configObserver)
             self.configObserver = nil
@@ -400,6 +425,7 @@ final class AppCoordinator: NSObject {
         )
         aboutItem.target = self
         appMenu.addItem(aboutItem)
+        appMenu.addItem(makeCheckForUpdatesMenuItem())
         appMenu.addItem(NSMenuItem.separator())
         let quitItem = NSMenuItem(
             title: L10n.text("app.menu.quit"),
@@ -472,10 +498,17 @@ final class AppCoordinator: NSObject {
         !isMigrationMaintenanceActive && migrationWorkflowsAreIdle
     }
 
+    private var canPresentAutomaticUpdate: Bool {
+        !isMigrationMaintenanceActive
+            && !isRecordingHotkey
+            && migrationWorkflowsAreIdle
+    }
+
     private func refreshMigrationImportEligibility() {
         migrationPresentationModel.setWorkflowsIdle(
             canRequestAssistedMigration
         )
+        updateCheckCoordinator.presentPendingAutomaticUpdateIfPossible()
     }
 
     private func requestAssistedMigrationImport() async {
@@ -1327,6 +1360,7 @@ final class AppCoordinator: NSObject {
         } else {
             registerConfiguredHotkey()
         }
+        refreshMigrationImportEligibility()
     }
 
     private func showPermissionSettingsIfNeeded() {
@@ -1381,6 +1415,20 @@ final class AppCoordinator: NSObject {
         )
     }
 
+    private func makeCheckForUpdatesMenuItem() -> NSMenuItem {
+        let isChecking = updateCheckCoordinator.isChecking
+        let item = NSMenuItem(
+            title: L10n.text(
+                isChecking ? "app.menu.checkingForUpdates" : "app.menu.checkForUpdates"
+            ),
+            action: #selector(checkForUpdates),
+            keyEquivalent: ""
+        )
+        item.target = self
+        item.isEnabled = !isChecking
+        return item
+    }
+
     private func configureStatusItemMenu() {
         let menu = NSMenu()
         menu.addItem(
@@ -1398,6 +1446,7 @@ final class AppCoordinator: NSObject {
         )
         settingsItem.keyEquivalentModifierMask = [.command]
         menu.addItem(settingsItem)
+        menu.addItem(makeCheckForUpdatesMenuItem())
         menu.addItem(NSMenuItem.separator())
         menu.addItem(
             NSMenuItem(
@@ -1415,6 +1464,10 @@ final class AppCoordinator: NSObject {
         )
         menu.items.forEach { $0.target = self }
         statusItem.menu = menu
+    }
+
+    @objc func checkForUpdates() {
+        updateCheckCoordinator.checkManually()
     }
 
     @objc func openPopover() {
