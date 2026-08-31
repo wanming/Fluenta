@@ -221,20 +221,24 @@ final class OpenAIRealtimeTranscriptionClientTests: XCTestCase {
         await transport.waitUntilSendIsPending()
         let firstCommit = Task { try await client.commit() }
         let secondCommit = Task { try await client.commit() }
-        let pendingSnapshot = await transport.snapshot()
-        XCTAssertEqual(pendingSnapshot.sentTexts.suffix(1), [#"{"type":"input_audio_buffer.append","audio":"AQ=="}"#])
+        await client.waitForOutboundMilestone(queuedCount: 2, commitWaiterCount: 2)
 
         await transport.resumeBlockedSend()
         try await append.value
         try await firstCommit.value
         try await secondCommit.value
 
-        let sent = await transport.snapshot().sentTexts
-        XCTAssertEqual(sent.suffix(2), [
+        let snapshot = await transport.snapshot()
+        XCTAssertEqual(snapshot.startedTexts.suffix(2), [
             #"{"type":"input_audio_buffer.append","audio":"AQ=="}"#,
             #"{"type":"input_audio_buffer.commit"}"#
         ])
-        XCTAssertEqual(sent.filter { $0 == #"{"type":"input_audio_buffer.commit"}"# }.count, 1)
+        XCTAssertEqual(snapshot.completedTexts.suffix(2), [
+            #"{"type":"input_audio_buffer.append","audio":"AQ=="}"#,
+            #"{"type":"input_audio_buffer.commit"}"#
+        ])
+        XCTAssertEqual(snapshot.startedTexts.filter { $0 == #"{"type":"input_audio_buffer.commit"}"# }.count, 1)
+        XCTAssertEqual(snapshot.completedTexts.filter { $0 == #"{"type":"input_audio_buffer.commit"}"# }.count, 1)
     }
 
     func testConcurrentCommitSharesFailure() async throws {
@@ -246,12 +250,14 @@ final class OpenAIRealtimeTranscriptionClientTests: XCTestCase {
         let first = Task { try await client.commit() }
         await transport.waitUntilSendIsPending()
         let second = Task { try await client.commit() }
+        await client.waitForOutboundMilestone(queuedCount: 1, commitWaiterCount: 2)
         await transport.resumeBlockedSend(throwing: .sendFailed)
 
         await assertTaskThrowsRealtime(first, .connectionClosed)
         await assertTaskThrowsRealtime(second, .connectionClosed)
         let snapshot = await transport.snapshot()
-        XCTAssertEqual(snapshot.sentTexts.filter { $0 == #"{"type":"input_audio_buffer.commit"}"# }.count, 1)
+        XCTAssertEqual(snapshot.startedTexts.filter { $0 == #"{"type":"input_audio_buffer.commit"}"# }.count, 1)
+        XCTAssertEqual(snapshot.completedTexts.filter { $0 == #"{"type":"input_audio_buffer.commit"}"# }.count, 0)
         XCTAssertEqual(snapshot.closeCount, 1)
     }
 
@@ -477,12 +483,16 @@ private actor FakeRealtimeTransport: RealtimeWebSocketTransport {
         var requestURL: String?
         var authorization: String?
         var sentTexts: [String]
+        var startedTexts: [String]
+        var completedTexts: [String]
         var closeCount: Int
         var pendingOperationCount: Int
     }
 
     private var request: URLRequest?
     private var sentTexts: [String] = []
+    private var startedTexts: [String] = []
+    private var completedTexts: [String] = []
     private var queuedText: [String] = []
     private var receiveContinuations: [CheckedContinuation<String, Error>] = []
     private var connectContinuation: CheckedContinuation<Void, Error>?
@@ -501,10 +511,12 @@ private actor FakeRealtimeTransport: RealtimeWebSocketTransport {
 
     func send(text: String) async throws {
         sentTexts.append(text)
+        startedTexts.append(text)
         if blockSend {
             blockSend = false
             try await withCheckedThrowingContinuation { sendContinuation = $0 }
         }
+        completedTexts.append(text)
     }
 
     func receiveText() async throws -> String {
@@ -560,6 +572,8 @@ private actor FakeRealtimeTransport: RealtimeWebSocketTransport {
             requestURL: request?.url?.absoluteString,
             authorization: request?.value(forHTTPHeaderField: "Authorization"),
             sentTexts: sentTexts,
+            startedTexts: startedTexts,
+            completedTexts: completedTexts,
             closeCount: closeCount,
             pendingOperationCount: receiveContinuations.count + (connectContinuation == nil ? 0 : 1) + (sendContinuation == nil ? 0 : 1)
         )

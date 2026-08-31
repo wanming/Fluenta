@@ -77,6 +77,8 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
     private var isReceiving = false
     private var outboundTail: Task<Void, Error>?
     private var commitTask: Task<Void, Error>?
+    private var queuedOutboundCount = 0
+    private var commitWaiterCount = 0
 
     public init(
         apiKeyProvider: @escaping @Sendable () throws -> String,
@@ -159,6 +161,8 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
         switch state {
         case .committed:
             guard let commitTask else { return }
+            commitWaiterCount += 1
+            defer { commitWaiterCount -= 1 }
             do { try await awaitTransportTask(commitTask) }
             catch { await closeAfterFailure(); throw Self.normalizedConnectionError(error) }
             return
@@ -170,6 +174,8 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
 
         let task = enqueueOutbound(#"{"type":"input_audio_buffer.commit"}"#)
         commitTask = task
+        commitWaiterCount = 1
+        defer { commitWaiterCount -= 1 }
         do {
             try await awaitTransportTask(task)
             commitTask = nil
@@ -248,12 +254,19 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
     private func enqueueOutbound(_ text: String) -> Task<Void, Error> {
         let predecessor = outboundTail
         let transport = transport
+        queuedOutboundCount += 1
         let task = Task {
             if let predecessor { _ = try await predecessor.value }
             try await transport.send(text: text)
         }
         outboundTail = task
         return task
+    }
+
+    func waitForOutboundMilestone(queuedCount: Int, commitWaiterCount: Int) async {
+        while queuedOutboundCount < queuedCount || self.commitWaiterCount < commitWaiterCount {
+            await Task.yield()
+        }
     }
 
     private func awaitTransportTask<T>(_ task: Task<T, Error>) async throws -> T {
