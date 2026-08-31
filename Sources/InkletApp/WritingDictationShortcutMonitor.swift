@@ -89,15 +89,6 @@ final class WritingDictationShortcutMonitor {
         self.removeLocalMonitor = removeLocalMonitor
     }
 
-    deinit {
-        MainActor.assumeIsolated {
-            pendingHold?.cancel()
-            if let localMonitor {
-                removeLocalMonitor(localMonitor)
-            }
-        }
-    }
-
     func configure(
         shortcut: VoiceInputConfig.Shortcut,
         isEligible: @escaping @MainActor () -> Bool,
@@ -169,6 +160,7 @@ final class WritingDictationShortcutMonitor {
         else { return }
 
         if isAwaitingFreshRelease {
+            guard !isConfiguredModifierDown(in: event.modifierFlags) else { return }
             isAwaitingFreshRelease = false
             modifierPressTracker = VoiceShortcutModifierPressTracker()
             return

@@ -64,6 +64,28 @@ final class WritingDictationShortcutMonitorTests: XCTestCase {
         XCTAssertTrue(freshRelease.returned === freshRelease.sent)
     }
 
+    func testFreshReleaseGateIgnoresUnrelatedAndRepeatedModifierDownEvents() {
+        let harness = ShortcutMonitorHarness()
+        harness.subject.activateEditorContext(modifierAlreadyDown: true)
+
+        harness.sendModifier(keyCode: 58, flags: [])
+        harness.sendModifier(keyCode: 61, flags: .option)
+        harness.scheduler.fireNext()
+        harness.sendModifier(keyCode: 61, flags: .option)
+        harness.scheduler.fireNext()
+
+        XCTAssertEqual(harness.actions, [])
+        XCTAssertEqual(harness.scheduler.delays, [])
+
+        harness.sendModifier(keyCode: 61, flags: [])
+        harness.sendModifier(keyCode: 61, flags: .option)
+        harness.scheduler.fireNext()
+        harness.sendModifier(keyCode: 61, flags: [])
+
+        XCTAssertEqual(harness.actions, [.start, .stop])
+        XCTAssertEqual(harness.scheduler.delays, [0.08])
+    }
+
     func testKeyDownInterruptsPendingCandidateWithoutConsumingEvent() {
         let harness = ShortcutMonitorHarness()
         harness.activateEditorContext()
@@ -207,6 +229,31 @@ final class WritingDictationShortcutMonitorTests: XCTestCase {
         harness.subject.stop()
         XCTAssertEqual(harness.eventMonitors.addCount, 2)
         XCTAssertEqual(harness.eventMonitors.removeCount, 2)
+    }
+
+    func testStoppedMonitorCanReleaseLastReferenceOffMainActor() async {
+        let eventMonitors = LocalEventMonitorHarness()
+        var subject: WritingDictationShortcutMonitor? = WritingDictationShortcutMonitor(
+            addLocalMonitor: { mask, handler in
+                eventMonitors.add(mask: mask, handler: handler)
+            },
+            removeLocalMonitor: { monitor in
+                eventMonitors.remove(monitor)
+            }
+        )
+        weak let weakSubject = subject
+
+        subject?.start()
+        subject?.stop()
+        XCTAssertEqual(eventMonitors.removeCount, 1)
+
+        let releaseTask = Task.detached { [subject] in
+            withExtendedLifetime(subject) {}
+        }
+        subject = nil
+        await releaseTask.value
+
+        XCTAssertNil(weakSubject)
     }
 }
 
