@@ -66,6 +66,35 @@ final class UpdateCheckAlertPresenterTests: XCTestCase {
         )
     }
 
+    func testPresentUpdateOmitsVersionOnlyReleaseNames() {
+        let versionOnlyNames = [
+            "v2.0.0-200",
+            "2.0.0",
+            "v2.0.0",
+            "2.0.0 (200)",
+            "2.0.0 (build 200)",
+            "Inklet 2.0.0 (200)",
+            "Ínklet 2.0.0 (BuIlD 200)",
+        ]
+        let expectedInformativeText = "Latest: 2.0.0 (build 200)\n\nCurrent: 1.2.3\n\nRelease notes"
+
+        for name in versionOnlyNames {
+            let recorder = AlertRecorder(response: .alertSecondButtonReturn)
+            makePresenter(recorder: recorder).presentUpdate(
+                release(name: name, notes: "Release notes"),
+                currentVersion: "1.2.3"
+            )
+
+            XCTAssertEqual(recorder.contents.first?.informativeText, expectedInformativeText, name)
+            XCTAssertFalse(
+                recorder.contents.first?.informativeText
+                    .components(separatedBy: "\n\n")
+                    .contains(name) ?? true,
+                name
+            )
+        }
+    }
+
     func testPresentUpdateOpensOnlyItsExactPageURLForFirstResponse() {
         let firstRecorder = AlertRecorder(response: .alertFirstButtonReturn)
         makePresenter(recorder: firstRecorder).presentUpdate(release(), currentVersion: "1.2.3")
@@ -111,12 +140,12 @@ final class UpdateCheckAlertPresenterTests: XCTestCase {
     }
 
     func testProductionAlertRunnerActivatesApplicationBeforeShowingAlert() throws {
-        let source = try String(
-            contentsOf: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-                .appendingPathComponent("Sources/InkletApp/UpdateCheckAlertPresenter.swift"),
-            encoding: .utf8
+        let runnerSource = try defaultAlertRunnerSource()
+        let activationRange = try XCTUnwrap(
+            runnerSource.range(of: "NSApp.activate(ignoringOtherApps: true)")
         )
-        XCTAssertTrue(source.contains("NSApp.activate"))
+        let modalReturnRange = try XCTUnwrap(runnerSource.range(of: "return alert.runModal()"))
+        XCTAssertLessThan(activationRange.upperBound, modalReturnRange.lowerBound)
     }
 
     private func makePresenter(recorder: AlertRecorder) -> UpdateCheckAlertPresenter {
@@ -124,6 +153,19 @@ final class UpdateCheckAlertPresenterTests: XCTestCase {
             alertRunner: { content in recorder.contents.append(content); return recorder.response },
             urlOpener: { recorder.openedURLs.append($0) }
         )
+    }
+
+    private func defaultAlertRunnerSource() throws -> String {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent("Sources/InkletApp/UpdateCheckAlertPresenter.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(of: "    private static func defaultAlertRunner"))
+        let end = try XCTUnwrap(
+            source.range(of: "\n    private func usefulReleaseName", range: start.upperBound..<source.endIndex)
+        )
+        return String(source[start.lowerBound..<end.lowerBound])
     }
 
     private func release(name: String? = "Faster dictation", notes: String = "Notes") -> InkletRelease {
