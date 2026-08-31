@@ -92,6 +92,9 @@ if [[ -f "${repo_root}/.env.local" ]]; then
   source "${repo_root}/.env.local"
 fi
 
+# shellcheck disable=SC1091
+source "${repo_root}/VERSION"
+
 sign_identity="${INKLET_LOCAL_SIGN_IDENTITY:-${INKLET_SIGN_IDENTITY:-}}"
 if [[ -z "$sign_identity" ]]; then
   sign_identity="$(detect_sign_identity || true)"
@@ -122,11 +125,13 @@ EOF
   exit 1
 fi
 
-run "env INKLET_APP_NAME=${app_name} INKLET_BUNDLE_ID=${bundle_id} INKLET_OUTPUT_DIR=${output_dir} INKLET_SIGN_IDENTITY=<hidden> scripts/build-macos-app-bundle.sh" \
+run "env INKLET_APP_NAME=${app_name} INKLET_BUNDLE_ID=${bundle_id} INKLET_OUTPUT_DIR=${output_dir} INKLET_VERSION=${INKLET_VERSION} INKLET_BUILD_NUMBER=${INKLET_BUILD_NUMBER} INKLET_SIGN_IDENTITY=<hidden> scripts/build-macos-app-bundle.sh" \
   env \
   INKLET_APP_NAME="$app_name" \
   INKLET_BUNDLE_ID="$bundle_id" \
   INKLET_OUTPUT_DIR="$output_dir" \
+  INKLET_VERSION="$INKLET_VERSION" \
+  INKLET_BUILD_NUMBER="$INKLET_BUILD_NUMBER" \
   INKLET_SIGN_IDENTITY="$sign_identity" \
   "${repo_root}/scripts/build-macos-app-bundle.sh"
 

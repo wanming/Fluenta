@@ -8,6 +8,9 @@ bundle_id="com.tomwan.inklet.local"
 app_path="${repo_root}/dist/local/${app_name}.app"
 install_path="/Applications/${app_name}.app"
 
+# shellcheck disable=SC1091
+source "${repo_root}/VERSION"
+
 dry_run_output="$(INKLET_SIGN_IDENTITY="LOCAL_TEST_IDENTITY" "${script_dir}/run-local-app.sh" --dry-run)"
 fake_bin="$(mktemp -d)"
 trap 'rm -rf "$fake_bin"' EXIT
@@ -38,6 +41,16 @@ fi
 
 if ! grep -q "INKLET_OUTPUT_DIR=${repo_root}/dist/local" <<<"$dry_run_output"; then
   echo "run-local-app.sh must use the local output directory." >&2
+  exit 1
+fi
+
+if ! grep -q "INKLET_VERSION=${INKLET_VERSION}" <<<"$dry_run_output"; then
+  echo "run-local-app.sh must build the version declared in VERSION." >&2
+  exit 1
+fi
+
+if ! grep -q "INKLET_BUILD_NUMBER=${INKLET_BUILD_NUMBER}" <<<"$dry_run_output"; then
+  echo "run-local-app.sh must build the build number declared in VERSION." >&2
   exit 1
 fi
 
