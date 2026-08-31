@@ -79,6 +79,8 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
     private var commitTask: Task<Void, Error>?
     private var queuedOutboundCount = 0
     private var commitWaiterCount = 0
+    private var outboundTaskStartedCount = 0
+    private var waitingOnPredecessorCount = 0
 
     public init(
         apiKeyProvider: @escaping @Sendable () throws -> String,
@@ -256,15 +258,20 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
         let transport = transport
         queuedOutboundCount += 1
         let task = Task {
-            if let predecessor { _ = try await predecessor.value }
+            outboundTaskStartedCount += 1
+            if let predecessor {
+                waitingOnPredecessorCount += 1
+                defer { waitingOnPredecessorCount -= 1 }
+                _ = try await predecessor.value
+            }
             try await transport.send(text: text)
         }
         outboundTail = task
         return task
     }
 
-    func waitForOutboundMilestone(queuedCount: Int, commitWaiterCount: Int) async {
-        while queuedOutboundCount < queuedCount || self.commitWaiterCount < commitWaiterCount {
+    func waitForOutboundMilestone(queuedCount: Int, commitWaiterCount: Int, waitingOnPredecessorCount: Int) async {
+        while queuedOutboundCount < queuedCount || self.commitWaiterCount < commitWaiterCount || self.waitingOnPredecessorCount < waitingOnPredecessorCount {
             await Task.yield()
         }
     }

@@ -221,7 +221,7 @@ final class OpenAIRealtimeTranscriptionClientTests: XCTestCase {
         await transport.waitUntilSendIsPending()
         let firstCommit = Task { try await client.commit() }
         let secondCommit = Task { try await client.commit() }
-        await client.waitForOutboundMilestone(queuedCount: 2, commitWaiterCount: 2)
+        await client.waitForOutboundMilestone(queuedCount: 2, commitWaiterCount: 2, waitingOnPredecessorCount: 1)
 
         await transport.resumeBlockedSend()
         try await append.value
@@ -229,14 +229,7 @@ final class OpenAIRealtimeTranscriptionClientTests: XCTestCase {
         try await secondCommit.value
 
         let snapshot = await transport.snapshot()
-        XCTAssertEqual(snapshot.startedTexts.suffix(2), [
-            #"{"type":"input_audio_buffer.append","audio":"AQ=="}"#,
-            #"{"type":"input_audio_buffer.commit"}"#
-        ])
-        XCTAssertEqual(snapshot.completedTexts.suffix(2), [
-            #"{"type":"input_audio_buffer.append","audio":"AQ=="}"#,
-            #"{"type":"input_audio_buffer.commit"}"#
-        ])
+        XCTAssertEqual(snapshot.phaseLog.suffix(4), ["appendStarted", "appendCompleted", "commitStarted", "commitCompleted"])
         XCTAssertEqual(snapshot.startedTexts.filter { $0 == #"{"type":"input_audio_buffer.commit"}"# }.count, 1)
         XCTAssertEqual(snapshot.completedTexts.filter { $0 == #"{"type":"input_audio_buffer.commit"}"# }.count, 1)
     }
@@ -250,7 +243,7 @@ final class OpenAIRealtimeTranscriptionClientTests: XCTestCase {
         let first = Task { try await client.commit() }
         await transport.waitUntilSendIsPending()
         let second = Task { try await client.commit() }
-        await client.waitForOutboundMilestone(queuedCount: 1, commitWaiterCount: 2)
+        await client.waitForOutboundMilestone(queuedCount: 1, commitWaiterCount: 2, waitingOnPredecessorCount: 0)
         await transport.resumeBlockedSend(throwing: .sendFailed)
 
         await assertTaskThrowsRealtime(first, .connectionClosed)
@@ -485,6 +478,7 @@ private actor FakeRealtimeTransport: RealtimeWebSocketTransport {
         var sentTexts: [String]
         var startedTexts: [String]
         var completedTexts: [String]
+        var phaseLog: [String]
         var closeCount: Int
         var pendingOperationCount: Int
     }
@@ -493,6 +487,7 @@ private actor FakeRealtimeTransport: RealtimeWebSocketTransport {
     private var sentTexts: [String] = []
     private var startedTexts: [String] = []
     private var completedTexts: [String] = []
+    private var phaseLog: [String] = []
     private var queuedText: [String] = []
     private var receiveContinuations: [CheckedContinuation<String, Error>] = []
     private var connectContinuation: CheckedContinuation<Void, Error>?
@@ -512,11 +507,13 @@ private actor FakeRealtimeTransport: RealtimeWebSocketTransport {
     func send(text: String) async throws {
         sentTexts.append(text)
         startedTexts.append(text)
+        phaseLog.append(text.contains("input_audio_buffer.append") ? "appendStarted" : text.contains("input_audio_buffer.commit") ? "commitStarted" : "otherStarted")
         if blockSend {
             blockSend = false
             try await withCheckedThrowingContinuation { sendContinuation = $0 }
         }
         completedTexts.append(text)
+        phaseLog.append(text.contains("input_audio_buffer.append") ? "appendCompleted" : text.contains("input_audio_buffer.commit") ? "commitCompleted" : "otherCompleted")
     }
 
     func receiveText() async throws -> String {
@@ -574,6 +571,7 @@ private actor FakeRealtimeTransport: RealtimeWebSocketTransport {
             sentTexts: sentTexts,
             startedTexts: startedTexts,
             completedTexts: completedTexts,
+            phaseLog: phaseLog,
             closeCount: closeCount,
             pendingOperationCount: receiveContinuations.count + (connectContinuation == nil ? 0 : 1) + (sendContinuation == nil ? 0 : 1)
         )
