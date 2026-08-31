@@ -182,6 +182,52 @@ final class UpdateCheckDocumentationTests: XCTestCase {
         )
     }
 
+    func testPublicDocumentationRejectsAutomaticDownloadOrInstallationClaims() throws {
+        for relativePath in [
+            "README.md",
+            "README.zh-CN.md",
+            "docs/privacy-policy.md",
+            "docs/manual-test-checklist.md"
+        ] {
+            assertDoesNotContainAutomaticDownloadOrInstallationClaim(
+                try document(named: relativePath),
+                documentName: relativePath
+            )
+        }
+    }
+
+    func testAutomaticUpdateClaimMatcherDistinguishesAffirmativeAndNegativeCopy() {
+        let forbiddenClaims = [
+            "Inklet automatically downloads and installs updates.",
+            "Inklet will automatically install an update.",
+            "Inklet downloads updates automatically.",
+            "Inklet will download and install updates automatically.",
+            "Inklet 会自动下载并安装更新。",
+            "Inklet 将自动安装更新。",
+            "Inklet自动下载更新。"
+        ]
+        for claim in forbiddenClaims {
+            XCTAssertNotNil(
+                automaticDownloadOrInstallationClaim(in: claim),
+                "Matcher did not reject affirmative claim: \(claim)"
+            )
+        }
+
+        let allowedClaims = [
+            "Inklet never downloads or installs updates automatically.",
+            "Inklet does not automatically download or install updates.",
+            "Inklet will not automatically install an update.",
+            "Inklet 不会自动下载或安装更新。",
+            "Inklet 从不自动下载或安装更新。"
+        ]
+        for claim in allowedClaims {
+            XCTAssertNil(
+                automaticDownloadOrInstallationClaim(in: claim),
+                "Matcher rejected negative claim: \(claim)"
+            )
+        }
+    }
+
     private var repositoryRoot: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -225,5 +271,39 @@ final class UpdateCheckDocumentationTests: XCTestCase {
                 line: line
             )
         }
+    }
+
+    private func assertDoesNotContainAutomaticDownloadOrInstallationClaim(
+        _ text: String,
+        documentName: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard let claim = automaticDownloadOrInstallationClaim(in: text) else {
+            return
+        }
+        XCTFail(
+            "\(documentName) contains a forbidden automatic-update claim: \(claim)",
+            file: file,
+            line: line
+        )
+    }
+
+    private func automaticDownloadOrInstallationClaim(in text: String) -> String? {
+        let forbiddenClaimPatterns = [
+            #"\bInklet\s+(?:(?:will|does|can)\s+)?automatically\s+(?:downloads?|installs?)\b"#,
+            #"\bInklet\s+(?:(?:will|does|can)\s+)?(?:downloads?|installs?)(?:\s+(?:and|or)\s+(?:downloads?|installs?))?\s+(?:an?\s+)?updates?\s+automatically\b"#,
+            #"Inklet\s*(?:(?:将会|会|将)\s*)?自动\s*(?:下载|安装)(?:\s*(?:并|和|或)\s*(?:下载|安装))?\s*更新"#
+        ]
+
+        for pattern in forbiddenClaimPatterns {
+            if let range = text.range(
+                of: pattern,
+                options: [.caseInsensitive, .regularExpression]
+            ) {
+                return String(text[range])
+            }
+        }
+        return nil
     }
 }
