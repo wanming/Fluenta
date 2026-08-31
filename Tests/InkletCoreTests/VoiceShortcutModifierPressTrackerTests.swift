@@ -55,7 +55,7 @@ final class VoiceShortcutModifierPressTrackerTests: XCTestCase {
         )
     }
 
-    func testResetClearsActivePress() {
+    func testResetIgnoresLaterReleaseFromClearedActivePress() {
         var tracker = VoiceShortcutModifierPressTracker()
 
         _ = tracker.transition(
@@ -65,6 +65,14 @@ final class VoiceShortcutModifierPressTrackerTests: XCTestCase {
         )
         tracker.reset()
 
+        XCTAssertEqual(
+            tracker.transition(
+                keyCode: 61,
+                expectedKeyCode: 61,
+                isConfiguredModifierDown: true
+            ),
+            .ignored
+        )
         XCTAssertEqual(
             tracker.transition(
                 keyCode: 61,

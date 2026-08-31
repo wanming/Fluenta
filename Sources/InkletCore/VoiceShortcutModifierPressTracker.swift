@@ -8,6 +8,7 @@ public enum VoiceShortcutModifierTransition: Equatable, Sendable {
 
 public struct VoiceShortcutModifierPressTracker: Equatable, Sendable {
     private var activeKeyCode: UInt16?
+    private var ignoredReleaseKeyCode: UInt16?
 
     public init() {}
 
@@ -17,6 +18,11 @@ public struct VoiceShortcutModifierPressTracker: Equatable, Sendable {
         isConfiguredModifierDown: Bool
     ) -> VoiceShortcutModifierTransition {
         guard keyCode == expectedKeyCode else {
+            return .ignored
+        }
+
+        if ignoredReleaseKeyCode == expectedKeyCode {
+            ignoredReleaseKeyCode = nil
             return .ignored
         }
 
@@ -34,6 +40,9 @@ public struct VoiceShortcutModifierPressTracker: Equatable, Sendable {
     }
 
     public mutating func reset() {
+        if let activeKeyCode {
+            ignoredReleaseKeyCode = activeKeyCode
+        }
         activeKeyCode = nil
     }
 }
