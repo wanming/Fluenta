@@ -75,6 +75,8 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
     private let transport: any RealtimeWebSocketTransport
     private var state: State = .fresh
     private var isReceiving = false
+    private var outboundTail: Task<Void, Error>?
+    private var commitTask: Task<Void, Error>?
 
     public init(
         apiKeyProvider: @escaping @Sendable () throws -> String,
@@ -134,7 +136,7 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
             state = .ready
         } catch {
             await closeAfterFailure()
-            throw Self.mapConnectionError(error)
+            throw Self.normalizedConnectionError(error)
         }
     }
 
@@ -144,17 +146,21 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
         }
 
         let message = #"{"type":"input_audio_buffer.append","audio":"\#(data.base64EncodedString())"}"#
+        let task = enqueueOutbound(message)
         do {
-            try await transport.send(text: message)
+            try await awaitTransportTask(task)
         } catch {
             await closeAfterFailure()
-            throw Self.mapConnectionError(error)
+            throw Self.normalizedConnectionError(error)
         }
     }
 
     public func commit() async throws {
         switch state {
         case .committed:
+            guard let commitTask else { return }
+            do { try await awaitTransportTask(commitTask) }
+            catch { await closeAfterFailure(); throw Self.normalizedConnectionError(error) }
             return
         case .ready:
             state = .committed
@@ -162,11 +168,14 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
             throw RealtimeTranscriptionError.invalidState
         }
 
+        let task = enqueueOutbound(#"{"type":"input_audio_buffer.commit"}"#)
+        commitTask = task
         do {
-            try await transport.send(text: #"{"type":"input_audio_buffer.commit"}"#)
+            try await awaitTransportTask(task)
+            commitTask = nil
         } catch {
             await closeAfterFailure()
-            throw Self.mapConnectionError(error)
+            throw Self.normalizedConnectionError(error)
         }
     }
 
@@ -178,7 +187,8 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
 
         do {
             while true {
-                let text = try await transport.receiveText()
+                let receiveTask = Task { try await self.transport.receiveText() }
+                let text = try await awaitTransportTask(receiveTask)
                 let message = try Self.parseMessage(text)
                 if let serverError = try Self.serverError(from: message) {
                     throw serverError
@@ -191,7 +201,7 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
         } catch {
             isReceiving = false
             await closeAfterFailure()
-            throw Self.mapConnectionError(error)
+            throw Self.normalizedConnectionError(error)
         }
     }
 
@@ -235,10 +245,35 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
         await transport.close()
     }
 
+    private func enqueueOutbound(_ text: String) -> Task<Void, Error> {
+        let predecessor = outboundTail
+        let transport = transport
+        let task = Task {
+            if let predecessor { _ = try await predecessor.value }
+            try await transport.send(text: text)
+        }
+        outboundTail = task
+        return task
+    }
+
+    private func awaitTransportTask<T>(_ task: Task<T, Error>) async throws -> T {
+        do {
+            return try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+                Task { await self.closeAfterFailure() }
+            }
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            throw error
+        }
+    }
+
     private static let sessionUpdateMessage = #"{"type":"session.update","session":{"type":"transcription","audio":{"input":{"format":{"type":"audio/pcm","rate":24000},"transcription":{"model":"gpt-live-transcribe"},"turn_detection":null}}}}"#
 
     private static func isValid(endpoint: URL) -> Bool {
-        guard let scheme = endpoint.scheme?.lowercased(), ["ws", "wss"].contains(scheme) else {
+        guard endpoint.scheme?.lowercased() == "wss" else {
             return false
         }
         return endpoint.host?.isEmpty == false
@@ -266,10 +301,10 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
     private static func transcriptionEvent(from message: [String: Any]) throws -> RealtimeTranscriptionEvent? {
         let type = try requiredString(message["type"])
 
-        let eventID = try optionalString(message, key: "event_id")
-        let sequence = try optionalInteger(message, key: "sequence")
         switch type {
         case "conversation.item.input_audio_transcription.delta":
+            let eventID = try optionalString(message, key: "event_id")
+            let sequence = try optionalInteger(message, key: "sequence")
             let itemID = try requiredString(message["item_id"])
             let contentIndex = try requiredInteger(message["content_index"])
             let delta = try requiredString(message["delta"])
@@ -281,6 +316,8 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
                 text: delta
             )
         case "conversation.item.input_audio_transcription.completed":
+            let eventID = try optionalString(message, key: "event_id")
+            let sequence = try optionalInteger(message, key: "sequence")
             let itemID = try requiredString(message["item_id"])
             let contentIndex = try requiredInteger(message["content_index"])
             let transcript = try requiredString(message["transcript"])
@@ -324,14 +361,15 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
         return try requiredInteger(value)
     }
 
-    private static func mapConnectionError(_ error: Error) -> RealtimeTranscriptionError {
+    private static func normalizedConnectionError(_ error: Error) -> Error {
+        if error is CancellationError { return error }
         if let realtimeError = error as? RealtimeTranscriptionError {
             return realtimeError
         }
         if error is RealtimeTimeoutError {
-            return .connectionTimedOut
+            return RealtimeTranscriptionError.connectionTimedOut
         }
-        return .connectionClosed
+        return RealtimeTranscriptionError.connectionClosed
     }
 
     private static func withTimeout<T: Sendable>(

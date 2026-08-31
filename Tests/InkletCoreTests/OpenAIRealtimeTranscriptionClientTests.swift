@@ -67,6 +67,18 @@ final class OpenAIRealtimeTranscriptionClientTests: XCTestCase {
         XCTAssertNil(snapshot.requestURL)
     }
 
+    func testInsecureWebSocketEndpointFailsBeforeConnecting() async {
+        let transport = FakeRealtimeTransport()
+        let client = OpenAIRealtimeTranscriptionClient(
+            apiKeyProvider: { "key" },
+            endpoint: URL(string: "ws://api.openai.com/v1/realtime")!,
+            transport: transport
+        )
+        await assertThrowsRealtime(.invalidEndpoint) { try await client.connect(timeoutSeconds: 1) }
+        let snapshot = await transport.snapshot()
+        XCTAssertNil(snapshot.requestURL)
+    }
+
     func testEndpointWithoutHostFailsBeforeConnecting() async {
         let transport = FakeRealtimeTransport()
         let client = OpenAIRealtimeTranscriptionClient(
@@ -199,6 +211,50 @@ final class OpenAIRealtimeTranscriptionClientTests: XCTestCase {
         )
     }
 
+    func testOutboundOperationsRemainOrderedAndConcurrentCommitSharesSuccess() async throws {
+        let transport = FakeRealtimeTransport()
+        let client = makeClient(transport: transport)
+        await connect(client, transport: transport)
+        await transport.blockNextSend()
+
+        let append = Task { try await client.appendPCM16(Data([1])) }
+        await transport.waitUntilSendIsPending()
+        let firstCommit = Task { try await client.commit() }
+        let secondCommit = Task { try await client.commit() }
+        let pendingSnapshot = await transport.snapshot()
+        XCTAssertEqual(pendingSnapshot.sentTexts.suffix(1), [#"{"type":"input_audio_buffer.append","audio":"AQ=="}"#])
+
+        await transport.resumeBlockedSend()
+        try await append.value
+        try await firstCommit.value
+        try await secondCommit.value
+
+        let sent = await transport.snapshot().sentTexts
+        XCTAssertEqual(sent.suffix(2), [
+            #"{"type":"input_audio_buffer.append","audio":"AQ=="}"#,
+            #"{"type":"input_audio_buffer.commit"}"#
+        ])
+        XCTAssertEqual(sent.filter { $0 == #"{"type":"input_audio_buffer.commit"}"# }.count, 1)
+    }
+
+    func testConcurrentCommitSharesFailure() async throws {
+        let transport = FakeRealtimeTransport()
+        let client = makeClient(transport: transport)
+        await connect(client, transport: transport)
+        await transport.blockNextSend()
+
+        let first = Task { try await client.commit() }
+        await transport.waitUntilSendIsPending()
+        let second = Task { try await client.commit() }
+        await transport.resumeBlockedSend(throwing: .sendFailed)
+
+        await assertTaskThrowsRealtime(first, .connectionClosed)
+        await assertTaskThrowsRealtime(second, .connectionClosed)
+        let snapshot = await transport.snapshot()
+        XCTAssertEqual(snapshot.sentTexts.filter { $0 == #"{"type":"input_audio_buffer.commit"}"# }.count, 1)
+        XCTAssertEqual(snapshot.closeCount, 1)
+    }
+
     func testNextEventParsesDeltaWithOptionalSequence() async throws {
         let transport = FakeRealtimeTransport()
         let client = makeClient(transport: transport)
@@ -252,6 +308,53 @@ final class OpenAIRealtimeTranscriptionClientTests: XCTestCase {
 
         let event = try await client.nextEvent()
         XCTAssertEqual(event, .delta(eventID: nil, sequence: nil, itemID: "item", contentIndex: 0, text: "next"))
+    }
+
+    func testNextEventSkipsIrrelevantEventsBeforeDecodingTheirFields() async throws {
+        let transport = FakeRealtimeTransport()
+        let client = makeClient(transport: transport)
+        await connect(client, transport: transport)
+        await transport.enqueue(#"{"type":"rate_limits.updated","event_id":true,"sequence":true}"#)
+        await transport.enqueue(#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"item","content_index":0,"delta":"next"}"#)
+        let event = try await client.nextEvent()
+        XCTAssertEqual(event, .delta(eventID: nil, sequence: nil, itemID: "item", contentIndex: 0, text: "next"))
+    }
+
+    func testCancellationClosesBlockedConnectAppendCommitAndReceive() async throws {
+        let connectTransport = FakeRealtimeTransport()
+        await connectTransport.blockNextConnect()
+        let connectClient = makeClient(transport: connectTransport)
+        let connectTask = Task { try await connectClient.connect(timeoutSeconds: 10) }
+        await connectTransport.waitUntilConnectIsPending()
+        connectTask.cancel()
+        await assertTaskIsCancelled(connectTask)
+        let connectSnapshot = await connectTransport.snapshot()
+        XCTAssertEqual(connectSnapshot.closeCount, 1)
+
+        for operation in ["append", "commit", "receive"] {
+            let transport = FakeRealtimeTransport()
+            let client = makeClient(transport: transport)
+            await connect(client, transport: transport)
+            let task: Task<Void, Error>
+            switch operation {
+            case "append":
+                await transport.blockNextSend()
+                task = Task { try await client.appendPCM16(Data([1])) }
+                await transport.waitUntilSendIsPending()
+            case "commit":
+                await transport.blockNextSend()
+                task = Task { try await client.commit() }
+                await transport.waitUntilSendIsPending()
+            default:
+                task = Task { _ = try await client.nextEvent() }
+                await transport.waitUntilReceiveIsPending()
+            }
+            task.cancel()
+            await assertTaskIsCancelled(task)
+            let snapshot = await transport.snapshot()
+            XCTAssertEqual(snapshot.closeCount, 1)
+            XCTAssertEqual(snapshot.pendingOperationCount, 0)
+        }
     }
 
     func testNextEventMapsServerError() async throws {
@@ -357,6 +460,16 @@ final class OpenAIRealtimeTranscriptionClientTests: XCTestCase {
             XCTAssertEqual(error as? RealtimeTranscriptionError, expected)
         }
     }
+
+    private func assertTaskThrowsRealtime<T>(_ task: Task<T, Error>, _ expected: RealtimeTranscriptionError) async {
+        do { _ = try await task.value; XCTFail("Expected \(expected)") }
+        catch { XCTAssertEqual(error as? RealtimeTranscriptionError, expected) }
+    }
+
+    private func assertTaskIsCancelled<T>(_ task: Task<T, Error>) async {
+        do { _ = try await task.value; XCTFail("Expected cancellation") }
+        catch { XCTAssertTrue(error is CancellationError) }
+    }
 }
 
 private actor FakeRealtimeTransport: RealtimeWebSocketTransport {
@@ -365,20 +478,33 @@ private actor FakeRealtimeTransport: RealtimeWebSocketTransport {
         var authorization: String?
         var sentTexts: [String]
         var closeCount: Int
+        var pendingOperationCount: Int
     }
 
     private var request: URLRequest?
     private var sentTexts: [String] = []
     private var queuedText: [String] = []
     private var receiveContinuations: [CheckedContinuation<String, Error>] = []
+    private var connectContinuation: CheckedContinuation<Void, Error>?
+    private var sendContinuation: CheckedContinuation<Void, Error>?
+    private var blockConnect = false
+    private var blockSend = false
     private var closeCount = 0
 
     func connect(_ request: URLRequest) async throws {
         self.request = request
+        if blockConnect {
+            blockConnect = false
+            try await withCheckedThrowingContinuation { connectContinuation = $0 }
+        }
     }
 
     func send(text: String) async throws {
         sentTexts.append(text)
+        if blockSend {
+            blockSend = false
+            try await withCheckedThrowingContinuation { sendContinuation = $0 }
+        }
     }
 
     func receiveText() async throws -> String {
@@ -394,6 +520,12 @@ private actor FakeRealtimeTransport: RealtimeWebSocketTransport {
         closeCount += 1
         let continuations = receiveContinuations
         receiveContinuations.removeAll()
+        let connectContinuation = connectContinuation
+        self.connectContinuation = nil
+        let sendContinuation = sendContinuation
+        self.sendContinuation = nil
+        connectContinuation?.resume(throwing: URLError(.cancelled))
+        sendContinuation?.resume(throwing: URLError(.cancelled))
         for continuation in continuations {
             continuation.resume(throwing: URLError(.cancelled))
         }
@@ -413,12 +545,25 @@ private actor FakeRealtimeTransport: RealtimeWebSocketTransport {
         }
     }
 
+    func blockNextConnect() { blockConnect = true }
+    func blockNextSend() { blockSend = true }
+    func waitUntilConnectIsPending() async { while connectContinuation == nil { await Task.yield() } }
+    func waitUntilSendIsPending() async { while sendContinuation == nil { await Task.yield() } }
+    func resumeBlockedSend(throwing error: FakeTransportError? = nil) {
+        let continuation = sendContinuation
+        sendContinuation = nil
+        if let error { continuation?.resume(throwing: error) } else { continuation?.resume() }
+    }
+
     func snapshot() -> Snapshot {
         Snapshot(
             requestURL: request?.url?.absoluteString,
             authorization: request?.value(forHTTPHeaderField: "Authorization"),
             sentTexts: sentTexts,
-            closeCount: closeCount
+            closeCount: closeCount,
+            pendingOperationCount: receiveContinuations.count + (connectContinuation == nil ? 0 : 1) + (sendContinuation == nil ? 0 : 1)
         )
     }
 }
+
+private enum FakeTransportError: Error, Sendable { case sendFailed }
