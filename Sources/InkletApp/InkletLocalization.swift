@@ -2256,58 +2256,6 @@ extension VoiceInputConfig.Shortcut {
     }
 }
 
-extension VoiceInputConfig.RecordingMode {
-    var localizedName: String {
-        switch self {
-        case .tapToToggle:
-            L10n.text("settings.voiceRecordingMode.tapToToggle")
-        case .pressAndHold:
-            L10n.text("settings.voiceRecordingMode.pressAndHold")
-        case .doubleTap:
-            L10n.text("settings.voiceRecordingMode.doubleTap")
-        }
-    }
-
-    var quickStartTitle: String {
-        switch self {
-        case .tapToToggle:
-            L10n.text("settings.quickStart.voice.tapToToggle")
-        case .pressAndHold:
-            L10n.text("settings.quickStart.voice.pressAndHold")
-        case .doubleTap:
-            L10n.text("settings.quickStart.voice.doubleTap")
-        }
-    }
-}
-
-extension VoiceInputConfig.SpeechProfile {
-    var localizedName: String {
-        switch self {
-        case .openAIBalanced:
-            L10n.text("settings.speech.profile.openAIBalanced")
-        case .openAIAccuracy:
-            L10n.text("settings.speech.profile.openAIAccuracy")
-        case .openAIWhisper:
-            L10n.text("settings.speech.profile.openAIWhisper")
-        case .custom:
-            L10n.text("settings.speech.profile.custom")
-        }
-    }
-}
-
-extension VoiceInputConfig.PostTranscriptionAction {
-    var localizedName: String {
-        switch self {
-        case .useDefaultPromptMode:
-            L10n.text("settings.voicePostTranscription.useDefaultPromptMode")
-        case .askEachTime:
-            L10n.text("settings.voicePostTranscription.askEachTime")
-        case .insertRawTranscript:
-            L10n.text("settings.voicePostTranscription.insertRawTranscript")
-        }
-    }
-}
-
 extension HotkeyError {
     var userFacingMessage: String {
         switch self {

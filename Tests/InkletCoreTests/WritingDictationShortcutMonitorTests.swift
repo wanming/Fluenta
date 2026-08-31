@@ -319,7 +319,6 @@ private final class ShortcutMonitorHarness {
 
     let scheduler = ManualHoldScheduler()
     let eventMonitors = LocalEventMonitorHarness()
-    var now: TimeInterval = 0
     var configuredKeyIsDown = false
     var isEligible: Bool
     private(set) var actions: [Action] = []
@@ -329,7 +328,6 @@ private final class ShortcutMonitorHarness {
         scheduleHold: { [scheduler] delay, action in
             scheduler.schedule(after: delay, action: action)
         },
-        currentTime: { [weak self] in self?.now ?? 0 },
         configuredKeyState: { [weak self] _ in self?.configuredKeyIsDown == true },
         addLocalMonitor: { [eventMonitors] mask, handler in
             eventMonitors.add(mask: mask, handler: handler)

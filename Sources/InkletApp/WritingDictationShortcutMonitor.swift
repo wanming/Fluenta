@@ -34,7 +34,6 @@ final class WritingDictationShortcutMonitor {
         _ delay: TimeInterval,
         _ action: @escaping @MainActor () -> Void
     ) -> any CancellableHold
-    typealias CurrentTime = @MainActor () -> TimeInterval
     typealias ConfiguredKeyState = @MainActor (_ keyCode: UInt16) -> Bool
     typealias LocalMonitorInstaller = @MainActor (
         _ mask: NSEvent.EventTypeMask,
@@ -44,7 +43,6 @@ final class WritingDictationShortcutMonitor {
 
     private let holdActivationDelay: TimeInterval
     private let scheduleHold: HoldScheduler
-    private let currentTime: CurrentTime
     private let configuredKeyState: ConfiguredKeyState
     private let addLocalMonitor: LocalMonitorInstaller
     private let removeLocalMonitor: LocalMonitorRemover
@@ -69,9 +67,6 @@ final class WritingDictationShortcutMonitor {
         scheduleHold: @escaping HoldScheduler = { delay, action in
             DispatchWorkItemHold(after: delay, action: action)
         },
-        currentTime: @escaping CurrentTime = {
-            ProcessInfo.processInfo.systemUptime
-        },
         configuredKeyState: @escaping ConfiguredKeyState = { keyCode in
             CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(keyCode))
         },
@@ -84,7 +79,6 @@ final class WritingDictationShortcutMonitor {
     ) {
         self.holdActivationDelay = holdActivationDelay
         self.scheduleHold = scheduleHold
-        self.currentTime = currentTime
         self.configuredKeyState = configuredKeyState
         self.addLocalMonitor = addLocalMonitor
         self.removeLocalMonitor = removeLocalMonitor
@@ -178,12 +172,7 @@ final class WritingDictationShortcutMonitor {
             beginCandidateIfEligible()
         case .ended:
             cancelPendingHold()
-            handleActions(
-                gestureRecognizer.pressEnded(
-                    at: currentTime(),
-                    mode: .pressAndHold
-                )
-            )
+            handleActions(gestureRecognizer.pressEnded())
         case .ignored:
             break
         }
@@ -192,12 +181,7 @@ final class WritingDictationShortcutMonitor {
     private func beginCandidateIfEligible() {
         guard isEligible?() == true else { return }
 
-        handleActions(
-            gestureRecognizer.pressBegan(
-                at: currentTime(),
-                mode: .pressAndHold
-            )
-        )
+        handleActions(gestureRecognizer.pressBegan())
         schedulePendingHold()
     }
 
@@ -221,12 +205,7 @@ final class WritingDictationShortcutMonitor {
             return
         }
 
-        handleActions(
-            gestureRecognizer.holdDelayElapsed(
-                at: currentTime(),
-                mode: .pressAndHold
-            )
-        )
+        handleActions(gestureRecognizer.holdDelayElapsed())
     }
 
     private func interruptPendingCandidate() {
@@ -244,7 +223,7 @@ final class WritingDictationShortcutMonitor {
     private func resetInteraction(cancelActiveHold: Bool) {
         cancelPendingHold()
         modifierPressTracker.reset()
-        gestureRecognizer = VoiceShortcutGestureRecognizer()
+        gestureRecognizer.reset()
         guard cancelActiveHold, isHoldActive else { return }
 
         isHoldActive = false
@@ -262,8 +241,6 @@ final class WritingDictationShortcutMonitor {
                 guard isHoldActive else { continue }
                 isHoldActive = false
                 onStop?()
-            case .toggle:
-                break
             }
         }
     }

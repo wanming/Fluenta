@@ -2,52 +2,15 @@ import XCTest
 @testable import InkletCore
 
 final class VoiceInputConfigTests: XCTestCase {
-    func testDefaultVoiceInputConfigMatchesSpec() {
-        let config = VoiceInputConfig.defaultConfig()
-
-        XCTAssertEqual(config.shortcut, .rightOption)
-        XCTAssertEqual(config.speechProviderID, VoiceInputConfig.openAISpeechProviderID)
-        XCTAssertEqual(config.speechEndpoint, "https://api.openai.com/v1/audio/transcriptions")
-        XCTAssertEqual(config.speechModel, "gpt-4o-mini-transcribe")
-        XCTAssertNil(config.microphoneDeviceID)
-        XCTAssertTrue(config.autoProcessTranscription)
-        XCTAssertEqual(config.postTranscriptionAction, .useDefaultPromptMode)
-        XCTAssertEqual(config.recordingMode, .pressAndHold)
-        XCTAssertEqual(config.voiceCleanupPromptModeID, PromptMode.voiceCleanupID)
-    }
-
-    func testSpeechProfilesMapRecommendedOpenAIOptions() {
-        XCTAssertEqual(VoiceInputConfig.SpeechProfile.openAIBalanced.endpoint, VoiceInputConfig.defaultSpeechEndpoint)
-        XCTAssertEqual(VoiceInputConfig.SpeechProfile.openAIBalanced.model, "gpt-4o-mini-transcribe")
-        XCTAssertEqual(VoiceInputConfig.SpeechProfile.openAIAccuracy.endpoint, VoiceInputConfig.defaultSpeechEndpoint)
-        XCTAssertEqual(VoiceInputConfig.SpeechProfile.openAIAccuracy.model, "gpt-4o-transcribe")
-        XCTAssertEqual(VoiceInputConfig.SpeechProfile.openAIWhisper.endpoint, VoiceInputConfig.defaultSpeechEndpoint)
-        XCTAssertEqual(VoiceInputConfig.SpeechProfile.openAIWhisper.model, "whisper-1")
-        XCTAssertNil(VoiceInputConfig.SpeechProfile.custom.endpoint)
-        XCTAssertNil(VoiceInputConfig.SpeechProfile.custom.model)
-    }
-
-    func testSpeechProfileMatchingFallsBackToCustomForUnknownEndpointOrModel() {
+    func testDefaultDictationConfigContainsOnlyLiveFields() {
         XCTAssertEqual(
-            VoiceInputConfig.SpeechProfile.matching(
-                endpoint: VoiceInputConfig.defaultSpeechEndpoint,
-                model: VoiceInputConfig.defaultSpeechModel
-            ),
-            .openAIBalanced
-        )
-        XCTAssertEqual(
-            VoiceInputConfig.SpeechProfile.matching(
-                endpoint: "https://speech.example.test/v1/audio/transcriptions",
-                model: VoiceInputConfig.defaultSpeechModel
-            ),
-            .custom
-        )
-        XCTAssertEqual(
-            VoiceInputConfig.SpeechProfile.matching(
-                endpoint: VoiceInputConfig.defaultSpeechEndpoint,
-                model: "custom-transcribe"
-            ),
-            .custom
+            VoiceInputConfig.defaultConfig(),
+            VoiceInputConfig(
+                shortcut: .rightOption,
+                speechEndpoint: "https://api.openai.com/v1/audio/transcriptions",
+                speechModel: "gpt-4o-mini-transcribe",
+                microphoneDeviceID: nil
+            )
         )
     }
 
@@ -70,14 +33,9 @@ final class VoiceInputConfigTests: XCTestCase {
         var config = AppConfig.defaultConfig()
         config.voiceInput = VoiceInputConfig(
             shortcut: .leftCommand,
-            speechProviderID: "custom-speech",
             speechEndpoint: "https://speech.example.test/v1/audio/transcriptions",
             speechModel: "gpt-4o-transcribe",
-            microphoneDeviceID: "BuiltInMicrophoneDeviceID",
-            autoProcessTranscription: false,
-            postTranscriptionAction: .askEachTime,
-            recordingMode: .pressAndHold,
-            voiceCleanupPromptModeID: PromptMode.chineseSummaryID
+            microphoneDeviceID: "BuiltInMicrophoneDeviceID"
         )
 
         let data = try JSONEncoder().encode(config)
@@ -85,74 +43,34 @@ final class VoiceInputConfigTests: XCTestCase {
 
         XCTAssertEqual(decodedConfig.voiceInput, config.voiceInput)
         XCTAssertEqual(decodedConfig.voiceInput.microphoneDeviceID, "BuiltInMicrophoneDeviceID")
-        XCTAssertEqual(decodedConfig.voiceInput.postTranscriptionAction, .askEachTime)
-        XCTAssertEqual(decodedConfig.voiceInput.recordingMode, .pressAndHold)
     }
 
-    func testVoiceInputConfigUsesPressAndHoldWhenRecordingModeIsOmitted() {
-        let config = VoiceInputConfig(
-            shortcut: .rightOption,
-            speechProviderID: "openai",
-            speechEndpoint: "https://api.openai.com/v1/audio/transcriptions",
-            speechModel: "gpt-4o-mini-transcribe",
-            microphoneDeviceID: nil,
-            autoProcessTranscription: true,
-            postTranscriptionAction: .useDefaultPromptMode,
-            voiceCleanupPromptModeID: "voice-cleanup"
-        )
-
-        XCTAssertEqual(config.recordingMode, .pressAndHold)
-    }
-
-    func testVoiceInputConfigDecodesMissingRecordingModeAsPressAndHold() throws {
-        let data = """
+    func testV3VoiceConfigurationPreservesFourLiveFieldsAndIgnoresRetiredKeys() throws {
+        let json = """
         {
-          "shortcut": "rightOption",
-          "speechProviderID": "openai",
-          "speechEndpoint": "https://api.openai.com/v1/audio/transcriptions",
-          "speechModel": "gpt-4o-mini-transcribe",
-          "autoProcessTranscription": true,
-          "postTranscriptionAction": "useDefaultPromptMode",
-          "voiceCleanupPromptModeID": "voice-cleanup"
-        }
-        """.data(using: .utf8)!
-
-        let config = try JSONDecoder().decode(VoiceInputConfig.self, from: data)
-
-        XCTAssertEqual(config.recordingMode, .pressAndHold)
-    }
-
-    func testVoiceInputConfigDecodesLegacyAutoProcessingAsDefaultMode() throws {
-        let data = """
-        {
-          "shortcut": "rightOption",
-          "speechProviderID": "openai",
-          "speechEndpoint": "https://api.openai.com/v1/audio/transcriptions",
-          "speechModel": "gpt-4o-mini-transcribe",
-          "autoProcessTranscription": true,
-          "voiceCleanupPromptModeID": "voice-cleanup"
-        }
-        """.data(using: .utf8)!
-
-        let config = try JSONDecoder().decode(VoiceInputConfig.self, from: data)
-
-        XCTAssertEqual(config.postTranscriptionAction, .useDefaultPromptMode)
-    }
-
-    func testVoiceInputConfigDecodesLegacyRawTranscriptionSetting() throws {
-        let data = """
-        {
-          "shortcut": "rightOption",
-          "speechProviderID": "openai",
-          "speechEndpoint": "https://api.openai.com/v1/audio/transcriptions",
-          "speechModel": "gpt-4o-mini-transcribe",
+          "shortcut": "leftCommand",
+          "speechProviderID": "retired-provider",
+          "speechEndpoint": "https://fallback.example/v1/audio/transcriptions",
+          "speechModel": "fallback-model",
+          "microphoneDeviceID": "mic-123",
           "autoProcessTranscription": false,
-          "voiceCleanupPromptModeID": "voice-cleanup"
+          "postTranscriptionAction": "askEachTime",
+          "recordingMode": "doubleTap",
+          "voiceCleanupPromptModeID": "legacy-cleanup"
         }
-        """.data(using: .utf8)!
+        """
 
-        let config = try JSONDecoder().decode(VoiceInputConfig.self, from: data)
+        let decoded = try JSONDecoder().decode(VoiceInputConfig.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.shortcut, .leftCommand)
+        XCTAssertEqual(decoded.speechEndpoint, "https://fallback.example/v1/audio/transcriptions")
+        XCTAssertEqual(decoded.speechModel, "fallback-model")
+        XCTAssertEqual(decoded.microphoneDeviceID, "mic-123")
 
-        XCTAssertEqual(config.postTranscriptionAction, .insertRawTranscript)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(decoded)) as? [String: Any]
+        )
+        XCTAssertEqual(Set(object.keys), [
+            "shortcut", "speechEndpoint", "speechModel", "microphoneDeviceID"
+        ])
     }
 }

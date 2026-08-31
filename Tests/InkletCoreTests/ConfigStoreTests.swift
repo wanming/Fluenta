@@ -223,7 +223,7 @@ final class ConfigStoreTests: XCTestCase {
 
             let config = try JSONDecoder().decode(AppConfig.self, from: data)
 
-            XCTAssertEqual(AppConfig.currentVersion, 3)
+            XCTAssertEqual(AppConfig.currentVersion, 4)
             XCTAssertEqual(config.version, AppConfig.currentVersion)
             XCTAssertEqual(config.model, "gpt-5.6-luna")
         }
@@ -255,7 +255,7 @@ final class ConfigStoreTests: XCTestCase {
     func testCurrentConfigPreservesExplicitFormerOpenAIDefault() throws {
         let data = """
         {
-            "version": 3,
+            "version": 4,
             "providerID": "openai",
             "model": "gpt-5.4-mini"
         }
@@ -294,50 +294,28 @@ final class ConfigStoreTests: XCTestCase {
         XCTAssertNil(encodedJSON["temperature"])
     }
 
-    func testConfigDecodeMigratesLegacyTapToToggleVoiceRecordingModeToPressAndHold() throws {
-        let data = """
-        {
-            "version": 1,
-            "voiceInput": {
-                "shortcut": "rightOption",
-                "speechProviderID": "openai",
-                "speechEndpoint": "https://api.openai.com/v1/audio/transcriptions",
-                "speechModel": "gpt-4o-mini-transcribe",
-                "autoProcessTranscription": true,
-                "postTranscriptionAction": "useDefaultPromptMode",
-                "recordingMode": "tapToToggle",
-                "voiceCleanupPromptModeID": "voice-cleanup"
-            }
+    func testAppConfigMigratesVersionsOneThroughThreeToVersionFour() throws {
+        for savedVersion in 1...3 {
+            let data = try JSONSerialization.data(withJSONObject: [
+                "version": savedVersion,
+                "voiceInput": [
+                    "shortcut": "rightCommand",
+                    "speechEndpoint": "https://fallback.example/transcribe",
+                    "speechModel": "legacy-model",
+                    "microphoneDeviceID": "legacy-mic",
+                    "recordingMode": "tapToToggle"
+                ]
+            ])
+
+            let config = try JSONDecoder().decode(AppConfig.self, from: data)
+
+            XCTAssertEqual(AppConfig.currentVersion, 4)
+            XCTAssertEqual(config.version, 4)
+            XCTAssertEqual(config.voiceInput.shortcut, .rightCommand)
+            XCTAssertEqual(config.voiceInput.speechEndpoint, "https://fallback.example/transcribe")
+            XCTAssertEqual(config.voiceInput.speechModel, "legacy-model")
+            XCTAssertEqual(config.voiceInput.microphoneDeviceID, "legacy-mic")
         }
-        """.data(using: .utf8)!
-
-        let config = try JSONDecoder().decode(AppConfig.self, from: data)
-
-        XCTAssertEqual(config.version, AppConfig.currentVersion)
-        XCTAssertEqual(config.voiceInput.recordingMode, .pressAndHold)
-    }
-
-    func testConfigDecodePreservesCurrentTapToToggleVoiceRecordingMode() throws {
-        let data = """
-        {
-            "version": \(AppConfig.currentVersion),
-            "voiceInput": {
-                "shortcut": "rightOption",
-                "speechProviderID": "openai",
-                "speechEndpoint": "https://api.openai.com/v1/audio/transcriptions",
-                "speechModel": "gpt-4o-mini-transcribe",
-                "autoProcessTranscription": true,
-                "postTranscriptionAction": "useDefaultPromptMode",
-                "recordingMode": "tapToToggle",
-                "voiceCleanupPromptModeID": "voice-cleanup"
-            }
-        }
-        """.data(using: .utf8)!
-
-        let config = try JSONDecoder().decode(AppConfig.self, from: data)
-
-        XCTAssertEqual(config.version, AppConfig.currentVersion)
-        XCTAssertEqual(config.voiceInput.recordingMode, .tapToToggle)
     }
 
     func testConfigDecodeMigratesLegacyProvidersToOpenAI() throws {

@@ -42,6 +42,35 @@ final class SettingsViewSourceTests: XCTestCase {
         ))
     }
 
+    func testWriteAssistantContainsMergedDictationControls() throws {
+        let source = try settingsViewSource()
+
+        XCTAssertFalse(source.contains("case voiceWriteAssistant"))
+        XCTAssertTrue(source.contains("settings.group.writing"))
+        XCTAssertTrue(source.contains("settings.group.dictation"))
+        XCTAssertTrue(source.contains("$model.config.voiceInput.shortcut"))
+        XCTAssertTrue(source.contains("selectedMicrophoneBinding"))
+        XCTAssertTrue(source.contains("$model.config.voiceInput.speechEndpoint"))
+        XCTAssertTrue(source.contains("$model.config.voiceInput.speechModel"))
+        XCTAssertTrue(source.contains("settings.error.invalidFallbackSpeechEndpoint"))
+        XCTAssertFalse(source.contains("voice.error.invalidSpeechEndpoint"))
+    }
+
+    func testRetiredVoiceWorkflowControlsAreAbsent() throws {
+        let source = try settingsViewSource()
+
+        for retired in [
+            "VoiceInputConfig.RecordingMode",
+            "VoiceInputConfig.PostTranscriptionAction",
+            "selectedSpeechProfile",
+            "voiceCleanupModes",
+            "autoProcessTranscription",
+            "voiceCleanupPromptModeID"
+        ] {
+            XCTAssertFalse(source.contains(retired), retired)
+        }
+    }
+
     @MainActor
     func testFlushWithoutEditsPreservesRawConfigAndAllowsAssistedImport() throws {
         let testRoot = FileManager.default.temporaryDirectory
