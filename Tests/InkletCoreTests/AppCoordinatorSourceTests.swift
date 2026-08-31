@@ -1,6 +1,82 @@
 import XCTest
 
 final class AppCoordinatorSourceTests: XCTestCase {
+    func testConfigurationReloadsWindowOwnedDictationWithoutGlobalVoiceInfrastructure() throws {
+        let source = try appCoordinatorSource()
+        let removedNames = [
+            ["Voice", "Input", "Coordinator"].joined(),
+            ["Voice", "Shortcut", "Monitor"].joined(),
+            ["Voice", "Status", "Window", "Controller"].joined(),
+        ]
+
+        XCTAssertTrue(source.contains("windowController.reloadDictationConfiguration()"))
+        for removedName in removedNames {
+            XCTAssertFalse(source.contains(removedName), "Retired global type remains: \(removedName)")
+        }
+        XCTAssertFalse(source.contains("configure" + "VoiceInput"))
+        XCTAssertFalse(source.contains(["make", "Voice", "Input", "Coordinator"].joined()))
+    }
+
+    func testShutdownJoinsDictationBeforeRemovingObserversAndTerminationWaitsForShutdown() throws {
+        let source = try appCoordinatorSource()
+        let stopStart = try XCTUnwrap(source.range(of: "func stop() async"))
+        let menuStart = try XCTUnwrap(source.range(
+            of: "private func configureMainMenu",
+            range: stopStart.upperBound..<source.endIndex
+        ))
+        let stopBlock = source[stopStart.lowerBound..<menuStart.lowerBound]
+        let cancel = try XCTUnwrap(stopBlock.range(of: "await windowController.cancelDictationAndWait()"))
+        let observers = try XCTUnwrap(stopBlock.range(of: "if let configObserver"))
+
+        XCTAssertLessThan(cancel.lowerBound, observers.lowerBound)
+        XCTAssertTrue(source.contains("func applicationShouldTerminate"))
+        XCTAssertTrue(source.contains("return .terminateLater"))
+        XCTAssertTrue(source.contains("await coordinator.stop()"))
+        XCTAssertTrue(source.contains("reply(toApplicationShouldTerminate: true)"))
+        XCTAssertFalse(source.contains("return .terminateNow"))
+        XCTAssertFalse(source.contains("func applicationWillTerminate"))
+    }
+
+    func testShutdownRejectsNewPopoverAndDictationConfigurationWorkBeforeAwaitingCleanup() throws {
+        let source = try appCoordinatorSource()
+        let stopStart = try XCTUnwrap(source.range(of: "func stop() async"))
+        let menuStart = try XCTUnwrap(source.range(
+            of: "private func configureMainMenu",
+            range: stopStart.upperBound..<source.endIndex
+        ))
+        let stopBlock = source[stopStart.lowerBound..<menuStart.lowerBound]
+        let stoppingAssignment = try XCTUnwrap(stopBlock.range(of: "isStopping = true"))
+        let cancellation = try XCTUnwrap(stopBlock.range(
+            of: "await windowController.cancelDictationAndWait()"
+        ))
+        let openStart = try XCTUnwrap(source.range(of: "@objc func openPopover()"))
+        let settingsStart = try XCTUnwrap(source.range(
+            of: "@objc func openSettings()",
+            range: openStart.upperBound..<source.endIndex
+        ))
+        let openBlock = source[openStart.lowerBound..<settingsStart.lowerBound]
+        let configObserverStart = try XCTUnwrap(source.range(of: "configObserver ="))
+        let accessibilityObserverStart = try XCTUnwrap(source.range(
+            of: "accessibilityObserver =",
+            range: configObserverStart.upperBound..<source.endIndex
+        ))
+        let configObserverBlock = source[configObserverStart.lowerBound..<accessibilityObserverStart.lowerBound]
+
+        XCTAssertTrue(source.contains("private var isStopping = false"))
+        XCTAssertLessThan(stoppingAssignment.lowerBound, cancellation.lowerBound)
+        XCTAssertTrue(openBlock.contains("guard !isStopping"))
+        XCTAssertTrue(configObserverBlock.contains("!self.isStopping"))
+    }
+
+    func testAudioRecorderHasNoLegacyNoResultStartWrapper() throws {
+        let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let sourceURL = packageRoot.appendingPathComponent("Sources/InkletApp/AudioRecorder.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("func start(microphoneDeviceID: String?) async throws"))
+        XCTAssertTrue(source.contains("func startStreaming("))
+    }
+
     func testSelectionTranslationsUseCache() throws {
         let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let sourceURL = packageRoot.appendingPathComponent("Sources/InkletApp/AppCoordinator.swift")
@@ -222,5 +298,11 @@ final class AppCoordinatorSourceTests: XCTestCase {
 
         XCTAssertFalse(source.contains("com.apple.Maps"))
         XCTAssertFalse(source.contains("defaultIgnoredAutomaticSelectionAppBundleIDs"))
+    }
+
+    private func appCoordinatorSource() throws -> String {
+        let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let sourceURL = packageRoot.appendingPathComponent("Sources/InkletApp/AppCoordinator.swift")
+        return try String(contentsOf: sourceURL, encoding: .utf8)
     }
 }

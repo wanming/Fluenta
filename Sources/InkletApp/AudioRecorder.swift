@@ -192,10 +192,6 @@ final class AudioRecorder: DictationAudioCapturing {
         self.removeRecording = removeRecording
     }
 
-    func start(microphoneDeviceID: String?) async throws {
-        _ = try await startStreaming(microphoneDeviceID: microphoneDeviceID)
-    }
-
     func startStreaming(
         microphoneDeviceID: String?
     ) async throws -> AsyncThrowingStream<Data, Error> {

@@ -139,16 +139,16 @@ final class LegacyMigrationAppSourceTests: XCTestCase {
         )
     }
 
-    func testVoiceOperationCompletionRefreshesMigrationEligibility() throws {
+    func testWindowOperationCompletionRefreshesMigrationEligibility() throws {
         let source = try appSource(named: "AppCoordinator.swift")
-        let factory = try sourceScope(
-            startingAt: "private func makeVoiceInputCoordinator()",
-            endingBefore: "private func voicePromptModeSelectionModes",
+        let initializer = try sourceScope(
+            startingAt: "init(",
+            endingBefore: "func start()",
             in: source
         )
 
-        XCTAssertTrue(factory.contains("idleStateHandler: { [weak self] _ in"))
-        XCTAssertTrue(factory.contains("self?.refreshMigrationImportEligibility()"))
+        XCTAssertTrue(initializer.contains("windowController.onBusyChange = { [weak self] _ in"))
+        XCTAssertTrue(initializer.contains("self?.refreshMigrationImportEligibility()"))
     }
 
     func testCoordinatorFreezesAllMutationSurfacesAndRechecksBusyState() throws {
@@ -190,7 +190,6 @@ final class LegacyMigrationAppSourceTests: XCTestCase {
         )
 
         XCTAssertTrue(source.contains("private var isMigrationMaintenanceActive"))
-        XCTAssertTrue(source.contains("voiceCoordinator.isIdle"))
         XCTAssertTrue(source.contains("windowController.isBusy"))
         XCTAssertTrue(source.contains("settingsController.isMigrationWorkflowIdle"))
         XCTAssertTrue(source.contains("settingsController.onMigrationWorkflowIdleChange"))
@@ -204,11 +203,9 @@ final class LegacyMigrationAppSourceTests: XCTestCase {
             2
         )
         XCTAssertTrue(source.contains("hotkeyManager.unregister()"))
-        XCTAssertTrue(source.contains("voiceShortcutMonitor.stop()"))
         XCTAssertTrue(source.contains("selectionActionMonitor.stop()"))
-        XCTAssertTrue(source.contains("await voiceCoordinator.cancelForMigrationMaintenance()"))
         XCTAssertTrue(source.contains("await settingsController.waitForMigrationMaintenanceQuiescence()"))
-        XCTAssertTrue(source.contains("windowController.cancelForMigrationMaintenance()"))
+        XCTAssertTrue(source.contains("await windowController.cancelForMigrationMaintenance()"))
         XCTAssertTrue(source.contains("selectionReadTask?.cancel()"))
         XCTAssertTrue(source.contains("selectionTranslationTask?.cancel()"))
         XCTAssertTrue(source.contains("selectionTTSTask?.cancel()"))
@@ -226,6 +223,7 @@ final class LegacyMigrationAppSourceTests: XCTestCase {
         try assertTokensAppearInOrder(
             [
                 "isMigrationMaintenanceActive = true",
+                "await windowController.cancelForMigrationMaintenance()",
                 "await settingsController.waitForMigrationMaintenanceQuiescence()",
             ],
             in: String(maintenanceEntry)
@@ -268,8 +266,10 @@ final class LegacyMigrationAppSourceTests: XCTestCase {
         XCTAssertTrue(view.contains("transformationTask?.cancel()"))
         XCTAssertTrue(view.contains("sessionID += 1"))
         XCTAssertTrue(controller.contains("var isBusy: Bool"))
-        XCTAssertTrue(controller.contains("func cancelForMigrationMaintenance()"))
+        XCTAssertTrue(controller.contains("func cancelForMigrationMaintenance() async"))
+        XCTAssertTrue(controller.contains("func cancelDictationAndWait() async"))
         XCTAssertTrue(controller.contains("model.cancelForMigrationMaintenance()"))
+        XCTAssertTrue(controller.contains("await dictationCoordinator.cancelAndWait()"))
         XCTAssertTrue(controller.contains("window?.orderOut(nil)"))
     }
 
@@ -375,10 +375,10 @@ final class LegacyMigrationAppSourceTests: XCTestCase {
         XCTAssertTrue(initializer.contains("self.migrator = migrator"))
         XCTAssertTrue(initializer.contains("self.storagePaths = storagePaths"))
         XCTAssertTrue(initializer.contains("JSONLHistoryStore(fileURL: storagePaths.historyFileURL)"))
-        XCTAssertTrue(
-            initializer.contains("InkletPopoverWindowController(historyStore: historyStore)")
-        )
         let compactSettingsInitializer = initializer.filter { !$0.isWhitespace }
+        XCTAssertTrue(compactSettingsInitializer.contains(
+            "InkletPopoverWindowController(historyStore:historyStore,configStore:configStore,apiKeyStore:apiKeyStore)"
+        ))
         XCTAssertTrue(compactSettingsInitializer.contains(
             "SettingsWindowController(historyStore:historyStore,migrationPresentationModel:migrationPresentationModel)"
         ))

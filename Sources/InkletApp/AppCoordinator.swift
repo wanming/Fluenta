@@ -4,6 +4,7 @@ import InkletCore
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let coordinator: AppCoordinator
+    private var terminationTask: Task<Void, Never>?
 
     init(
         migrationOutcome: LegacySandboxMigrationOutcome,
@@ -22,8 +23,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         coordinator.start()
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
-        coordinator.stop()
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard terminationTask == nil else {
+            return .terminateLater
+        }
+
+        terminationTask = Task { @MainActor [coordinator] in
+            await coordinator.stop()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }
 
@@ -46,8 +55,6 @@ private struct PendingUserCopyRead {
 
 @MainActor
 final class AppCoordinator: NSObject {
-    private static let systemSettingsBundleIdentifier = "com.apple.systempreferences"
-
     private let migrationOutcome: LegacySandboxMigrationOutcome
     private let migrator: LegacySandboxDataMigrator
     private let storagePaths: InkletStoragePaths
@@ -59,10 +66,6 @@ final class AppCoordinator: NSObject {
     private let hotkeyManager: GlobalHotkeyManager
     private let configStore: UserDefaultsConfigStore
     private let accessibilityPermissionService: AccessibilityPermissionService
-    private let voiceStatusController: VoiceStatusWindowController
-    private let voiceShortcutMonitor: VoiceShortcutMonitor
-    private let audioRecorder: AudioRecorder
-    private let insertionService: InsertionService
     private let apiKeyStore: LocalAPIKeyStore
     private let selectionActionMonitor: SelectionActionMonitor
     private let selectionActionWindowController: SelectionActionWindowController
@@ -81,7 +84,6 @@ final class AppCoordinator: NSObject {
     private var activeApplicationObserver: NSObjectProtocol?
     private var settingsShortcutMonitor: Any?
     private var lastTargetApplication: NSRunningApplication?
-    private var didObserveSystemSettingsActivation = false
     private var isRecordingHotkey = false
     private var selectionActionCoordinator: SelectionActionCoordinator
     private var selectionReadTask: Task<Void, Never>?
@@ -93,11 +95,11 @@ final class AppCoordinator: NSObject {
     private var selectionTTSTaskID: UUID?
     private var isSelectionSpeechPlaying = false
     private var isMigrationMaintenanceActive = false
+    private var isStopping = false
     private var currentSelectionText = ""
     private var currentTranslationText = ""
     private var selectionPronunciationReturnState = SelectionPronunciationReturnState.menu
     private var panelDismissalPolicy = SelectionPanelDismissalPolicy()
-    private lazy var voiceCoordinator = makeVoiceInputCoordinator()
 
     init(
         migrationOutcome: LegacySandboxMigrationOutcome,
@@ -106,6 +108,8 @@ final class AppCoordinator: NSObject {
     ) {
         SelectionActionDiagnostics.configure(fileURL: storagePaths.selectionDiagnosticsFileURL)
         let historyStore = JSONLHistoryStore(fileURL: storagePaths.historyFileURL)
+        let configStore = UserDefaultsConfigStore()
+        let apiKeyStore = LocalAPIKeyStore()
         let migrationPresentationModel = LegacyMigrationPresentationModel(outcome: migrationOutcome)
         let selectionSourceValidator = SelectionSourceValidator()
         let sourceValidator: SelectionReadPipeline.SourceValidator = {
@@ -125,20 +129,20 @@ final class AppCoordinator: NSObject {
         self.migrationPresentationModel = migrationPresentationModel
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.historyStore = historyStore
-        self.windowController = InkletPopoverWindowController(historyStore: historyStore)
+        self.windowController = InkletPopoverWindowController(
+            historyStore: historyStore,
+            configStore: configStore,
+            apiKeyStore: apiKeyStore
+        )
         self.settingsController = SettingsWindowController(
             historyStore: historyStore,
             migrationPresentationModel: migrationPresentationModel
         )
         self.aboutController = AboutWindowController()
         self.hotkeyManager = GlobalHotkeyManager()
-        self.configStore = UserDefaultsConfigStore()
+        self.configStore = configStore
         self.accessibilityPermissionService = AccessibilityPermissionService()
-        self.voiceStatusController = VoiceStatusWindowController()
-        self.voiceShortcutMonitor = VoiceShortcutMonitor()
-        self.audioRecorder = AudioRecorder()
-        self.insertionService = InsertionService()
-        self.apiKeyStore = LocalAPIKeyStore()
+        self.apiKeyStore = apiKeyStore
         self.selectionActionMonitor = SelectionActionMonitor()
         self.selectionActionWindowController = SelectionActionWindowController()
         self.selectionSourceValidator = selectionSourceValidator
@@ -164,7 +168,7 @@ final class AppCoordinator: NSObject {
         )
         self.speechPlaybackService = SpeechPlaybackService()
         self.selectionActionCoordinator = SelectionActionCoordinator(
-            config: ((try? UserDefaultsConfigStore().load()) ?? AppConfig.defaultConfig()).selectionActions
+            config: ((try? configStore.load()) ?? AppConfig.defaultConfig()).selectionActions
         )
         super.init()
 
@@ -189,11 +193,6 @@ final class AppCoordinator: NSObject {
         }
         self.settingsController.onMigrationWorkflowIdleChange = { [weak self] _ in
             self?.refreshMigrationImportEligibility()
-        }
-        self.voiceStatusController.onCancel = { [weak self] in
-            Task { @MainActor in
-                await self?.voiceCoordinator.cancel()
-            }
         }
         self.selectionActionMonitor.onCandidateSelection = { [weak self] point in
             Task { @MainActor in
@@ -288,12 +287,12 @@ final class AppCoordinator: NSObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                guard self?.isRecordingHotkey == false else {
+                guard let self, !self.isStopping, !self.isRecordingHotkey else {
                     return
                 }
-                self?.registerConfiguredHotkey()
-                self?.configureVoiceInput()
-                self?.configureSelectionActions()
+                self.registerConfiguredHotkey()
+                self.windowController.reloadDictationConfiguration()
+                self.configureSelectionActions()
             }
         }
 
@@ -303,7 +302,6 @@ final class AppCoordinator: NSObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.configureVoiceInput()
                 self?.configureSelectionActions()
             }
         }
@@ -341,7 +339,7 @@ final class AppCoordinator: NSObject {
         }
 
         registerConfiguredHotkey()
-        configureVoiceInput()
+        windowController.reloadDictationConfiguration()
         configureSelectionActions()
         showPermissionSettingsIfNeeded()
         installSettingsShortcutMonitor()
@@ -349,7 +347,9 @@ final class AppCoordinator: NSObject {
         settingsController.showMigrationNotice()
     }
 
-    func stop() {
+    func stop() async {
+        isStopping = true
+        await windowController.cancelDictationAndWait()
         if let configObserver {
             NotificationCenter.default.removeObserver(configObserver)
             self.configObserver = nil
@@ -379,7 +379,6 @@ final class AppCoordinator: NSObject {
             self.settingsShortcutMonitor = nil
         }
         hotkeyManager.unregister()
-        voiceShortcutMonitor.stop()
         selectionActionMonitor.stop()
         selectionReadTask?.cancel()
         selectionTranslationTask?.cancel()
@@ -459,8 +458,7 @@ final class AppCoordinator: NSObject {
     }
 
     private var migrationWorkflowsAreIdle: Bool {
-        voiceCoordinator.isIdle
-            && !windowController.isBusy
+        !windowController.isBusy
             && settingsController.isMigrationWorkflowIdle
             && selectionReadTask == nil
             && selectionTranslationTask == nil
@@ -551,7 +549,6 @@ final class AppCoordinator: NSObject {
     private func enterMigrationMaintenance() async {
         isMigrationMaintenanceActive = true
         hotkeyManager.unregister()
-        voiceShortcutMonitor.stop()
         selectionActionMonitor.stop()
         selectionReadTask?.cancel()
         selectionReadTask = nil
@@ -566,11 +563,10 @@ final class AppCoordinator: NSObject {
         selectionCopyFeedbackTask = nil
         forceDismissSelectionActions(reason: "migrationMaintenance")
         selectionActionWindowController.hidePanel()
-        windowController.cancelForMigrationMaintenance()
         speechPlaybackService.stop()
         isSelectionSpeechPlaying = false
+        await windowController.cancelForMigrationMaintenance()
         await settingsController.waitForMigrationMaintenanceQuiescence()
-        await voiceCoordinator.cancelForMigrationMaintenance()
         refreshMigrationImportEligibility()
     }
 
@@ -578,7 +574,7 @@ final class AppCoordinator: NSObject {
         settingsController.setMigrationMaintenanceActive(false)
         isMigrationMaintenanceActive = false
         registerConfiguredHotkey()
-        configureVoiceInput()
+        windowController.reloadDictationConfiguration()
         configureSelectionActions()
         refreshMigrationImportEligibility()
     }
@@ -619,11 +615,6 @@ final class AppCoordinator: NSObject {
     }
 
     private func handleActivatedApplication(_ application: NSRunningApplication?) {
-        if application?.bundleIdentifier == Self.systemSettingsBundleIdentifier {
-            didObserveSystemSettingsActivation = true
-            return
-        }
-
         rememberTargetApplication(application)
         if SelectionActivationDismissalPolicy.shouldDismiss(
             activatedProcessIdentifier: application?.processIdentifier,
@@ -636,21 +627,6 @@ final class AppCoordinator: NSObject {
         } else {
             SelectionActionDiagnostics.log("activated current app ignored for selection dismiss")
         }
-        refreshVoiceShortcutAfterReturningFromSystemSettingsIfNeeded()
-    }
-
-    private func refreshVoiceShortcutAfterReturningFromSystemSettingsIfNeeded() {
-        guard didObserveSystemSettingsActivation else {
-            return
-        }
-
-        didObserveSystemSettingsActivation = false
-        guard accessibilityPermissionService.isTrusted else {
-            voiceShortcutMonitor.stop()
-            return
-        }
-
-        configureVoiceInput()
     }
 
     private func registerConfiguredHotkey() {
@@ -675,52 +651,6 @@ final class AppCoordinator: NSObject {
             }
         } catch {
             NSLog("Failed to register configured hotkey: \(String(describing: error))")
-        }
-    }
-
-    private func configureVoiceInput() {
-        guard !isMigrationMaintenanceActive else {
-            voiceShortcutMonitor.stop()
-            return
-        }
-        guard OnboardingPolicy.shouldConfigureVoiceShortcutMonitoring(
-            isAccessibilityTrusted: accessibilityPermissionService.isTrusted
-        ) else {
-            voiceShortcutMonitor.stop()
-            return
-        }
-
-        do {
-            let config = try configStore.load()
-            voiceShortcutMonitor.update(
-                shortcut: config.voiceInput.shortcut,
-                recordingMode: config.voiceInput.recordingMode,
-                onToggle: { [weak self] in
-                    Task { @MainActor in
-                        guard self?.isMigrationMaintenanceActive == false else { return }
-                        await self?.voiceCoordinator.toggle()
-                    }
-                },
-                onStart: { [weak self] in
-                    Task { @MainActor in
-                        guard self?.isMigrationMaintenanceActive == false else { return }
-                        await self?.voiceCoordinator.start()
-                    }
-                },
-                onStop: { [weak self] in
-                    Task { @MainActor in
-                        guard self?.isMigrationMaintenanceActive == false else { return }
-                        await self?.voiceCoordinator.stop()
-                    }
-                },
-                onCancel: { [weak self] in
-                    Task { @MainActor in
-                        await self?.voiceCoordinator.cancel()
-                    }
-                }
-            )
-        } catch {
-            NSLog("Failed to configure voice input: \(String(describing: error))")
         }
     }
 
@@ -1175,147 +1105,6 @@ final class AppCoordinator: NSObject {
         }
     }
 
-    private func makeVoiceInputCoordinator() -> VoiceInputCoordinator {
-        VoiceInputCoordinator(
-            configProvider: { [weak self] in
-                ((try? self?.configStore.load()) ?? AppConfig.defaultConfig()).voiceInput
-            },
-            targetApplicationProvider: { [weak self] in
-                self?.lastTargetApplication
-            },
-            startRecording: { [weak self] in
-                let voiceInput = ((try? self?.configStore.load()) ?? AppConfig.defaultConfig()).voiceInput
-                try await self?.audioRecorder.start(microphoneDeviceID: voiceInput.microphoneDeviceID)
-            },
-            stopRecording: { [weak self] in
-                guard let self else {
-                    throw AudioRecorder.AudioRecorderError.recordingUnavailable
-                }
-                return try await self.audioRecorder.stop()
-            },
-            cancelRecording: { [weak self] in
-                await self?.audioRecorder.cancel()
-            },
-            transcribe: { [weak self] request in
-                guard let self else {
-                    throw SpeechTranscriptionError.provider(L10n.text("voice.error.recordingUnavailable"))
-                }
-                let config = try self.configStore.load()
-                guard let endpoint = URL(string: config.voiceInput.speechEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-                    throw SpeechTranscriptionError.invalidEndpoint
-                }
-                defer {
-                    try? FileManager.default.removeItem(at: request.audioFileURL)
-                }
-                let provider = OpenAISpeechTranscriptionProvider(
-                    apiKeyProvider: { [apiKeyStore] in
-                        guard let apiKey = apiKeyStore.loadAPIKey(forProviderID: LLMProviderPreset.openAI.id),
-                              !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        else {
-                            throw SpeechTranscriptionError.provider(L10n.text("voice.error.missingSpeechAPIKey"))
-                        }
-                        return apiKey
-                    },
-                    endpoint: endpoint
-                )
-                return try await provider.transcribe(request)
-            },
-            selectPromptMode: { [weak self] request in
-                guard let self else {
-                    return .cancelled
-                }
-                let config = (try? self.configStore.load()) ?? AppConfig.defaultConfig()
-                return await self.voiceStatusController.selectPromptMode(
-                    transcript: request.transcript,
-                    modes: self.voicePromptModeSelectionModes(
-                        for: config,
-                        defaultModeID: request.defaultPromptModeID
-                    ),
-                    defaultModeID: request.defaultPromptModeID
-                )
-            },
-            cleanup: { [weak self] source, modeID in
-                guard let self else {
-                    throw CancellationError()
-                }
-                let config = try self.configStore.load()
-                let providerPreset = config.resolvedProviderPreset
-                let providerID = config.providerID
-                let apiKeyStore = self.apiKeyStore
-                let provider = LLMProviderFactory.provider(for: providerPreset) {
-                    guard let apiKey = apiKeyStore.loadAPIKey(forProviderID: providerID),
-                          !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    else {
-                        throw TransformationError.provider(L10n.format("popover.error.missingAPIKey", providerPreset.name))
-                    }
-                    return apiKey
-                }
-                let mode = config.promptModeStore.resolveForInternalUse(modeID: modeID, sourceText: source)
-                let result = try await TransformationService(provider: provider).transform(
-                    sourceText: source,
-                    mode: mode,
-                    model: config.model,
-                    timeoutSeconds: config.timeoutSeconds
-                )
-                return result.outputText
-            },
-            insert: { [weak self] text, targetApplication in
-                guard let self else {
-                    throw CancellationError()
-                }
-                try await self.insertionService.insert(text: text, into: targetApplication)
-            },
-            recordHistory: { [weak self] event in
-                guard let self else { return }
-                let config = (try? self.configStore.load()) ?? AppConfig.defaultConfig()
-                let modeName: String?
-                if let cleanupPromptModeID = event.cleanupPromptModeID {
-                    modeName = config.promptModeStore.resolveForInternalUse(
-                        modeID: cleanupPromptModeID,
-                        sourceText: event.transcript
-                    ).localizedName
-                } else {
-                    modeName = nil
-                }
-
-                try? self.historyStore.append(HistoryItem(
-                    source: .voice,
-                    inputText: event.transcript,
-                    outputText: event.finalText,
-                    modeName: modeName,
-                    targetLanguageName: nil,
-                    model: event.cleanupPromptModeID == nil ? event.speechModel : config.model,
-                    metadata: [
-                        "speechModel": event.speechModel,
-                        "cleanupFallback": event.cleanupFallback ? "true" : "false"
-                    ]
-                ))
-            },
-            statusHandler: { [weak self] status in
-                self?.voiceShortcutMonitor.setVoiceInputActive(status.allowsCancellation)
-                self?.voiceStatusController.apply(status)
-                self?.refreshMigrationImportEligibility()
-            },
-            idleStateHandler: { [weak self] _ in
-                self?.refreshMigrationImportEligibility()
-            }
-        )
-    }
-
-    private func voicePromptModeSelectionModes(for config: AppConfig, defaultModeID: String) -> [PromptMode] {
-        var modes = config.visiblePromptModes
-        let fallbackCleanupMode = PromptModeStore.defaultStore().mode(id: PromptMode.voiceCleanupID)
-        if let defaultMode = config.promptModeStore.mode(id: defaultModeID) ?? fallbackCleanupMode,
-           !modes.contains(where: { $0.id == defaultMode.id }) {
-            modes.append(defaultMode)
-        }
-
-        if modes.isEmpty, let fallbackCleanupMode {
-            modes.append(fallbackCleanupMode)
-        }
-        return modes
-    }
-
     private func setHotkeyRecording(_ isRecording: Bool) {
         guard isRecordingHotkey != isRecording else {
             return
@@ -1418,7 +1207,7 @@ final class AppCoordinator: NSObject {
     }
 
     @objc func openPopover() {
-        guard !isMigrationMaintenanceActive else { return }
+        guard !isStopping, !isMigrationMaintenanceActive else { return }
         forceDismissSelectionActions(reason: "openPopover")
         windowController.show(fallbackApplication: lastTargetApplication)
     }

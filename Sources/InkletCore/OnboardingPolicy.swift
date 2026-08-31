@@ -1,10 +1,6 @@
 import Foundation
 
 public enum OnboardingPolicy {
-    public static func shouldConfigureVoiceShortcutMonitoring(isAccessibilityTrusted: Bool) -> Bool {
-        isAccessibilityTrusted
-    }
-
     public static func shouldShowVoiceShortcutHint(
         openAIAPIKey: String?,
         shortcut: VoiceInputConfig.Shortcut

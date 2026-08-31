@@ -73,10 +73,10 @@ final class WritingModeLauncherSourceTests: XCTestCase {
         let commandBlock = source[commandStart.lowerBound..<resultStart.lowerBound]
         let resultBlock = source[resultStart.lowerBound..<statusStart.lowerBound]
 
-        XCTAssertTrue(commandBlock.contains("onResolveTextView:"))
-        XCTAssertTrue(commandBlock.contains("onResolveTextView: onResolveSourceTextView"))
-        XCTAssertTrue(resultBlock.contains("onResolveTextView: nil"))
-        XCTAssertFalse(resultBlock.contains("onResolveSourceTextView"))
+        XCTAssertTrue(commandBlock.contains("onTextViewAttachment:"))
+        XCTAssertTrue(commandBlock.contains("onTextViewAttachment: onSourceTextViewAttachment"))
+        XCTAssertTrue(resultBlock.contains("onTextViewAttachment: nil"))
+        XCTAssertFalse(resultBlock.contains("onSourceTextViewAttachment"))
     }
 
     func testNativeTextViewResolutionTracksMakeUpdateAndDismantle() throws {
@@ -88,9 +88,9 @@ final class WritingModeLauncherSourceTests: XCTestCase {
         ))
         let representable = source[representableStart.lowerBound..<handlerStart.lowerBound]
 
-        XCTAssertTrue(representable.contains("var onResolveTextView: ((NSTextView?) -> Void)?"))
-        XCTAssertTrue(representable.contains("onResolveTextView?(textView)"))
-        XCTAssertTrue(representable.contains("onResolveTextView?(nil)"))
+        XCTAssertTrue(representable.contains("var onTextViewAttachment: ((InkletTextViewAttachmentEvent) -> Void)?"))
+        XCTAssertTrue(representable.contains("onTextViewAttachment?(.attach(textView))"))
+        XCTAssertTrue(representable.contains("onTextViewAttachment?(.detach(textView))"))
         XCTAssertTrue(representable.contains("static func dismantleNSView"))
     }
 
@@ -409,6 +409,118 @@ final class WritingModeLauncherSourceTests: XCTestCase {
         XCTAssertTrue(keyDownBlock.contains("onEscape?()"))
         XCTAssertTrue(compositionBlock.contains("firstResponder as? NSTextInputClient"))
         XCTAssertTrue(compositionBlock.contains("hasMarkedText()"))
+    }
+
+    func testWindowControllerOwnsTheWritingDictationDependencyGraph() throws {
+        let source = try windowControllerSource()
+
+        XCTAssertTrue(source.contains("private let audioRecorder: AudioRecorder"))
+        XCTAssertTrue(source.contains("private let sourceEditorBridge: WritingSourceEditorBridge"))
+        XCTAssertTrue(source.contains("private let dictationCoordinator: WritingDictationCoordinator"))
+        XCTAssertTrue(source.contains("private let dictationShortcutMonitor: WritingDictationShortcutMonitor"))
+        XCTAssertTrue(source.contains("configStore: UserDefaultsConfigStore = UserDefaultsConfigStore()"))
+        XCTAssertTrue(source.contains("apiKeyStore: LocalAPIKeyStore = LocalAPIKeyStore()"))
+        XCTAssertTrue(source.contains("LLMProviderPreset.openAI.id"))
+        XCTAssertTrue(source.contains("RealtimeTranscriptionError.missingAPIKey"))
+        XCTAssertTrue(source.contains("OpenAIRealtimeTranscriptionClient("))
+        XCTAssertTrue(source.contains("OpenAISpeechTranscriptionProvider("))
+        XCTAssertTrue(source.contains("endpoint.scheme == \"http\" || endpoint.scheme == \"https\""))
+        XCTAssertTrue(source.contains("endpoint.host != nil"))
+        XCTAssertTrue(source.contains("model: config.speechModel"))
+        XCTAssertTrue(source.contains("timeoutSeconds: 20"))
+    }
+
+    func testWindowControllerWiresTheSourceEditorAndLocalShortcut() throws {
+        let source = try windowControllerSource()
+
+        XCTAssertTrue(source.contains("InkletPopoverView("))
+        XCTAssertTrue(source.contains("onSourceTextViewAttachment:"))
+        XCTAssertTrue(source.contains("case .attach(let textView):"))
+        XCTAssertTrue(source.contains("sourceEditorBridge.attach(textView)"))
+        XCTAssertTrue(source.contains("case .detach(let textView):"))
+        XCTAssertTrue(source.contains("sourceEditorBridge.detach(textView)"))
+        XCTAssertTrue(source.contains("dictationShortcutMonitor.configure("))
+        XCTAssertTrue(source.contains("sourceEditorBridge.isEligible(in: window, model: model)"))
+        XCTAssertTrue(source.contains("await self?.dictationCoordinator.beginHold()"))
+        XCTAssertTrue(source.contains("await self?.dictationCoordinator.endHold()"))
+        XCTAssertTrue(source.contains("await self?.dictationCoordinator.cancel()"))
+        XCTAssertTrue(source.contains("dictationShortcutMonitor.activateEditorContext()"))
+        XCTAssertTrue(source.contains("dictationShortcutMonitor.invalidateContext()"))
+        XCTAssertTrue(source.contains("model.$popoverSession"))
+    }
+
+    func testPopoverPresentationSerializesDictationCleanupAcrossLifecycleChanges() throws {
+        let source = try windowControllerSource()
+
+        XCTAssertTrue(source.contains("NSWindowDelegate"))
+        XCTAssertTrue(source.contains("panel.delegate = self"))
+        XCTAssertTrue(source.contains("private var presentationGeneration"))
+        XCTAssertTrue(source.contains("func cancelDictationAndWait() async"))
+        XCTAssertTrue(source.contains("await dictationCoordinator.cancelAndWait()"))
+        XCTAssertTrue(source.contains("func windowDidResignKey"))
+
+        for method in ["func show(fallbackApplication:", "func hide()"] {
+            let start = try XCTUnwrap(source.range(of: method))
+            let body = source[start.lowerBound...]
+            XCTAssertTrue(body.contains("presentationGeneration"), "Missing generation guard in \(method)")
+            XCTAssertTrue(body.contains("cancelAndWait"), "Missing joined cancellation in \(method)")
+        }
+
+        let shutdownStart = try XCTUnwrap(source.range(of: "func cancelDictationAndWait() async"))
+        let reloadStart = try XCTUnwrap(source.range(
+            of: "func reloadDictationConfiguration()",
+            range: shutdownStart.upperBound..<source.endIndex
+        ))
+        let shutdown = source[shutdownStart.lowerBound..<reloadStart.lowerBound]
+        XCTAssertTrue(shutdown.contains("advancePresentationGeneration()"))
+        XCTAssertTrue(shutdown.contains("pendingPresentationTask?.cancel()"))
+        XCTAssertTrue(shutdown.contains("await pendingPresentationTask?.value"))
+        XCTAssertTrue(shutdown.contains("dictationShortcutMonitor.stop()"))
+        XCTAssertTrue(shutdown.contains("detachSourceEditor()"))
+        XCTAssertTrue(source.contains("guard let textView = sourceEditorBridge.attachedTextView"))
+        XCTAssertTrue(source.contains("sourceEditorBridge.detach(textView)"))
+        XCTAssertTrue(shutdown.contains("window?.orderOut(nil)"))
+    }
+
+    func testFocusLossCancellationCannotOutliveAReactivatedEditorContext() throws {
+        let source = try windowControllerSource()
+
+        XCTAssertTrue(source.contains("private var dictationContextGeneration"))
+        XCTAssertTrue(source.contains("private var dictationContextCleanupTask"))
+        XCTAssertTrue(source.contains("private func activateDictationEditorContext()"))
+        XCTAssertTrue(source.contains("dictationContextGeneration &+= 1"))
+        XCTAssertTrue(source.contains("dictationContextCleanupTask?.cancel()"))
+        XCTAssertTrue(source.contains("dictationContextCleanupTask = Task"))
+        XCTAssertTrue(source.contains("self.dictationContextGeneration == generation"))
+    }
+
+    func testMonitorCancellationUsesTheTrackedEditorContextCleanupTask() throws {
+        let source = try windowControllerSource()
+        let reloadStart = try XCTUnwrap(source.range(of: "func reloadDictationConfiguration()"))
+        let keyWindowStart = try XCTUnwrap(source.range(
+            of: "func windowDidBecomeKey",
+            range: reloadStart.upperBound..<source.endIndex
+        ))
+        let reloadBlock = source[reloadStart.lowerBound..<keyWindowStart.lowerBound]
+        let onCancelStart = try XCTUnwrap(reloadBlock.range(of: "onCancel:"))
+        let onCancelBlock = reloadBlock[onCancelStart.lowerBound...]
+
+        XCTAssertTrue(onCancelBlock.contains("scheduleDictationContextCancellation()"))
+        XCTAssertFalse(onCancelBlock.contains("Task { @MainActor"))
+        XCTAssertTrue(source.contains("private func scheduleDictationContextCancellation()"))
+        XCTAssertTrue(source.contains("dictationContextCleanupTask = Task"))
+        XCTAssertTrue(source.contains("self.dictationContextGeneration == generation"))
+    }
+
+    func testDictationPhaseUpdatesTheModelAndPostsOnlyPhaseAnnouncements() throws {
+        let source = try windowControllerSource()
+
+        XCTAssertTrue(source.contains("model.setDictationPhase(phase)"))
+        XCTAssertTrue(source.contains("NSAccessibility.post("))
+        XCTAssertTrue(source.contains("notification: .announcementRequested"))
+        XCTAssertTrue(source.contains("NSAccessibility.NotificationUserInfoKey.announcement"))
+        XCTAssertFalse(source.contains("announceTranscript"))
+        XCTAssertFalse(source.contains("announceDelta"))
     }
 
     func testViewModelScopesSourceFocusRequestsToCurrentEditorGeneration() throws {
