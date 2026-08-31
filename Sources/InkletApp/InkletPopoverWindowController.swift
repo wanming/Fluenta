@@ -91,6 +91,8 @@ final class InkletPopoverWindowController: NSWindowController, NSWindowDelegate 
     private var dictationGestureGeneration: UInt = 0
     private var activeDictationGestureToken: DictationGestureToken?
     private var dictationGestureTask: Task<Void, Never>?
+    private let dictationGestureTaskArbiter =
+        WritingDictationGestureTaskArbiter<DictationGestureToken>()
     private let popoverWidth: CGFloat = 600
 
     var onOpenSettings: (() -> Void)? {
@@ -430,14 +432,19 @@ final class InkletPopoverWindowController: NSWindowController, NSWindowDelegate 
         )
         activeDictationGestureToken = token
         let pendingGestureTask = dictationGestureTask
-        dictationGestureTask = Task { @MainActor [weak self] in
-            await pendingGestureTask?.value
-            guard let self,
-                  self.dictationContextGeneration == token.contextGeneration,
-                  self.activeDictationGestureToken == token
-            else { return }
-            await self.dictationCoordinator.beginHold()
-        }
+        dictationGestureTask = dictationGestureTaskArbiter.scheduleStart(
+            token: token,
+            after: pendingGestureTask,
+            isCurrent: { [weak self] token in
+                guard let self else { return false }
+                return self.dictationContextGeneration == token.contextGeneration
+                    && self.dictationGestureGeneration == token.gestureGeneration
+                    && self.activeDictationGestureToken == token
+            },
+            begin: { [weak self] in
+                await self?.dictationCoordinator.beginHold()
+            }
+        )
     }
 
     private func scheduleDictationHoldStop() {
@@ -446,29 +453,27 @@ final class InkletPopoverWindowController: NSWindowController, NSWindowDelegate 
         else { return }
         activeDictationGestureToken = nil
         let pendingGestureTask = dictationGestureTask
-        dictationGestureTask = Task { @MainActor [weak self] in
-            guard let self,
-                  self.dictationContextGeneration == token.contextGeneration
-            else { return }
-            await self.dictationCoordinator.endHold()
-            await pendingGestureTask?.value
-            guard self.dictationContextGeneration == token.contextGeneration else { return }
-            await self.dictationCoordinator.endHold()
-        }
+        dictationGestureTask = dictationGestureTaskArbiter.scheduleStop(
+            token: token,
+            after: pendingGestureTask,
+            isContextCurrent: { [weak self] token in
+                self?.dictationContextGeneration == token.contextGeneration
+            },
+            end: { [weak self] in
+                await self?.dictationCoordinator.endHold()
+            }
+        )
     }
 
     private func scheduleDictationCancellation() {
         activeDictationGestureToken = nil
-        let generation = dictationContextGeneration
         let pendingGestureTask = dictationGestureTask
-        let task = Task { @MainActor [weak self] in
-            guard let self else { return }
-            await self.dictationCoordinator.cancelAndWait()
-            await pendingGestureTask?.value
-            await self.dictationCoordinator.cancelAndWait()
-            guard self.dictationContextGeneration == generation else { return }
-            self.dictationContextCleanupTask = nil
-        }
+        let task = dictationGestureTaskArbiter.scheduleCancellation(
+            after: pendingGestureTask,
+            cancelAndWait: { [weak self] in
+                await self?.dictationCoordinator.cancelAndWait()
+            }
+        )
         dictationContextCleanupTask = task
         dictationGestureTask = task
     }
