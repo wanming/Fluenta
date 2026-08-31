@@ -15,15 +15,20 @@ public enum AppUpdateCheckError: Error, Equatable, Sendable {
 public struct GitHubReleaseUpdateChecker: Sendable {
     private static let endpoint = URL(string: "https://api.github.com/repos/wanming/Inklet/releases/latest")!
     private static let maximumResponseSize = 1_048_576
+    private static let defaultTimeoutInterval: TimeInterval = 15
 
     private let session: URLSession
+    private let timeoutInterval: TimeInterval
 
     public init() {
         session = URLSession(configuration: Self.makeSessionConfiguration())
+        timeoutInterval = Self.defaultTimeoutInterval
     }
 
-    init(session: URLSession) {
+    init(session: URLSession, timeoutInterval: TimeInterval = Self.defaultTimeoutInterval) {
+        precondition(timeoutInterval > 0 && timeoutInterval.isFinite)
         self.session = session
+        self.timeoutInterval = timeoutInterval
     }
 
     static func makeSessionConfiguration() -> URLSessionConfiguration {
@@ -33,6 +38,7 @@ public struct GitHubReleaseUpdateChecker: Sendable {
         configuration.httpShouldSetCookies = false
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.timeoutIntervalForResource = defaultTimeoutInterval
         return configuration
     }
 
@@ -45,22 +51,34 @@ public struct GitHubReleaseUpdateChecker: Sendable {
 
         try Task.checkCancellation()
 
-        let request = Self.makeRequest()
+        let request = Self.makeRequest(timeoutInterval: timeoutInterval)
         let data: Data
-        let response: URLResponse
-        let redirectDelegate = RedirectRejectingDelegate()
+        let responseLoader = BoundedHTTPResponseLoader(
+            expectedURL: Self.endpoint,
+            maximumResponseSize: Self.maximumResponseSize
+        )
 
         do {
-            (data, response) = try await session.data(
-                for: request,
-                delegate: redirectDelegate
+            data = try await responseLoader.load(
+                request: request,
+                configuration: session.configuration,
+                timeoutInterval: timeoutInterval
             )
         } catch {
             if Task.isCancelled {
                 throw CancellationError()
             }
-            if redirectDelegate.didRejectRedirect {
+            if error is UpdateCheckDeadlineExceeded {
+                throw AppUpdateCheckError.networkUnavailable
+            }
+            if responseLoader.didRejectRedirect {
                 throw AppUpdateCheckError.serviceUnavailable
+            }
+            if responseLoader.didRejectAuthentication {
+                throw AppUpdateCheckError.serviceUnavailable
+            }
+            if let error = error as? AppUpdateCheckError {
+                throw error
             }
             if error is CancellationError {
                 throw CancellationError()
@@ -72,26 +90,6 @@ public struct GitHubReleaseUpdateChecker: Sendable {
         }
 
         try Task.checkCancellation()
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw AppUpdateCheckError.invalidResponse
-        }
-
-        guard httpResponse.url == Self.endpoint else {
-            throw AppUpdateCheckError.invalidResponse
-        }
-
-        guard (200...299).contains(httpResponse.statusCode) else {
-            throw AppUpdateCheckError.serviceUnavailable
-        }
-
-        if httpResponse.expectedContentLength != NSURLSessionTransferSizeUnknown,
-           httpResponse.expectedContentLength > Int64(Self.maximumResponseSize) {
-            throw AppUpdateCheckError.invalidResponse
-        }
-        guard data.count <= Self.maximumResponseSize else {
-            throw AppUpdateCheckError.invalidResponse
-        }
 
         let release: InkletRelease
         do {
@@ -108,12 +106,13 @@ public struct GitHubReleaseUpdateChecker: Sendable {
         return .upToDate(release)
     }
 
-    private static func makeRequest() -> URLRequest {
+    private static func makeRequest(timeoutInterval: TimeInterval) -> URLRequest {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "GET"
-        request.timeoutInterval = 15
+        request.timeoutInterval = timeoutInterval
         request.httpShouldHandleCookies = false
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
         return request
     }
@@ -131,14 +130,278 @@ public struct GitHubReleaseUpdateChecker: Sendable {
     }
 }
 
-final class RedirectRejectingDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+struct UpdateCheckDeadlineExceeded: Error {}
+
+final class BoundedHTTPResponseLoader: RedirectRejectingDelegate, URLSessionDataDelegate, @unchecked Sendable {
+    private enum CompletionSource {
+        case transport
+        case deadlineTask
+        case parentCancellation
+    }
+
+    private let expectedURL: URL
+    private let maximumResponseSize: Int
+    private let monotonicNow: @Sendable () -> ContinuousClock.Instant
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Data, Error>?
+    private var pendingResult: Result<Data, Error>?
+    private var session: URLSession?
+    private var task: URLSessionDataTask?
+    private var deadlineTask: Task<Void, Never>?
+    private var deadline: ContinuousClock.Instant?
+    private var responseAccepted = false
+    private var data = Data()
+    private var finished = false
+
+    init(
+        expectedURL: URL,
+        maximumResponseSize: Int,
+        monotonicNow: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock().now }
+    ) {
+        self.expectedURL = expectedURL
+        self.maximumResponseSize = maximumResponseSize
+        self.monotonicNow = monotonicNow
+    }
+
+    func load(
+        request: URLRequest,
+        configuration: URLSessionConfiguration,
+        timeoutInterval: TimeInterval
+    ) async throws -> Data {
+        let clock = ContinuousClock()
+        let deadline = monotonicNow().advanced(by: .seconds(timeoutInterval))
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                start(
+                    request: request,
+                    configuration: configuration,
+                    deadline: deadline,
+                    clock: clock,
+                    continuation: continuation
+                )
+            }
+        } onCancel: {
+            self.finish(
+                .failure(CancellationError()),
+                cancellingTask: true,
+                completionSource: .parentCancellation
+            )
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void
+    ) {
+        let rejection: AppUpdateCheckError?
+        if let httpResponse = response as? HTTPURLResponse {
+            if httpResponse.url != expectedURL {
+                rejection = .invalidResponse
+            } else if !(200...299).contains(httpResponse.statusCode) {
+                rejection = .serviceUnavailable
+            } else if let contentEncoding = httpResponse.value(forHTTPHeaderField: "Content-Encoding"),
+                      contentEncoding
+                          .trimmingCharacters(in: .whitespacesAndNewlines)
+                          .caseInsensitiveCompare("identity") != .orderedSame {
+                rejection = .invalidResponse
+            } else if httpResponse.expectedContentLength != NSURLSessionTransferSizeUnknown,
+                      httpResponse.expectedContentLength > Int64(maximumResponseSize) {
+                rejection = .invalidResponse
+            } else {
+                rejection = nil
+            }
+        } else {
+            rejection = .invalidResponse
+        }
+
+        if let rejection {
+            completionHandler(.cancel)
+            finish(.failure(rejection), cancellingTask: true)
+            return
+        }
+
+        lock.lock()
+        let shouldAccept = !finished
+        if shouldAccept {
+            responseAccepted = true
+            if response.expectedContentLength > 0 {
+                data.reserveCapacity(Int(response.expectedContentLength))
+            }
+        }
+        lock.unlock()
+
+        completionHandler(shouldAccept ? .allow : .cancel)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive newData: Data) {
+        lock.lock()
+        let shouldReject: Bool
+        if !finished, responseAccepted {
+            // URLSession owns each uncompressed callback's allocation. Never copy a callback
+            // that crosses the bound into our accumulator; identity encoding prevents amplification.
+            if newData.count > maximumResponseSize - data.count {
+                shouldReject = true
+            } else {
+                data.append(newData)
+                shouldReject = false
+            }
+        } else {
+            shouldReject = false
+        }
+        lock.unlock()
+
+        if shouldReject {
+            finish(.failure(AppUpdateCheckError.invalidResponse), cancellingTask: true)
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if didRejectAuthentication {
+            finish(.failure(AppUpdateCheckError.serviceUnavailable), cancellingTask: false)
+            return
+        }
+        if let error {
+            finish(.failure(error), cancellingTask: false)
+            return
+        }
+
+        lock.lock()
+        let responseAccepted = self.responseAccepted
+        let completedData = data
+        lock.unlock()
+
+        if responseAccepted {
+            finish(.success(completedData), cancellingTask: false)
+        } else {
+            finish(.failure(AppUpdateCheckError.invalidResponse), cancellingTask: false)
+        }
+    }
+
+    private func start(
+        request: URLRequest,
+        configuration: URLSessionConfiguration,
+        deadline: ContinuousClock.Instant,
+        clock: ContinuousClock,
+        continuation: CheckedContinuation<Data, Error>
+    ) {
+        let requestConfiguration = configuration.copy() as! URLSessionConfiguration
+        requestConfiguration.timeoutIntervalForResource = request.timeoutInterval
+        let session = URLSession(
+            configuration: requestConfiguration,
+            delegate: self,
+            delegateQueue: nil
+        )
+        let task = session.dataTask(with: request)
+        let deadlineTask = Task { [weak self] in
+            do {
+                try await clock.sleep(until: deadline)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else {
+                return
+            }
+            self?.finish(
+                .failure(UpdateCheckDeadlineExceeded()),
+                cancellingTask: true,
+                completionSource: .deadlineTask
+            )
+        }
+
+        lock.lock()
+        if finished {
+            let result = pendingResult ?? .failure(CancellationError())
+            pendingResult = nil
+            lock.unlock()
+
+            deadlineTask.cancel()
+            task.cancel()
+            session.invalidateAndCancel()
+            continuation.resume(with: result)
+            return
+        }
+
+        self.continuation = continuation
+        self.session = session
+        self.task = task
+        self.deadlineTask = deadlineTask
+        self.deadline = deadline
+        lock.unlock()
+
+        task.resume()
+    }
+
+    private func finish(
+        _ result: Result<Data, Error>,
+        cancellingTask: Bool,
+        completionSource: CompletionSource = .transport
+    ) {
+        let continuation: CheckedContinuation<Data, Error>?
+        let session: URLSession?
+        let task: URLSessionDataTask?
+        let deadlineTask: Task<Void, Never>?
+        let resolvedResult: Result<Data, Error>
+        let shouldCancelTask: Bool
+
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            return
+        }
+        finished = true
+        if completionSource != .parentCancellation,
+           let deadline,
+           monotonicNow() >= deadline {
+            resolvedResult = .failure(UpdateCheckDeadlineExceeded())
+            shouldCancelTask = true
+        } else {
+            resolvedResult = result
+            shouldCancelTask = cancellingTask
+        }
+        continuation = self.continuation
+        self.continuation = nil
+        if continuation == nil {
+            pendingResult = resolvedResult
+        }
+        session = self.session
+        self.session = nil
+        task = self.task
+        self.task = nil
+        deadlineTask = self.deadlineTask
+        self.deadlineTask = nil
+        self.deadline = nil
+        data.removeAll(keepingCapacity: false)
+        lock.unlock()
+
+        deadlineTask?.cancel()
+        if shouldCancelTask {
+            task?.cancel()
+            session?.invalidateAndCancel()
+        } else {
+            session?.finishTasksAndInvalidate()
+        }
+        continuation?.resume(with: resolvedResult)
+    }
+}
+
+class RedirectRejectingDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private var rejectedRedirect = false
+    private var rejectedAuthentication = false
 
     var didRejectRedirect: Bool {
         lock.lock()
         defer { lock.unlock() }
         return rejectedRedirect
+    }
+
+    var didRejectAuthentication: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return rejectedAuthentication
     }
 
     func urlSession(
@@ -156,13 +419,31 @@ final class RedirectRejectingDelegate: NSObject, URLSessionTaskDelegate, @unchec
 
     func urlSession(
         _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        handleAuthenticationChallenge(challenge, completionHandler: completionHandler)
+    }
+
+    func urlSession(
+        _ session: URLSession,
         task: URLSessionTask,
         didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        handleAuthenticationChallenge(challenge, completionHandler: completionHandler)
+    }
+
+    private func handleAuthenticationChallenge(
+        _ challenge: URLAuthenticationChallenge,
         completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
         if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust {
             completionHandler(.performDefaultHandling, nil)
         } else {
+            lock.lock()
+            rejectedAuthentication = true
+            lock.unlock()
             completionHandler(.cancelAuthenticationChallenge, nil)
         }
     }
@@ -219,23 +500,27 @@ public struct InkletReleaseVersion: Equatable, Sendable {
 }
 
 public enum InkletReleaseNotes {
+    private static let maximumCharacterCount = 800
+    private static let maximumUnicodeScalarCount = 3_200
+    private static let maximumUTF8ByteCount = 12_800
+
     public static func excerpt(_ body: String?, limit: Int = 800) -> String {
         guard limit > 0, let body else {
             return ""
         }
 
-        let normalized = body
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
+        let normalized = UntrustedDisplayText.sanitize(body, preservingLineBreaks: true)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else {
             return ""
         }
 
-        guard normalized.count > limit else {
-            return normalized
-        }
-        return String(normalized.prefix(limit - 1)) + "…"
+        return UntrustedDisplayText.bounded(
+            normalized,
+            maximumCharacters: min(limit, maximumCharacterCount),
+            maximumUnicodeScalars: maximumUnicodeScalarCount,
+            maximumUTF8Bytes: maximumUTF8ByteCount
+        )
     }
 }
 
@@ -262,6 +547,10 @@ public struct InkletRelease: Equatable, Sendable {
 }
 
 enum GitHubReleaseParser {
+    fileprivate static let maximumNameCharacterCount = 120
+    fileprivate static let maximumNameUnicodeScalarCount = 480
+    fileprivate static let maximumNameUTF8ByteCount = 1_920
+
     static func parse(_ data: Data) throws -> InkletRelease {
         let response = try JSONDecoder().decode(Response.self, from: data)
         guard !response.draft, !response.prerelease else {
@@ -275,7 +564,7 @@ enum GitHubReleaseParser {
         let version = try InkletReleaseVersion(tagName: response.tagName)
         let pageURL = try validatedPageURL(response.htmlURL, tagName: response.tagName)
         let name = response.name?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .boundedReleaseName
             .nonEmpty
 
         return InkletRelease(
@@ -337,6 +626,91 @@ enum GitHubReleaseParser {
     }
 }
 
+private enum UntrustedDisplayText {
+    private static let ellipsis = "…"
+
+    static func sanitize(_ value: String, preservingLineBreaks: Bool) -> String {
+        let normalized = value
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        return normalized.unicodeScalars.reduce(into: "") { result, scalar in
+            if !preservingLineBreaks, CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                result.append(" ")
+                return
+            }
+            if preservingLineBreaks && (scalar == "\n" || scalar == "\t") {
+                result.unicodeScalars.append(scalar)
+                return
+            }
+            if scalar.value == 0x200C || scalar.value == 0x200D
+                || (0xE0020...0xE007F).contains(scalar.value)
+            {
+                result.unicodeScalars.append(scalar)
+                return
+            }
+            if !CharacterSet.controlCharacters.contains(scalar), !isBidirectionalControl(scalar) {
+                result.unicodeScalars.append(scalar)
+            }
+        }
+    }
+
+    static func bounded(
+        _ value: String,
+        maximumCharacters: Int,
+        maximumUnicodeScalars: Int,
+        maximumUTF8Bytes: Int
+    ) -> String {
+        guard maximumCharacters > 0,
+              maximumUnicodeScalars >= ellipsis.unicodeScalars.count,
+              maximumUTF8Bytes >= ellipsis.utf8.count
+        else {
+            return ""
+        }
+
+        guard value.count > maximumCharacters
+                || value.unicodeScalars.count > maximumUnicodeScalars
+                || value.utf8.count > maximumUTF8Bytes
+        else {
+            return value
+        }
+
+        let characterBudget = maximumCharacters - ellipsis.count
+        let scalarBudget = maximumUnicodeScalars - ellipsis.unicodeScalars.count
+        let byteBudget = maximumUTF8Bytes - ellipsis.utf8.count
+        var result = ""
+        var characterCount = 0
+        var scalarCount = 0
+        var byteCount = 0
+
+        for character in value {
+            let characterScalarCount = character.unicodeScalars.count
+            let characterByteCount = character.utf8.count
+            guard characterCount < characterBudget,
+                  scalarCount <= scalarBudget - characterScalarCount,
+                  byteCount <= byteBudget - characterByteCount
+            else {
+                break
+            }
+
+            result.append(character)
+            characterCount += 1
+            scalarCount += characterScalarCount
+            byteCount += characterByteCount
+        }
+
+        return result + ellipsis
+    }
+
+    private static func isBidirectionalControl(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x061C, 0x200E...0x200F, 0x202A...0x202E, 0x2066...0x2069:
+            true
+        default:
+            false
+        }
+    }
+}
+
 enum InkletReleaseValidationError: Error, Equatable {
     case invalidTag
     case unavailableRelease
@@ -345,6 +719,19 @@ enum InkletReleaseValidationError: Error, Equatable {
 }
 
 private extension String {
+    var boundedReleaseName: String {
+        let singleLine = UntrustedDisplayText
+            .sanitize(self, preservingLineBreaks: false)
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        return UntrustedDisplayText.bounded(
+            singleLine,
+            maximumCharacters: GitHubReleaseParser.maximumNameCharacterCount,
+            maximumUnicodeScalars: GitHubReleaseParser.maximumNameUnicodeScalarCount,
+            maximumUTF8Bytes: GitHubReleaseParser.maximumNameUTF8ByteCount
+        )
+    }
+
     var nonEmpty: String? {
         isEmpty ? nil : self
     }

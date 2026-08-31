@@ -72,12 +72,37 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
         )
         XCTAssertEqual(InkletReleaseNotes.excerpt(notes801, limit: 0), "")
         XCTAssertEqual(InkletReleaseNotes.excerpt("ab", limit: 1), "…")
+        XCTAssertEqual(
+            InkletReleaseNotes.excerpt(String(repeating: "a", count: 900), limit: 900).count,
+            800
+        )
     }
 
     func testReleaseNotesCountsExtendedGraphemeClusters() {
         let family = "👨‍👩‍👧‍👦"
 
         XCTAssertEqual(InkletReleaseNotes.excerpt(family + "ab", limit: 2), family + "…")
+    }
+
+    func testReleaseNotesBoundsOneHugeCombiningGraphemeByScalarsAndBytes() {
+        let hugeGrapheme = "a" + String(repeating: "\u{0301}", count: 20_000)
+
+        let excerpt = InkletReleaseNotes.excerpt(hugeGrapheme)
+
+        XCTAssertLessThanOrEqual(excerpt.count, 800)
+        XCTAssertLessThanOrEqual(excerpt.unicodeScalars.count, 3_200)
+        XCTAssertLessThanOrEqual(excerpt.utf8.count, 12_800)
+        XCTAssertEqual(excerpt, "…")
+    }
+
+    func testReleaseNotesPreservesEmojiAndNewlinesWhileRemovingUnsafeControls() {
+        let family = "👨‍👩‍👧‍👦"
+
+        let excerpt = InkletReleaseNotes.excerpt(
+            " First \(family)\r\nSecond\tline\u{0000}\u{202E}\u{2067} "
+        )
+
+        XCTAssertEqual(excerpt, "First \(family)\nSecond\tline")
     }
 
     func testParserBuildsValidatedRelease() throws {
@@ -116,6 +141,41 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
 
         XCTAssertNil(release.name)
         XCTAssertEqual(release.notes, "")
+    }
+
+    func testParserSanitizesAndBoundsUntrustedReleaseName() throws {
+        let family = "👨‍👩‍👧‍👦"
+        let hugeGrapheme = "a" + String(repeating: "\u{0301}", count: 20_000)
+
+        let sanitized = try GitHubReleaseParser.parse(
+            makeReleaseData(name: " \nInklet\u{0000}\u{202E}  \tBeta \(family)\n ")
+        )
+        let bounded = try GitHubReleaseParser.parse(
+            makeReleaseData(name: "Inklet " + hugeGrapheme)
+        )
+
+        XCTAssertEqual(sanitized.name, "Inklet Beta \(family)")
+        let boundedName = try XCTUnwrap(bounded.name)
+        XCTAssertLessThanOrEqual(boundedName.count, 120)
+        XCTAssertLessThanOrEqual(boundedName.unicodeScalars.count, 480)
+        XCTAssertLessThanOrEqual(boundedName.utf8.count, 1_920)
+        XCTAssertEqual(boundedName, "Inklet …")
+    }
+
+    func testParserDropsReleaseNameContainingOnlyWhitespaceAndUnsafeControls() throws {
+        let release = try GitHubReleaseParser.parse(
+            makeReleaseData(name: " \n\t\u{0000}\u{202E}\u{2067} ")
+        )
+
+        XCTAssertNil(release.name)
+    }
+
+    func testParserReplacesReleaseNameLineBreaksWithSpaces() throws {
+        let release = try GitHubReleaseParser.parse(
+            makeReleaseData(name: "Inklet\nBeta\tRelease")
+        )
+
+        XCTAssertEqual(release.name, "Inklet Beta Release")
     }
 
     func testParserRejectsDraftAndPrereleaseResponses() throws {
@@ -202,6 +262,7 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
             XCTAssertEqual(request.httpMethod, "GET")
             XCTAssertEqual(request.timeoutInterval, 15)
             XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "application/vnd.github+json")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Accept-Encoding"), "identity")
             XCTAssertEqual(request.value(forHTTPHeaderField: "X-GitHub-Api-Version"), "2022-11-28")
             XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
             XCTAssertFalse(request.httpShouldHandleCookies)
@@ -223,6 +284,7 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
         XCTAssertFalse(configuration.httpShouldSetCookies)
         XCTAssertNil(configuration.urlCache)
         XCTAssertEqual(configuration.requestCachePolicy, URLRequest.CachePolicy.reloadIgnoringLocalCacheData)
+        XCTAssertEqual(configuration.timeoutIntervalForResource, 15)
     }
 
     func testCheckComparesRemoteBuildNumberOnly() async throws {
@@ -309,7 +371,6 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
     }
 
     func testAuthenticationDelegateAllowsServerTrustAndCancelsOtherChallenges() throws {
-        let delegate = RedirectRejectingDelegate()
         let session = URLSession(configuration: .ephemeral)
         let task = session.dataTask(with: try XCTUnwrap(URL(string: "https://api.github.com/repos/wanming/Inklet/releases/latest")))
 
@@ -321,6 +382,7 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
         ]
 
         for (authenticationMethod, expectedDisposition) in cases {
+            let delegate = RedirectRejectingDelegate()
             let protectionSpace = URLProtectionSpace(
                 host: "api.github.com",
                 port: 443,
@@ -344,7 +406,113 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
 
             XCTAssertEqual(result.disposition, expectedDisposition)
             XCTAssertNil(result.credential)
+            XCTAssertEqual(
+                delegate.didRejectAuthentication,
+                expectedDisposition == .cancelAuthenticationChallenge
+            )
         }
+    }
+
+    func testSessionAuthenticationDelegateAllowsServerTrustAndCancelsOtherChallenges() throws {
+        let session = URLSession(configuration: .ephemeral)
+        let cases: [(String, URLSession.AuthChallengeDisposition)] = [
+            (NSURLAuthenticationMethodServerTrust, .performDefaultHandling),
+            (NSURLAuthenticationMethodClientCertificate, .cancelAuthenticationChallenge)
+        ]
+
+        for (authenticationMethod, expectedDisposition) in cases {
+            let delegate = RedirectRejectingDelegate()
+            let sessionDelegate: URLSessionDelegate = delegate
+            let protectionSpace = URLProtectionSpace(
+                host: "api.github.com",
+                port: 443,
+                protocol: "https",
+                realm: nil,
+                authenticationMethod: authenticationMethod
+            )
+            let challenge = URLAuthenticationChallenge(
+                protectionSpace: protectionSpace,
+                proposedCredential: nil,
+                previousFailureCount: 0,
+                failureResponse: nil,
+                error: nil,
+                sender: MockAuthenticationChallengeSender()
+            )
+            let result = AuthenticationChallengeResult()
+
+            sessionDelegate.urlSession?(session, didReceive: challenge) { disposition, credential in
+                result.record(disposition: disposition, credential: credential)
+            }
+
+            XCTAssertEqual(result.disposition, expectedDisposition)
+            XCTAssertNil(result.credential)
+            XCTAssertEqual(
+                delegate.didRejectAuthentication,
+                expectedDisposition == .cancelAuthenticationChallenge
+            )
+        }
+    }
+
+    func testRejectedAuthenticationMapsCancelledTransportToServiceUnavailable() async throws {
+        let endpoint = try XCTUnwrap(
+            URL(string: "https://api.github.com/repos/wanming/Inklet/releases/latest")
+        )
+        let loader = BoundedHTTPResponseLoader(
+            expectedURL: endpoint,
+            maximumResponseSize: 1_048_576
+        )
+        let delegateSession = URLSession(configuration: .ephemeral)
+        let delegateTask = delegateSession.dataTask(with: endpoint)
+        defer {
+            delegateTask.cancel()
+            delegateSession.invalidateAndCancel()
+        }
+        let protectionSpace = URLProtectionSpace(
+            host: "api.github.com",
+            port: 443,
+            protocol: "https",
+            realm: nil,
+            authenticationMethod: NSURLAuthenticationMethodHTTPBasic
+        )
+        let challenge = URLAuthenticationChallenge(
+            protectionSpace: protectionSpace,
+            proposedCredential: nil,
+            previousFailureCount: 0,
+            failureResponse: nil,
+            error: nil,
+            sender: MockAuthenticationChallengeSender()
+        )
+        let challengeResult = AuthenticationChallengeResult()
+        MockGitHubReleaseURLProtocol.onStart = {
+            loader.urlSession(
+                delegateSession,
+                task: delegateTask,
+                didReceive: challenge
+            ) { disposition, credential in
+                challengeResult.record(disposition: disposition, credential: credential)
+            }
+        }
+        MockGitHubReleaseURLProtocol.handler = { _ in
+            throw URLError(.cancelled)
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockGitHubReleaseURLProtocol.self]
+        var request = URLRequest(url: endpoint)
+        request.timeoutInterval = 5
+
+        do {
+            _ = try await loader.load(
+                request: request,
+                configuration: configuration,
+                timeoutInterval: 5
+            )
+            XCTFail("Expected rejected authentication to fail the request")
+        } catch {
+            XCTAssertEqual(error as? AppUpdateCheckError, .serviceUnavailable)
+        }
+
+        XCTAssertEqual(challengeResult.disposition, .cancelAuthenticationChallenge)
+        XCTAssertNil(challengeResult.credential)
     }
 
     func testCheckRejectsRedirectWithoutFollowUpRequest() async throws {
@@ -439,6 +607,185 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
         await assertCheckError(.invalidResponse)
     }
 
+    func testResponseLoaderRejectsDeclaredOversizeBeforeBodyDelivery() throws {
+        let oversizedLength = 1_048_577
+        let endpoint = try XCTUnwrap(URL(string: "https://api.github.com/repos/wanming/Inklet/releases/latest"))
+        let loader = BoundedHTTPResponseLoader(expectedURL: endpoint, maximumResponseSize: 1_048_576)
+        let session = URLSession(configuration: .ephemeral)
+        let task = session.dataTask(with: endpoint)
+        defer {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+        let response = try XCTUnwrap(HTTPURLResponse(
+            url: endpoint,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: ["Content-Length": "\(oversizedLength)"]
+        ))
+        let result = ResponseDispositionResult()
+
+        loader.urlSession(session, dataTask: task, didReceive: response) { disposition in
+            result.record(disposition)
+        }
+
+        XCTAssertEqual(result.disposition, .cancel)
+    }
+
+    func testResponseLoaderRejectsNonSuccessStatusBeforeLargeErrorBodyDelivery() throws {
+        let endpoint = try XCTUnwrap(URL(string: "https://api.github.com/repos/wanming/Inklet/releases/latest"))
+        let loader = BoundedHTTPResponseLoader(expectedURL: endpoint, maximumResponseSize: 1_048_576)
+        let session = URLSession(configuration: .ephemeral)
+        let task = session.dataTask(with: endpoint)
+        defer {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+        let response = try XCTUnwrap(HTTPURLResponse(
+            url: endpoint,
+            statusCode: 500,
+            httpVersion: nil,
+            headerFields: ["Content-Length": "1048577"]
+        ))
+        let result = ResponseDispositionResult()
+
+        loader.urlSession(session, dataTask: task, didReceive: response) { disposition in
+            result.record(disposition)
+        }
+
+        XCTAssertEqual(result.disposition, .cancel)
+    }
+
+    func testResponseLoaderRejectsNonIdentityContentEncodingBeforeBodyDelivery() throws {
+        for contentEncoding in ["gzip", " BR ", "DefLaTe", "identity, gzip"] {
+            XCTAssertEqual(
+                try responseDisposition(contentEncoding: contentEncoding),
+                .cancel,
+                "Expected \(contentEncoding) to be rejected before body delivery"
+            )
+        }
+    }
+
+    func testResponseLoaderAllowsAbsentOrIdentityContentEncoding() throws {
+        for contentEncoding in [nil, "identity", " IDENTITY "] as [String?] {
+            XCTAssertEqual(
+                try responseDisposition(contentEncoding: contentEncoding),
+                .allow,
+                "Expected \(contentEncoding ?? "an absent header") to be accepted"
+            )
+        }
+    }
+
+    func testCheckCancelsUnknownLengthBodyAtFirstByteOverLimit() async throws {
+        let maximumResponseSize = 1_048_576
+        let requestStopped = expectation(description: "oversized request stopped")
+        MockGitHubReleaseURLProtocol.onStop = {
+            requestStopped.fulfill()
+        }
+        MockGitHubReleaseURLProtocol.streamHandler = { request in
+            let response = try self.httpResponse(
+                for: request,
+                statusCode: 200,
+                data: Data()
+            ).0
+            return MockGitHubReleaseURLProtocol.Stream(
+                response: response,
+                chunks: [
+                    Data(repeating: 65, count: maximumResponseSize),
+                    Data([66]),
+                    Data(repeating: 67, count: 64 * 1_024)
+                ],
+                interval: 0.1
+            )
+        }
+
+        await assertCheckError(.invalidResponse)
+        await fulfillment(of: [requestStopped], timeout: 1)
+
+        XCTAssertEqual(MockGitHubReleaseURLProtocol.sentBodyByteCount, maximumResponseSize + 1)
+        XCTAssertEqual(MockGitHubReleaseURLProtocol.sentBodyChunkCount, 2)
+        XCTAssertEqual(MockGitHubReleaseURLProtocol.stopLoadingCount, 1)
+    }
+
+    func testCheckRejectsSingleOversizedIdentityCallbackBeforeAnyLaterChunk() async throws {
+        let maximumResponseSize = 1_048_576
+        let requestStopped = expectation(description: "oversized callback stopped")
+        MockGitHubReleaseURLProtocol.onStop = {
+            requestStopped.fulfill()
+        }
+        MockGitHubReleaseURLProtocol.streamHandler = { request in
+            let response = try self.httpResponse(
+                for: request,
+                statusCode: 200,
+                headers: ["Content-Encoding": "identity"],
+                data: Data()
+            ).0
+            return MockGitHubReleaseURLProtocol.Stream(
+                response: response,
+                chunks: [
+                    Data(repeating: 65, count: maximumResponseSize + 1),
+                    Data(repeating: 66, count: 64 * 1_024)
+                ],
+                interval: 0.1
+            )
+        }
+
+        await assertCheckError(.invalidResponse)
+        await fulfillment(of: [requestStopped], timeout: 1)
+
+        XCTAssertEqual(MockGitHubReleaseURLProtocol.sentBodyByteCount, maximumResponseSize + 1)
+        XCTAssertEqual(MockGitHubReleaseURLProtocol.sentBodyChunkCount, 1)
+        XCTAssertEqual(MockGitHubReleaseURLProtocol.stopLoadingCount, 1)
+    }
+
+    func testProtocolHarnessDoesNotDeliverChunkAfterStopLoading() async throws {
+        let deliveryReady = expectation(description: "chunk ready for delivery")
+        let requestStopped = expectation(description: "request stopped")
+        let unexpectedDelivery = expectation(description: "chunk delivered after stop")
+        unexpectedDelivery.isInverted = true
+        let deliveryGate = DispatchSemaphore(value: 0)
+        MockGitHubReleaseURLProtocol.onStop = {
+            requestStopped.fulfill()
+        }
+        MockGitHubReleaseURLProtocol.streamHandler = { request in
+            let response = try self.httpResponse(
+                for: request,
+                statusCode: 200,
+                data: Data()
+            ).0
+            return MockGitHubReleaseURLProtocol.Stream(
+                response: response,
+                chunks: [Data([65])],
+                beforeEachChunk: {
+                    deliveryReady.fulfill()
+                    deliveryGate.wait()
+                },
+                afterEachChunk: {
+                    unexpectedDelivery.fulfill()
+                }
+            )
+        }
+        let checker = makeChecker()
+        let checkTask = Task {
+            try await checker.check(currentBuildNumber: "10")
+        }
+
+        await fulfillment(of: [deliveryReady], timeout: 1)
+        checkTask.cancel()
+        await fulfillment(of: [requestStopped], timeout: 1)
+        deliveryGate.signal()
+        await fulfillment(of: [unexpectedDelivery], timeout: 0.1)
+
+        do {
+            _ = try await checkTask.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+        XCTAssertEqual(MockGitHubReleaseURLProtocol.sentBodyByteCount, 0)
+    }
+
     func testProtocolHarnessResetClearsHandlerAndRequestCount() {
         MockGitHubReleaseURLProtocol.handler = { _ in
             throw URLError(.badServerResponse)
@@ -480,6 +827,169 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
 
             await assertCheckError(.networkUnavailable)
         }
+    }
+
+    func testCheckEnforcesTotalDeadlineDespiteSlowTrickle() async throws {
+        let responseData = try releaseData(buildNumber: 11)
+        let requestStopped = expectation(description: "deadline stops request")
+        MockGitHubReleaseURLProtocol.onStop = {
+            requestStopped.fulfill()
+        }
+        let chunkSize = max(1, responseData.count / 12)
+        let chunks = stride(from: 0, to: responseData.count, by: chunkSize).map { offset in
+            responseData.subdata(in: offset..<min(offset + chunkSize, responseData.count))
+        }
+        MockGitHubReleaseURLProtocol.streamHandler = { request in
+            let response = try self.httpResponse(
+                for: request,
+                statusCode: 200,
+                data: Data()
+            ).0
+            return MockGitHubReleaseURLProtocol.Stream(
+                response: response,
+                chunks: chunks,
+                interval: 0.08
+            )
+        }
+
+        do {
+            _ = try await makeChecker(timeoutInterval: 0.25).check(currentBuildNumber: "10")
+            XCTFail("Expected the total deadline to stop a trickled response")
+        } catch {
+            XCTAssertEqual(error as? AppUpdateCheckError, .networkUnavailable)
+        }
+        await fulfillment(of: [requestStopped], timeout: 1)
+
+        XCTAssertLessThan(MockGitHubReleaseURLProtocol.sentBodyByteCount, responseData.count)
+        XCTAssertEqual(MockGitHubReleaseURLProtocol.stopLoadingCount, 1)
+    }
+
+    func testResponseLoaderDeadlinePrecedesLongResourceTimeout() async throws {
+        let endpoint = try XCTUnwrap(URL(string: "https://api.github.com/repos/wanming/Inklet/releases/latest"))
+        let responseData = try releaseData(buildNumber: 11)
+        let chunkSize = max(1, responseData.count / 12)
+        let chunks = stride(from: 0, to: responseData.count, by: chunkSize).map { offset in
+            responseData.subdata(in: offset..<min(offset + chunkSize, responseData.count))
+        }
+        let requestStopped = expectation(description: "monotonic deadline stops request")
+        MockGitHubReleaseURLProtocol.onStop = {
+            requestStopped.fulfill()
+        }
+        MockGitHubReleaseURLProtocol.streamHandler = { request in
+            let response = try self.httpResponse(
+                for: request,
+                statusCode: 200,
+                data: Data()
+            ).0
+            return MockGitHubReleaseURLProtocol.Stream(
+                response: response,
+                chunks: chunks,
+                interval: 0.08
+            )
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockGitHubReleaseURLProtocol.self]
+        var request = URLRequest(url: endpoint)
+        request.timeoutInterval = 5
+        let loader = BoundedHTTPResponseLoader(
+            expectedURL: endpoint,
+            maximumResponseSize: 1_048_576
+        )
+
+        do {
+            _ = try await loader.load(
+                request: request,
+                configuration: configuration,
+                timeoutInterval: 0.25
+            )
+            XCTFail("Expected the monotonic deadline to stop a trickled response")
+        } catch {
+            XCTAssertTrue(error is UpdateCheckDeadlineExceeded)
+        }
+        await fulfillment(of: [requestStopped], timeout: 1)
+
+        XCTAssertLessThan(MockGitHubReleaseURLProtocol.sentBodyByteCount, responseData.count)
+        XCTAssertEqual(MockGitHubReleaseURLProtocol.stopLoadingCount, 1)
+    }
+
+    func testResponseCompletionAfterDeadlineFailsBeforeDeadlineSleeperRuns() async throws {
+        let endpoint = try XCTUnwrap(
+            URL(string: "https://api.github.com/repos/wanming/Inklet/releases/latest")
+        )
+        let monotonicTime = ControllableMonotonicTime()
+        MockGitHubReleaseURLProtocol.handler = { request in
+            monotonicTime.advance(by: .seconds(3_601))
+            return try self.httpResponse(
+                for: request,
+                statusCode: 200,
+                data: self.releaseData(buildNumber: 11)
+            )
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockGitHubReleaseURLProtocol.self]
+        var request = URLRequest(url: endpoint)
+        request.timeoutInterval = 3_600
+        let loader = BoundedHTTPResponseLoader(
+            expectedURL: endpoint,
+            maximumResponseSize: 1_048_576,
+            monotonicNow: { monotonicTime.now }
+        )
+        do {
+            _ = try await loader.load(
+                request: request,
+                configuration: configuration,
+                timeoutInterval: 3_600
+            )
+            XCTFail("Expected completion after the deadline to fail")
+        } catch {
+            XCTAssertTrue(error is UpdateCheckDeadlineExceeded)
+        }
+    }
+
+    func testParentCancellationAfterDeadlineRemainsCancellation() async throws {
+        let endpoint = try XCTUnwrap(
+            URL(string: "https://api.github.com/repos/wanming/Inklet/releases/latest")
+        )
+        let monotonicTime = ControllableMonotonicTime()
+        let requestStarted = expectation(description: "request started")
+        let requestStopped = expectation(description: "request stopped")
+        MockGitHubReleaseURLProtocol.pending = true
+        MockGitHubReleaseURLProtocol.onStart = {
+            requestStarted.fulfill()
+        }
+        MockGitHubReleaseURLProtocol.onStop = {
+            requestStopped.fulfill()
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockGitHubReleaseURLProtocol.self]
+        var request = URLRequest(url: endpoint)
+        request.timeoutInterval = 60
+        let loader = BoundedHTTPResponseLoader(
+            expectedURL: endpoint,
+            maximumResponseSize: 1_048_576,
+            monotonicNow: { monotonicTime.now }
+        )
+        let loadTask = Task {
+            try await loader.load(
+                request: request,
+                configuration: configuration,
+                timeoutInterval: 60
+            )
+        }
+
+        await fulfillment(of: [requestStarted], timeout: 1)
+        monotonicTime.advance(by: .seconds(61))
+        loadTask.cancel()
+
+        do {
+            _ = try await loadTask.value
+            XCTFail("Expected parent cancellation")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+
+        await fulfillment(of: [requestStopped], timeout: 1)
     }
 
     func testCheckPreservesCancellation() async {
@@ -554,6 +1064,48 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
         return GitHubReleaseUpdateChecker(session: URLSession(configuration: configuration))
     }
 
+    private func makeChecker(timeoutInterval: TimeInterval) -> GitHubReleaseUpdateChecker {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockGitHubReleaseURLProtocol.self]
+        return GitHubReleaseUpdateChecker(
+            session: URLSession(configuration: configuration),
+            timeoutInterval: timeoutInterval
+        )
+    }
+
+    private func responseDisposition(
+        contentEncoding: String?
+    ) throws -> URLSession.ResponseDisposition? {
+        let endpoint = try XCTUnwrap(
+            URL(string: "https://api.github.com/repos/wanming/Inklet/releases/latest")
+        )
+        let loader = BoundedHTTPResponseLoader(
+            expectedURL: endpoint,
+            maximumResponseSize: 1_048_576
+        )
+        let session = URLSession(configuration: .ephemeral)
+        let task = session.dataTask(with: endpoint)
+        defer {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+        var headerFields: [String: String] = [:]
+        headerFields["Content-Encoding"] = contentEncoding
+        let response = try XCTUnwrap(HTTPURLResponse(
+            url: endpoint,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: headerFields
+        ))
+        let result = ResponseDispositionResult()
+
+        loader.urlSession(session, dataTask: task, didReceive: response) { disposition in
+            result.record(disposition)
+        }
+
+        return result.disposition
+    }
+
     private func releaseData(buildNumber: Int) throws -> Data {
         try makeReleaseData(tagName: "v1.2.3-\(buildNumber)")
     }
@@ -604,15 +1156,38 @@ final class GitHubReleaseUpdateCheckerTests: XCTestCase {
     }
 }
 
-private final class MockGitHubReleaseURLProtocol: URLProtocol {
+private final class MockGitHubReleaseURLProtocol: URLProtocol, @unchecked Sendable {
     struct Redirect {
         let request: URLRequest
         let response: HTTPURLResponse
     }
 
+    struct Stream {
+        let response: URLResponse
+        let chunks: [Data]
+        let interval: TimeInterval
+        let beforeEachChunk: (@Sendable () -> Void)?
+        let afterEachChunk: (@Sendable () -> Void)?
+
+        init(
+            response: URLResponse,
+            chunks: [Data],
+            interval: TimeInterval = 0,
+            beforeEachChunk: (@Sendable () -> Void)? = nil,
+            afterEachChunk: (@Sendable () -> Void)? = nil
+        ) {
+            self.response = response
+            self.chunks = chunks
+            self.interval = interval
+            self.beforeEachChunk = beforeEachChunk
+            self.afterEachChunk = afterEachChunk
+        }
+    }
+
     private enum LoadingAction {
         case pending
         case redirect(Redirect)
+        case stream((URLRequest) throws -> Stream)
         case handler((URLRequest) throws -> (URLResponse, Data))
         case missingHandler
     }
@@ -620,12 +1195,15 @@ private final class MockGitHubReleaseURLProtocol: URLProtocol {
     private final class Generation: @unchecked Sendable {
         private let lock = NSLock()
         private var storedHandler: ((URLRequest) throws -> (URLResponse, Data))?
+        private var storedStreamHandler: ((URLRequest) throws -> Stream)?
         private var storedRequestCount = 0
         private var storedRedirect: Redirect?
         private var storedPending = false
         private var storedOnStart: (() -> Void)?
         private var storedOnStop: (() -> Void)?
         private var storedStopLoadingCount = 0
+        private var storedSentBodyByteCount = 0
+        private var storedSentBodyChunkCount = 0
 
         var handler: ((URLRequest) throws -> (URLResponse, Data))? {
             get {
@@ -636,6 +1214,19 @@ private final class MockGitHubReleaseURLProtocol: URLProtocol {
             set {
                 lock.lock()
                 storedHandler = newValue
+                lock.unlock()
+            }
+        }
+
+        var streamHandler: ((URLRequest) throws -> Stream)? {
+            get {
+                lock.lock()
+                defer { lock.unlock() }
+                return storedStreamHandler
+            }
+            set {
+                lock.lock()
+                storedStreamHandler = newValue
                 lock.unlock()
             }
         }
@@ -711,6 +1302,18 @@ private final class MockGitHubReleaseURLProtocol: URLProtocol {
             return storedStopLoadingCount
         }
 
+        var sentBodyByteCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedSentBodyByteCount
+        }
+
+        var sentBodyChunkCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedSentBodyChunkCount
+        }
+
         func beginLoading() -> LoadingAction {
             let action: LoadingAction
             let onStart: (() -> Void)?
@@ -723,6 +1326,8 @@ private final class MockGitHubReleaseURLProtocol: URLProtocol {
             } else if let redirect = storedRedirect {
                 storedRedirect = nil
                 action = .redirect(redirect)
+            } else if let streamHandler = storedStreamHandler {
+                action = .stream(streamHandler)
             } else if let handler = storedHandler {
                 action = .handler(handler)
             } else {
@@ -737,6 +1342,7 @@ private final class MockGitHubReleaseURLProtocol: URLProtocol {
         func completeLoading() {
             lock.lock()
             storedHandler = nil
+            storedStreamHandler = nil
             storedOnStart = nil
             storedOnStop = nil
             storedRedirect = nil
@@ -751,6 +1357,7 @@ private final class MockGitHubReleaseURLProtocol: URLProtocol {
             storedStopLoadingCount += 1
             onStop = storedOnStop
             storedHandler = nil
+            storedStreamHandler = nil
             storedOnStart = nil
             storedOnStop = nil
             storedRedirect = nil
@@ -758,6 +1365,13 @@ private final class MockGitHubReleaseURLProtocol: URLProtocol {
             lock.unlock()
 
             onStop?()
+        }
+
+        func recordBodyDelivery(_ byteCount: Int) {
+            lock.lock()
+            storedSentBodyByteCount += byteCount
+            storedSentBodyChunkCount += 1
+            lock.unlock()
         }
     }
 
@@ -767,6 +1381,11 @@ private final class MockGitHubReleaseURLProtocol: URLProtocol {
     nonisolated(unsafe) static var handler: ((URLRequest) throws -> (URLResponse, Data))? {
         get { currentGenerationSnapshot().handler }
         set { currentGenerationSnapshot().handler = newValue }
+    }
+
+    nonisolated(unsafe) static var streamHandler: ((URLRequest) throws -> Stream)? {
+        get { currentGenerationSnapshot().streamHandler }
+        set { currentGenerationSnapshot().streamHandler = newValue }
     }
 
     nonisolated(unsafe) static var requestCount: Int {
@@ -798,8 +1417,20 @@ private final class MockGitHubReleaseURLProtocol: URLProtocol {
         currentGenerationSnapshot().stopLoadingCount
     }
 
+    nonisolated(unsafe) static var sentBodyByteCount: Int {
+        currentGenerationSnapshot().sentBodyByteCount
+    }
+
+    nonisolated(unsafe) static var sentBodyChunkCount: Int {
+        currentGenerationSnapshot().sentBodyChunkCount
+    }
+
     private let instanceLock = NSLock()
     private var capturedGeneration: Generation?
+    private var stopped = false
+    private var deliveryInProgress = false
+    private var stopReported = false
+    private let deliveryQueue = DispatchQueue(label: "MockGitHubReleaseURLProtocol.delivery")
 
     static func reset() {
         generationLock.lock()
@@ -842,6 +1473,16 @@ private final class MockGitHubReleaseURLProtocol: URLProtocol {
             client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
             generation.completeLoading()
             return
+        case .stream(let handler):
+            do {
+                let stream = try handler(request)
+                client?.urlProtocol(self, didReceive: stream.response, cacheStoragePolicy: .notAllowed)
+                scheduleDelivery(of: stream, chunkIndex: 0, delay: 0, generation: generation)
+            } catch {
+                client?.urlProtocol(self, didFailWithError: error)
+                generation.completeLoading()
+            }
+            return
         case .missingHandler:
             client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
             generation.completeLoading()
@@ -860,7 +1501,99 @@ private final class MockGitHubReleaseURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {
-        capturedGenerationSnapshot()?.stopLoading()
+        let generation = capturedGenerationSnapshot()
+        let shouldReportStop: Bool
+
+        instanceLock.lock()
+        if stopped {
+            shouldReportStop = false
+        } else {
+            stopped = true
+            shouldReportStop = !deliveryInProgress
+            if shouldReportStop {
+                stopReported = true
+            }
+        }
+        instanceLock.unlock()
+
+        if shouldReportStop {
+            generation?.stopLoading()
+        }
+    }
+
+    private func scheduleDelivery(
+        of stream: Stream,
+        chunkIndex: Int,
+        delay: TimeInterval,
+        generation: Generation
+    ) {
+        deliveryQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else {
+                return
+            }
+            guard chunkIndex < stream.chunks.count else {
+                guard self.canFinish else {
+                    return
+                }
+                self.client?.urlProtocolDidFinishLoading(self)
+                generation.completeLoading()
+                return
+            }
+
+            stream.beforeEachChunk?()
+            guard self.beginDelivery() else {
+                return
+            }
+
+            let chunk = stream.chunks[chunkIndex]
+            generation.recordBodyDelivery(chunk.count)
+            self.client?.urlProtocol(self, didLoad: chunk)
+            stream.afterEachChunk?()
+            guard self.endDelivery(generation: generation) else {
+                return
+            }
+            self.scheduleDelivery(
+                of: stream,
+                chunkIndex: chunkIndex + 1,
+                delay: stream.interval,
+                generation: generation
+            )
+        }
+    }
+
+    private func beginDelivery() -> Bool {
+        instanceLock.lock()
+        defer { instanceLock.unlock() }
+        guard !stopped else {
+            return false
+        }
+        deliveryInProgress = true
+        return true
+    }
+
+    private func endDelivery(generation: Generation) -> Bool {
+        let shouldReportStop: Bool
+        let shouldContinue: Bool
+
+        instanceLock.lock()
+        deliveryInProgress = false
+        shouldContinue = !stopped
+        shouldReportStop = stopped && !stopReported
+        if shouldReportStop {
+            stopReported = true
+        }
+        instanceLock.unlock()
+
+        if shouldReportStop {
+            generation.stopLoading()
+        }
+        return shouldContinue
+    }
+
+    private var canFinish: Bool {
+        instanceLock.lock()
+        defer { instanceLock.unlock() }
+        return !stopped
     }
 }
 
@@ -885,6 +1618,40 @@ private final class AuthenticationChallengeResult: @unchecked Sendable {
         lock.lock()
         storedDisposition = disposition
         storedCredential = credential
+        lock.unlock()
+    }
+}
+
+private final class ResponseDispositionResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedDisposition: URLSession.ResponseDisposition?
+
+    var disposition: URLSession.ResponseDisposition? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedDisposition
+    }
+
+    func record(_ disposition: URLSession.ResponseDisposition) {
+        lock.lock()
+        storedDisposition = disposition
+        lock.unlock()
+    }
+}
+
+private final class ControllableMonotonicTime: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedNow = ContinuousClock().now
+
+    var now: ContinuousClock.Instant {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedNow
+    }
+
+    func advance(by duration: Duration) {
+        lock.lock()
+        storedNow = storedNow.advanced(by: duration)
         lock.unlock()
     }
 }
