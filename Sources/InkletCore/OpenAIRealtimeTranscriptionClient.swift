@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 
 protocol RealtimeWebSocketTransport: Sendable {
     func connect(_ request: URLRequest) async throws
@@ -254,33 +255,24 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
     }
 
     private static func serverError(from message: [String: Any]) throws -> RealtimeTranscriptionError? {
-        guard let type = message["type"] as? String else {
-            throw RealtimeTranscriptionError.invalidMessage
-        }
+        let type = try requiredString(message["type"])
         guard type == "error" else { return nil }
         guard let details = message["error"] as? [String: Any],
-              let message = details["message"] as? String
-        else {
-            throw RealtimeTranscriptionError.invalidMessage
-        }
-        return .server(code: details["code"] as? String, message: message)
+              let errorMessage = try? requiredString(details["message"])
+        else { throw RealtimeTranscriptionError.invalidMessage }
+        return .server(code: try optionalString(details, key: "code"), message: errorMessage)
     }
 
     private static func transcriptionEvent(from message: [String: Any]) throws -> RealtimeTranscriptionEvent? {
-        guard let type = message["type"] as? String else {
-            throw RealtimeTranscriptionError.invalidMessage
-        }
+        let type = try requiredString(message["type"])
 
-        let eventID = message["event_id"] as? String
-        let sequence = message["sequence"] as? Int
+        let eventID = try optionalString(message, key: "event_id")
+        let sequence = try optionalInteger(message, key: "sequence")
         switch type {
         case "conversation.item.input_audio_transcription.delta":
-            guard let itemID = message["item_id"] as? String,
-                  let contentIndex = message["content_index"] as? Int,
-                  let delta = message["delta"] as? String
-            else {
-                throw RealtimeTranscriptionError.invalidMessage
-            }
+            let itemID = try requiredString(message["item_id"])
+            let contentIndex = try requiredInteger(message["content_index"])
+            let delta = try requiredString(message["delta"])
             return .delta(
                 eventID: eventID,
                 sequence: sequence,
@@ -289,12 +281,9 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
                 text: delta
             )
         case "conversation.item.input_audio_transcription.completed":
-            guard let itemID = message["item_id"] as? String,
-                  let contentIndex = message["content_index"] as? Int,
-                  let transcript = message["transcript"] as? String
-            else {
-                throw RealtimeTranscriptionError.invalidMessage
-            }
+            let itemID = try requiredString(message["item_id"])
+            let contentIndex = try requiredInteger(message["content_index"])
+            let transcript = try requiredString(message["transcript"])
             return .completed(
                 eventID: eventID,
                 sequence: sequence,
@@ -305,6 +294,34 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
         default:
             return nil
         }
+    }
+
+    private static func requiredString(_ value: Any?) throws -> String {
+        guard let value = value as? String else {
+            throw RealtimeTranscriptionError.invalidMessage
+        }
+        return value
+    }
+
+    private static func optionalString(_ message: [String: Any], key: String) throws -> String? {
+        guard let value = message[key] else { return nil }
+        return try requiredString(value)
+    }
+
+    private static func requiredInteger(_ value: Any?) throws -> Int {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID(),
+              !CFNumberIsFloatType(number),
+              let integer = Int(number.stringValue)
+        else {
+            throw RealtimeTranscriptionError.invalidMessage
+        }
+        return integer
+    }
+
+    private static func optionalInteger(_ message: [String: Any], key: String) throws -> Int? {
+        guard let value = message[key] else { return nil }
+        return try requiredInteger(value)
     }
 
     private static func mapConnectionError(_ error: Error) -> RealtimeTranscriptionError {

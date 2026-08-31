@@ -67,6 +67,22 @@ final class OpenAIRealtimeTranscriptionClientTests: XCTestCase {
         XCTAssertNil(snapshot.requestURL)
     }
 
+    func testEndpointWithoutHostFailsBeforeConnecting() async {
+        let transport = FakeRealtimeTransport()
+        let client = OpenAIRealtimeTranscriptionClient(
+            apiKeyProvider: { "key" },
+            endpoint: URL(string: "wss:/v1/realtime")!,
+            transport: transport
+        )
+
+        await assertThrowsRealtime(.invalidEndpoint) {
+            try await client.connect(timeoutSeconds: 1)
+        }
+
+        let snapshot = await transport.snapshot()
+        XCTAssertNil(snapshot.requestURL)
+    }
+
     func testHandshakeSkipsSessionCreatedUntilSessionUpdated() async throws {
         let transport = FakeRealtimeTransport()
         let client = makeClient(transport: transport)
@@ -86,6 +102,22 @@ final class OpenAIRealtimeTranscriptionClientTests: XCTestCase {
         }
         let snapshot = await transport.snapshot()
         XCTAssertEqual(snapshot.closeCount, 1)
+    }
+
+    func testHandshakeRejectsMalformedMessage() async {
+        for message in [
+            #"{"type":"error","error":{"message":true}}"#,
+            #"{"type":"error","error":{"code":true,"message":"rejected"}}"#,
+            #"{"type":true}"#
+        ] {
+            let transport = FakeRealtimeTransport()
+            let client = makeClient(transport: transport)
+            await transport.enqueue(message)
+
+            await assertThrowsRealtime(.invalidMessage) {
+                try await client.connect(timeoutSeconds: 1)
+            }
+        }
     }
 
     func testConnectTimeoutClosesTransport() async {
@@ -126,6 +158,18 @@ final class OpenAIRealtimeTranscriptionClientTests: XCTestCase {
 
         await assertThrowsRealtime(.invalidState) {
             try await client.appendPCM16(Data([1]))
+        }
+    }
+
+    func testCommitAndReceiveBeforeReadyAreInvalidState() async {
+        let transport = FakeRealtimeTransport()
+        let client = makeClient(transport: transport)
+
+        await assertThrowsRealtime(.invalidState) {
+            try await client.commit()
+        }
+        await assertThrowsRealtime(.invalidState) {
+            _ = try await client.nextEvent()
         }
     }
 
@@ -175,6 +219,28 @@ final class OpenAIRealtimeTranscriptionClientTests: XCTestCase {
         let event = try await client.nextEvent()
 
         XCTAssertEqual(event, .completed(eventID: nil, sequence: 9, itemID: "item", contentIndex: 0, transcript: "hello world"))
+    }
+
+    func testNextEventRejectsWrongTypedRelevantFields() async throws {
+        let invalidMessages = [
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"item","content_index":true,"delta":"text"}"#,
+            #"{"type":"conversation.item.input_audio_transcription.delta","sequence":true,"item_id":"item","content_index":0,"delta":"text"}"#,
+            #"{"type":"conversation.item.input_audio_transcription.delta","sequence":1.5,"item_id":"item","content_index":0,"delta":"text"}"#,
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"item","content_index":9223372036854775808,"delta":"text"}"#,
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":1,"content_index":0,"delta":"text"}"#,
+            #"{"type":"conversation.item.input_audio_transcription.completed","event_id":true,"item_id":"item","content_index":0,"transcript":"text"}"#
+        ]
+
+        for message in invalidMessages {
+            let transport = FakeRealtimeTransport()
+            let client = makeClient(transport: transport)
+            await connect(client, transport: transport)
+            await transport.enqueue(message)
+
+            await assertThrowsRealtime(.invalidMessage) {
+                _ = try await client.nextEvent()
+            }
+        }
     }
 
     func testNextEventSkipsIrrelevantEvents() async throws {
@@ -229,6 +295,23 @@ final class OpenAIRealtimeTranscriptionClientTests: XCTestCase {
         }
         await transport.enqueue(#"{"type":"conversation.item.input_audio_transcription.delta","item_id":"item","content_index":0,"delta":"one"}"#)
         _ = try await first.value
+    }
+
+    func testSecondConnectDuringHandshakeIsInvalidState() async throws {
+        let transport = FakeRealtimeTransport()
+        let client = makeClient(transport: transport)
+        let first: Task<Void, Error> = Task { try await client.connect(timeoutSeconds: 1) }
+
+        await transport.waitUntilReceiveIsPending()
+        await assertThrowsRealtime(.invalidState) {
+            try await client.connect(timeoutSeconds: 1)
+        }
+        await transport.enqueue(#"{"type":"session.updated"}"#)
+        try await first.value
+
+        await assertThrowsRealtime(.invalidState) {
+            try await client.connect(timeoutSeconds: 1)
+        }
     }
 
     func testCloseIsIdempotentAndDisablesFurtherOperations() async throws {
