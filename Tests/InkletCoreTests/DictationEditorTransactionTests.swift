@@ -144,6 +144,7 @@ final class DictationEditorTransactionTests: XCTestCase {
 
         let undoManager = try XCTUnwrap(textView.undoManager)
         XCTAssertTrue(undoManager.canUndo)
+        XCTAssertEqual(undoManager.undoActionName, L10n.text("dictation.undo.action"))
         undoManager.undo()
         XCTAssertEqual(textView.string, "abc")
         XCTAssertEqual(textView.selectedRange(), NSRange(location: 1, length: 1))

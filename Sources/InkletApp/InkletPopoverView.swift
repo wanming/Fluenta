@@ -995,6 +995,7 @@ struct InkletPopoverView: View {
                 onEscape: { model.escape() },
                 onTextViewAttachment: onSourceTextViewAttachment
             )
+            .accessibilityLabel(L10n.text("dictation.accessibility.sourceEditor"))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.horizontal, 16)
             .padding(.vertical, 12)

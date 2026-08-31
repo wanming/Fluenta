@@ -112,15 +112,15 @@ final class AudioRecorder: DictationAudioCapturing {
         var errorDescription: String? {
             switch self {
             case .microphonePermissionDenied:
-                L10n.text("voice.error.microphonePermission")
+                L10n.text("dictation.error.microphonePermission")
             case .noAudioInputDevice:
-                L10n.text("voice.error.noAudioInputDevice")
+                L10n.text("dictation.error.noAudioInputDevice")
             case .recordingUnavailable:
-                L10n.text("voice.error.recordingUnavailable")
+                L10n.text("dictation.error.recordingUnavailable")
             case .realtimeBufferOverflow:
                 L10n.text("dictation.error.realtimeBufferOverflow")
             case .realtimeAudioUnavailable:
-                L10n.text("voice.error.recordingUnavailable")
+                L10n.text("dictation.error.recordingUnavailable")
             }
         }
     }

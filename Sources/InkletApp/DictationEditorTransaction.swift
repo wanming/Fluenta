@@ -552,6 +552,7 @@ final class DictationEditorTransaction: DictationEditorTransacting {
             undoManager.registerUndo(withTarget: self) { [self] _ in
                 replace(current: current, with: replacement)
             }
+            undoManager.setActionName(L10n.text("dictation.undo.action"))
             if opensStandaloneGroup {
                 undoManager.endUndoGrouping()
             }
@@ -578,6 +579,7 @@ final class DictationEditorTransaction: DictationEditorTransacting {
             undoManager.registerUndo(withTarget: self) { [self] _ in
                 replace(current: replacement, with: current)
             }
+            undoManager.setActionName(L10n.text("dictation.undo.action"))
         }
     }
 }

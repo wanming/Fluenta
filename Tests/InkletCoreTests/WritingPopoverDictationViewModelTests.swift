@@ -202,6 +202,30 @@ final class WritingPopoverDictationViewModelTests: XCTestCase {
         XCTAssertEqual(harness.model.errorMessage, "Previous error")
     }
 
+    func testDictationWritesNoHistoryUntilTheEditedDraftIsSubmittedAsWriting() async throws {
+        let harness = try makeHarness(output: "Processed draft")
+        enterEditor(harness.model)
+        harness.model.updateSourceText("Original typed draft")
+
+        XCTAssertTrue(harness.model.beginSourceDictationPresentation())
+        harness.model.synchronizeSourceTextDuringDictation("Dictated draft")
+        harness.model.commitSourceDictationPresentation()
+
+        XCTAssertEqual(try harness.historyStore.load(), [])
+
+        harness.model.updateSourceText("Edited dictated draft")
+        harness.model.submit()
+        for _ in 0..<200 where harness.model.isTransforming {
+            await Task.yield()
+        }
+
+        let history = try harness.historyStore.load()
+        XCTAssertEqual(history.count, 1)
+        XCTAssertEqual(history.first?.source, .write)
+        XCTAssertEqual(history.first?.inputText, "Edited dictated draft")
+        XCTAssertEqual(history.first?.outputText, "Processed draft")
+    }
+
     func testActiveDictationBlocksEveryEditorActionAndOrdinaryTyping() throws {
         let harness = try makeHarness()
         enterEditor(harness.model)
@@ -406,16 +430,21 @@ final class WritingPopoverDictationViewModelTests: XCTestCase {
             defaults.removePersistentDomain(forName: identifier)
             try? FileManager.default.removeItem(at: root)
         }
+        let historyStore = JSONLHistoryStore(fileURL: root.appendingPathComponent("history.jsonl"))
         let model = InkletPopoverViewModel(
             configStore: configStore,
             transformationServiceFactory: { _ in
                 TransformationService(provider: ImmediateWritingProvider(output: output))
             },
-            historyStore: JSONLHistoryStore(fileURL: root.appendingPathComponent("history.jsonl")),
+            historyStore: historyStore,
             writingModePreferenceStore: WritingModePreferenceStore(userDefaults: defaults)
         )
         model.resetForOpen(previousApplication: nil)
-        return WritingPopoverDictationHarness(model: model, configStore: configStore)
+        return WritingPopoverDictationHarness(
+            model: model,
+            configStore: configStore,
+            historyStore: historyStore
+        )
     }
 
     private func enterEditor(_ model: InkletPopoverViewModel) {
@@ -439,6 +468,7 @@ final class WritingPopoverDictationViewModelTests: XCTestCase {
 private struct WritingPopoverDictationHarness {
     let model: InkletPopoverViewModel
     let configStore: UserDefaultsConfigStore
+    let historyStore: JSONLHistoryStore
 }
 
 private struct ImmediateWritingProvider: LLMProvider {

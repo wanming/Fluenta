@@ -131,6 +131,105 @@ final class DirectDistributionContractTests: XCTestCase {
         }
     }
 
+    func testPrivacyPolicyDeclaresRealtimeDictationContractWithExactUpdateDate() throws {
+        let policy = try text(at: "docs/privacy-policy.md")
+        let updateLines = policy.split(separator: "\n").filter {
+            $0.hasPrefix("Last updated:")
+        }
+
+        XCTAssertEqual(updateLines, ["Last updated: August 30, 2026"])
+        for required in [
+            "Active microphone audio is streamed to OpenAI's Realtime transcription service as it is captured.",
+            "one temporary local `.m4a` recovery recording",
+            "only to the one file-transcription recovery attempt",
+            "success, no speech, fallback success or failure, Escape, focus loss, popover closure, supersession, migration maintenance, and app termination",
+            "does not log audio or transcript content, Authorization headers, microphone identifiers, or temporary file paths",
+            "Audio is never placed on the clipboard or stored in History.",
+            "An unprocessed dictated draft creates no History entry.",
+            "Existing legacy Voice entries remain locally readable.",
+            "Microphone permission is distinct from Accessibility permission",
+            "finishing dictation does not insert text into another app",
+        ] {
+            XCTAssertTrue(policy.contains(required), required)
+        }
+
+        let distributionContract = try text(at: "scripts/test-direct-distribution.sh")
+        XCTAssertTrue(distributionContract.contains("Last updated: August 30, 2026"))
+        XCTAssertFalse(distributionContract.contains("Last updated: August 12, 2026"))
+    }
+
+    func testReadmesDescribeMergedHoldOnlyWritingDictationAndRejectStandaloneWorkflow() throws {
+        let english = try text(at: "README.md")
+        let chinese = try text(at: "README.zh-CN.md")
+        let combined = english + "\n" + chinese
+
+        for required in [
+            "Open Writing Assistant",
+            "Confirm a Prompt Mode",
+            "Hold the configured Dictation shortcut",
+            "Release to finalize",
+            "Press Return only when ready",
+            "A short press does nothing.",
+            "does not run the Prompt Mode or insert text into another app",
+        ] {
+            XCTAssertTrue(english.contains(required), required)
+        }
+        for required in [
+            "打开写作助手",
+            "确认一个 Prompt 模式",
+            "长按已配置的听写快捷键",
+            "松开以完成转写",
+            "准备好后再按 Return",
+            "短按不会执行任何操作",
+            "不会运行 Prompt 模式，也不会把文本插入其他 App",
+        ] {
+            XCTAssertTrue(chinese.contains(required), required)
+        }
+        for retired in [
+            "Voice Write Assistant",
+            "tap-to-toggle",
+            "double-tap recording",
+            "Voice Recording Mode",
+            "compact voice window",
+            "Auto Process",
+            "单击开始/停止",
+            "双击开始/停止",
+        ] {
+            XCTAssertFalse(combined.contains(retired), retired)
+        }
+    }
+
+    func testSecurityAndManualChecklistCoverRealtimeDictationRisksAndWorkflowMatrix() throws {
+        let security = try text(at: "SECURITY.md")
+        for required in [
+            "Realtime transport authentication",
+            "bounded in-memory PCM",
+            "terminal-session arbitration",
+            "temporary recovery-file deletion",
+            "audio payloads, transcript contents, Authorization headers, microphone identifiers, or temporary file paths",
+        ] {
+            XCTAssertTrue(security.contains(required), required)
+        }
+
+        let checklist = try text(at: "docs/manual-test-checklist.md")
+        for required in [
+            "mode picker and result editor",
+            "modifier already held",
+            "combining marks",
+            "one-step undo",
+            "marked-text Escape",
+            "connection failure while held",
+            "late-event races",
+            "permission is not requested",
+            "rapid reopen",
+            "no draft-only History",
+            "legacy Voice History",
+            "phase-only announcements",
+        ] {
+            XCTAssertTrue(checklist.contains(required), required)
+        }
+    }
+
     private var repositoryRoot: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -150,6 +249,13 @@ final class DirectDistributionContractTests: XCTestCase {
             format: nil
         )
         return try XCTUnwrap(propertyList as? [String: Any])
+    }
+
+    private func text(at relativePath: String) throws -> String {
+        try String(
+            contentsOf: repositoryRoot.appendingPathComponent(relativePath),
+            encoding: .utf8
+        )
     }
 
     private func isTruePlistBoolean(_ value: Any?) -> Bool {

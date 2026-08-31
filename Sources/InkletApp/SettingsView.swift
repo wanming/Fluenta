@@ -1664,7 +1664,7 @@ struct SettingsView: View {
     }
 
     private var voiceShortcutKeys: [String] {
-        [L10n.text("settings.voiceRecordingMode.holdKey"), model.config.voiceInput.shortcut.localizedName]
+        [model.config.voiceInput.shortcut.localizedName]
     }
 
     private func permissionStatusColor(isTrusted: Bool) -> Color {

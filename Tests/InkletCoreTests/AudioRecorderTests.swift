@@ -5,6 +5,29 @@ import XCTest
 
 @MainActor
 final class AudioRecorderTests: XCTestCase {
+    func testRecorderErrorsUseDictationLocalizationKeys() {
+        XCTAssertEqual(
+            AudioRecorder.AudioRecorderError.microphonePermissionDenied.errorDescription,
+            L10n.text("dictation.error.microphonePermission")
+        )
+        XCTAssertEqual(
+            AudioRecorder.AudioRecorderError.noAudioInputDevice.errorDescription,
+            L10n.text("dictation.error.noAudioInputDevice")
+        )
+        XCTAssertEqual(
+            AudioRecorder.AudioRecorderError.recordingUnavailable.errorDescription,
+            L10n.text("dictation.error.recordingUnavailable")
+        )
+        XCTAssertEqual(
+            AudioRecorder.AudioRecorderError.realtimeAudioUnavailable.errorDescription,
+            L10n.text("dictation.error.recordingUnavailable")
+        )
+        XCTAssertEqual(
+            AudioRecorder.AudioRecorderError.realtimeBufferOverflow.errorDescription,
+            L10n.text("dictation.error.realtimeBufferOverflow")
+        )
+    }
+
     func testRealtimeAudioSettingsAreMono24kSignedLittleEndianInterleavedPCM16() {
         let settings = AudioRecorder.realtimeAudioSettings
 

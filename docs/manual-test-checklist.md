@@ -10,7 +10,7 @@ Record the tested Inklet version, artifact checksum, macOS version, hardware arc
 - For source or local testing, run `scripts/run-local-app.sh` and use `/Applications/Inklet Local.app`. Do not launch a bare SwiftPM executable, a worktree-local `dist/...` app, or an ad-hoc-signed app for routine QA.
 - Confirm the local runner uses the stable `com.tomwan.inklet.local` bundle, and do not print or record the configured signing identity.
 - Configure a test OpenAI API key in General. Use non-production text, audio, and credentials.
-- Confirm the default writing shortcut is `Option+Space` and the default voice shortcut is Right Option with Press and Hold, unless the test intentionally changes them.
+- Confirm the default writing shortcut is `Option+Space` and the default Dictation hold shortcut is Right Option, unless the test intentionally changes them.
 - Use `scripts/reset-rebuild-install.sh` only for intentional local first-launch or permission-reset QA; it removes the selected local state by design.
 
 ## Fresh Install And Signed Upgrade
@@ -40,9 +40,9 @@ Record the tested Inklet version, artifact checksum, macOS version, hardware arc
 
 - Deny Accessibility on a fresh install. Confirm onboarding or Settings explains the missing permission, selection reading and insertion do not proceed, and Inklet does not show an empty selection panel.
 - Grant Accessibility and confirm generic selection reading, configured copy fallback, focus restoration, and insertion work without any browser-specific permission setup.
-- Deny Microphone on first voice use. Confirm a clear error appears, recording does not continue, and no text is inserted.
-- Restore Microphone permission and confirm only the voice workflow records audio.
-- Confirm first voice use produces the macOS Microphone prompt; simply opening Inklet or using Selection Actions must not prompt for Microphone access.
+- Deny Microphone on the first valid dictation hold. Confirm a clear error appears, capture does not continue, the original draft is restored, and no text is inserted.
+- Restore Microphone permission and confirm only a valid hold in the active Writing source editor records audio.
+- Confirm permission is not requested when opening Inklet, viewing Settings, entering the mode picker and result editor, or making a short press; Selection Actions must not prompt for Microphone access either.
 - No browser Automation prompt may appear during onboarding, selection, double-copy, insertion, or migration. Confirm Inklet is absent from browser Automation grants used by the test account.
 - Run `scripts/run-local-app.sh`, exercise Accessibility and Keychain access, then rebuild and reinstall the local app twice through the same script. Confirm `/Applications/Inklet Local.app` keeps the same bundle identity and reuses Accessibility trust and Keychain access without a new approval prompt.
 
@@ -78,17 +78,19 @@ Record the tested Inklet version, artifact checksum, macOS version, hardware arc
 - Paste failure: keep the generated result visible so the user can copy or retry.
 - Clipboard restoration after insertion: confirm the prior clipboard contents are restored.
 
-## Voice Dictation
+## Writing Dictation Matrix
 
-- TextEdit: focus a text field, hold Right Option, speak a short phrase, release Right Option, and confirm text is inserted.
-- Change Voice Recording Mode to Tap Once; tap the configured shortcut to start, tap again to stop, and confirm text is inserted.
-- Change Voice Recording Mode to Double Tap; double-tap to start, double-tap again to stop, and confirm text is inserted.
-- Confirm the compact voice window shows Listening, Transcribing, Polishing, and Inserting states.
-- Press Escape while Listening and confirm nothing is inserted.
-- Disable Auto Process and confirm raw transcription is inserted. Enable it with Voice Cleanup and confirm meaning and language are preserved without summarizing.
-- Select System Default and a concrete microphone in turn. Disconnect the concrete microphone and confirm fallback to System Default or a clear no-input error.
-- Clear the shared OpenAI API key in General and confirm dictation shows a clear error without inserting.
-- Change the voice shortcut to Right Command, Left Option, Left Command, and Disabled; confirm each works with the selected recording mode.
+- [ ] Route isolation: confirm Dictation is unavailable in the mode picker and result editor, then confirm it becomes available only after a Prompt Mode is committed and the Writing source editor is active.
+- [ ] Gesture lifecycle: test a short press, a valid long hold, release, rapid repeat, and the modifier already held when entering the editor. A short press must do nothing; every valid hold must start at most one session.
+- [ ] Editing targets: dictate at an empty caret, in the middle and end of text, and over a selection. Repeat with CJK, English, mixed-language text, emoji, and combining marks. Each committed dictation must be one-step undo and redo without disturbing older undo items.
+- [ ] Interaction lock: during connecting, listening, fallback recording, finalizing, and recovery, confirm manual editing, caret movement, and selection changes are locked. Confirm the original editability, selection, and focus are restored after success, cancellation, or failure.
+- [ ] Escape layers: begin with active IME composition and test marked-text Escape, then active-dictation Escape, then normal Writing Escape navigation. Dictation cancellation must restore the exact attributed draft and selection without moving an extra route level.
+- [ ] Realtime outcomes: exercise realtime partial and final events, connection failure while held, fallback success, fallback failure, no speech, and late-event races. Exactly one terminal result may win and late callbacks must not change the restored or committed draft.
+- [ ] Devices and permissions: verify the first valid hold permission prompt, permission denial, no input device, an unplugged selected device, and System Default. Opening the popover, choosing a mode, and short presses must not request Microphone permission.
+- [ ] Lifecycle cancellation: close the popover, change focus, return to the launcher, use rapid reopen, and quit the app during every active phase. Repeat while capture permission or device startup is still pending; no session may leak into the reopened editor.
+- [ ] Retention and diagnostics: verify temporary recovery-file deletion for every terminal path, no draft-only History, unchanged legacy Voice History, and no transcript or audio content, Authorization header, microphone identifier, or temporary path in logs.
+- [ ] Presentation and accessibility: at the actual popover width in English and Chinese, test long localized shortcut and microphone names, stable phase icons, VoiceOver labels for the source editor and status, and phase-only announcements that do not read inline error copy twice.
+- [ ] Configuration: clear the shared OpenAI API key and verify the localized error without insertion. Change the Dictation shortcut among Right Command, Left Option, Left Command, and Disabled; confirm only a hold in the active source editor can start capture.
 
 ## Generic Selection Matrix
 
@@ -117,12 +119,12 @@ Run every item below in Chrome, Safari, Edge, and a native AppKit text view. Rep
 - `Command+,`: open Settings while Inklet is active.
 - General: configure the OpenAI API key, then change language and appearance.
 - Write Assistant: configure the OpenAI model, writing shortcut, and timeout.
-- Voice Write Assistant: configure shortcut, microphone, speech preset, speech endpoint, speech model, auto-processing, and cleanup prompt mode.
+- Writing Assistant: configure the Dictation hold shortcut and microphone. In Advanced Dictation, configure the single-recovery endpoint and model and confirm an invalid endpoint is rejected.
 - Selection Assistant: configure translation language, Translate prompt, Force Selection mode, pronunciation voice, and speed; preview the voice.
 - Prompt Modes: add, edit, hide, delete with confirmation, and reorder modes.
 - Permissions: verify Accessibility status and the System Settings button. Inklet should not steal focus while System Settings is open; close it and confirm the existing Settings window returns with refreshed status.
-- History: confirm successful Write, Voice, and Selection results appear newest first. Repeat identical consecutive actions and confirm duplicates collapse; add a different item and then repeat the original to confirm it is retained.
-- History: filter by Write, Voice, and Selection; select source/result text; copy result text; clear History and confirm the empty state.
+- History: confirm successful Write and Selection results appear newest first. Repeat identical consecutive actions and confirm duplicates collapse; add a different item and then repeat the original to confirm it is retained. Dictation alone must add nothing.
+- History: filter by Write and Selection, then confirm imported legacy Voice entries and the Voice filter remain readable. Select source/result text, copy result text, clear History, and confirm the empty state.
 - Save behavior: quit and reopen Inklet and confirm changes persist in the matching bundle's defaults.
 
 ## Exact Signed Release Matrix
@@ -137,7 +139,7 @@ Run the fresh-install and signed-upgrade sections using the exact final DMG and 
 - Confirm the mounted app has no embedded provisioning profile and no store receipt, and the DMG contains only `Inklet.app` plus the expected `/Applications` link.
 - Run the standalone installer against the final release assets. Confirm it requires and verifies the checksum, DMG, mounted payload, signature, Gatekeeper, Hardened Runtime, and effective entitlements before replacing `/Applications/Inklet.app`.
 - Confirm quarantine is preserved through download and installation; do not clear extended attributes or bypass Gatekeeper.
-- Verify first launch, automatic or assisted migration, Accessibility, first voice use, Keychain read/update, settings, History, and repeat-launch behavior from the installed final artifact.
+- Verify first launch, automatic or assisted migration, Accessibility, first valid dictation hold, Keychain read/update, settings, History, and repeat-launch behavior from the installed final artifact.
 
 ## Compatibility Notes
 

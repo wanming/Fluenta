@@ -222,7 +222,6 @@ final class WritingDictationCoordinator {
             let operationID = registerOperation(sessionID: nil, kind: .preflightClose)
             await client.close()
             completeOperation(operationID)
-            publish(.failed("dictation.error.editorUnavailable"))
             return
         }
 
@@ -437,6 +436,9 @@ final class WritingDictationCoordinator {
                 case let .provisional(text):
                     do {
                         try updated.transaction.replaceProvisional(with: text)
+                    } catch DictationEditorTransactionError.editorUnavailable {
+                        winTerminal(sessionID: sessionID, outcome: .cancelled)
+                        return
                     } catch {
                         winTerminal(sessionID: sessionID, outcome: .failure(errorKey(error)))
                         return
@@ -758,11 +760,16 @@ final class WritingDictationCoordinator {
             do {
                 try current.transaction.commitFinal(text)
                 current.terminalPhase = .complete
+                publishTerminalPhaseImmediately = false
+            } catch DictationEditorTransactionError.editorUnavailable {
+                current.transaction.restore()
+                current.terminalPhase = .idle
+                publishTerminalPhaseImmediately = true
             } catch {
                 current.transaction.restore()
                 current.terminalPhase = .failed(errorKey(error))
+                publishTerminalPhaseImmediately = false
             }
-            publishTerminalPhaseImmediately = false
         case let .failure(key):
             current.transaction.restore()
             current.terminalPhase = .failed(key)
@@ -952,10 +959,28 @@ final class WritingDictationCoordinator {
         switch error {
         case RealtimeTranscriptionError.missingAPIKey:
             "dictation.error.missingAPIKey"
-        case SpeechTranscriptionError.emptyResponse:
+        case RealtimeTranscriptionError.connectionTimedOut:
+            "dictation.error.connectionTimeout"
+        case RealtimeTranscriptionError.finalTranscriptTimedOut:
+            "dictation.error.finalTimeout"
+        case RealtimeTranscriptionError.invalidEndpoint,
+             RealtimeTranscriptionError.connectionClosed,
+             RealtimeTranscriptionError.invalidMessage,
+             RealtimeTranscriptionError.invalidState,
+             RealtimeTranscriptionError.server:
+            "dictation.error.connection"
+        case SpeechTranscriptionError.emptyAudio,
+             SpeechTranscriptionError.emptyResponse:
             "dictation.error.noSpeech"
         case AudioRecorder.AudioRecorderError.microphonePermissionDenied:
             "dictation.error.microphonePermission"
+        case AudioRecorder.AudioRecorderError.noAudioInputDevice:
+            "dictation.error.noAudioInputDevice"
+        case AudioRecorder.AudioRecorderError.recordingUnavailable,
+             AudioRecorder.AudioRecorderError.realtimeAudioUnavailable:
+            "dictation.error.recordingUnavailable"
+        case AudioRecorder.AudioRecorderError.realtimeBufferOverflow:
+            "dictation.error.realtimeBufferOverflow"
         default:
             "dictation.error.fallback"
         }

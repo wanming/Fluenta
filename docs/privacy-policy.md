@@ -1,10 +1,10 @@
 # Inklet Privacy Policy
 
-Last updated: August 12, 2026
+Last updated: August 30, 2026
 
 ## Overview
 
-Inklet is a macOS writing assistant. It helps you transform typed, pasted, or spoken text using the AI provider and speech provider you configure.
+Inklet is a macOS writing assistant. It helps you transform typed, pasted, or dictated text using OpenAI and the provider settings you configure.
 
 Inklet does not require an Inklet account and does not send your content to Inklet-controlled servers.
 
@@ -15,9 +15,9 @@ Inklet may process:
 - Text you type or paste into Inklet.
 - Text selected or copied by you for insertion workflows.
 - Text selected by you for Selection Actions.
-- Successful Write, Voice, and Selection source/result text saved in local History.
+- Successful Write and Selection source/result text saved in local History, plus readable legacy Voice entries created by older Inklet versions.
 - Successful Selection translation results cached locally for repeat use.
-- Temporary audio recorded when you start voice dictation.
+- Active microphone audio streamed while you hold the Dictation shortcut, plus one temporary recovery recording for that session.
 - API keys and provider settings you enter.
 - App settings such as prompt modes, model choices, shortcuts, and preferences.
 
@@ -26,7 +26,7 @@ Inklet may process:
 Inklet uses this information to:
 
 - Transform or summarize text.
-- Transcribe voice dictation.
+- Transcribe realtime dictation into an editable Writing Assistant draft.
 - Insert text into the app you were using.
 - Show past successful results in local History.
 - Speed repeated Selection translation requests with a local cache.
@@ -35,13 +35,25 @@ Inklet uses this information to:
 
 ## AI And Speech Providers
 
-Inklet sends text and audio only to the provider endpoints you configure for app functionality.
+Inklet sends text and audio only to provider endpoints used for app functionality.
 
-Text may be sent to the selected AI provider for rewriting, summarization, or cleanup. Audio may be sent to the selected speech transcription provider for voice dictation.
+Text may be sent to the selected AI provider for rewriting or summarization. Dictation audio is sent to OpenAI for realtime transcription and, only when recovery is needed, to the configured recovery endpoint.
 
 Provider handling of your data is governed by the provider's own privacy policy and account terms. Do not send private text or audio to a provider unless you trust that provider.
 
 Inklet may fetch the public model catalog from `models.dev` periodically, currently no more than once per day. This request does not include your text, audio, API keys, or app settings.
+
+## Realtime Dictation
+
+Dictation is available only while the editable Writing Assistant source editor is active and you hold the configured shortcut. Active microphone audio is streamed to OpenAI's Realtime transcription service as it is captured. Inklet authenticates that connection with your OpenAI API key and keeps only bounded in-memory PCM while connecting and streaming.
+
+At capture start, Inklet also creates one temporary local `.m4a` recovery recording. If the realtime connection cannot produce a final transcript, that recording is sent only to the one file-transcription recovery attempt using the recovery endpoint and model in Advanced Dictation. It is not reused for another request.
+
+The temporary recording is deleted after every terminal path: success, no speech, fallback success or failure, Escape, focus loss, popover closure, supersession, migration maintenance, and app termination. Dictation diagnostics record only lifecycle state needed to troubleshoot the session and does not log audio or transcript content, Authorization headers, microphone identifiers, or temporary file paths.
+
+Audio is never placed on the clipboard or stored in History. An unprocessed dictated draft creates no History entry. If you later press Return to run a Prompt Mode and successfully submit its result, that normal Write action may create one Write History entry. Existing legacy Voice entries remain locally readable.
+
+Microphone permission is distinct from Accessibility permission: the first valid Dictation hold may request Microphone access, while simply opening Inklet, viewing Settings, pressing the shortcut in the mode picker or result editor, or making a short press does not. Accessibility is needed only when you later choose to insert confirmed text; finishing dictation does not insert text into another app.
 
 ## Selection Actions
 
@@ -66,7 +78,7 @@ Production and local QA builds use separate bundle-qualified local stores:
 - Production Keychain service: `Inklet.ProviderAPIKey`
 - Local Keychain service: `Inklet.Local.ProviderAPIKey`
 
-Within each Application Support root, Inklet stores successful Write, Voice, and Selection source/result text in `history.jsonl` until you clear History in Settings. It stores successful Selection translations in `selection-translation-cache.json` for 7 days using hashed cache keys.
+Within each Application Support root, Inklet stores successful Write and Selection source/result text in `history.jsonl` until you clear History in Settings. Existing legacy Voice records remain readable but new Dictation drafts are not written there. Inklet stores successful Selection translations in `selection-translation-cache.json` for 7 days using hashed cache keys.
 
 Selection diagnostics use the bundle-qualified temporary filename `$TMPDIR/InkletSelectionActions.<bundle-identifier>.log`. Diagnostics may include event type, source app bundle identifier or process identifier, read status, character count, and window geometry; repeated identical event entries are rate-limited. They do not include selected-text contents, clipboard contents, typed characters, provider keys, prompt text, generated text, or audio.
 
@@ -78,14 +90,14 @@ On launch, Inklet checks the matching legacy source at `~/Library/Containers/<bu
 
 Migration is versioned and retry-safe. If both old and new History exist, Inklet merges records by identifier and keeps the destination record on a duplicate. Existing destination Keychain items are not overwritten. Delayed preference import preserves settings changed after the upgrade attempt.
 
-If macOS blocks automatic source access, Settings offers **Import Old Data…**. The file panel accepts only the canonical legacy `Data` folder for the running production or local bundle. Inklet uses that file-panel access only for the in-process import, stops accessing it when the import finishes, and does not save a persistent bookmark. Import pauses active selection, voice, and settings work; if destination data changes, Inklet relaunches before normal work resumes.
+If macOS blocks automatic source access, Settings offers **Import Old Data…**. The file panel accepts only the canonical legacy `Data` folder for the running production or local bundle. Inklet uses that file-panel access only for the in-process import, stops accessing it when the import finishes, and does not save a persistent bookmark. Import pauses active selection, dictation, and settings work; if destination data changes, Inklet relaunches before normal work resumes.
 
 ## Permissions
 
 Inklet requests the following macOS permissions:
 
 - Accessibility: used to return focus to the previous app, insert text after you confirm insertion, inspect focused controls, invoke menu Copy when Force Selection is enabled, and read selected text for Selection Actions after you select text.
-- Microphone: used only while recording voice dictation that you start.
+- Microphone: used only during a valid Dictation hold in the active Writing Assistant source editor.
 
 Accessibility is the generic permission used for selection reading and simulated input. Inklet does not request browser-specific permissions or Automation permission. Inklet does not use Accessibility or Microphone permission to collect text or audio from other apps in the background.
 

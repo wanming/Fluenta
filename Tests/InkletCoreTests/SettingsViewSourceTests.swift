@@ -54,6 +54,7 @@ final class SettingsViewSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("$model.config.voiceInput.speechModel"))
         XCTAssertTrue(source.contains("settings.error.invalidFallbackSpeechEndpoint"))
         XCTAssertFalse(source.contains("voice.error.invalidSpeechEndpoint"))
+        XCTAssertFalse(source.contains("settings.voiceRecordingMode.holdKey"))
     }
 
     func testRetiredVoiceWorkflowControlsAreAbsent() throws {

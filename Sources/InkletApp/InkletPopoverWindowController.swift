@@ -509,13 +509,13 @@ final class InkletPopoverWindowController: NSWindowController, NSWindowDelegate 
         case .listening:
             announcement = L10n.text("dictation.accessibility.listening")
         case .finalizing:
-            announcement = L10n.text("dictation.status.finalizing")
+            announcement = L10n.text("dictation.accessibility.finalizing")
         case .recovering:
-            announcement = L10n.text("dictation.status.recovering")
+            announcement = L10n.text("dictation.accessibility.recovering")
         case .complete:
             announcement = L10n.text("dictation.accessibility.completed")
-        case .failed(let errorKey):
-            announcement = L10n.text(errorKey)
+        case .failed:
+            announcement = L10n.text("dictation.accessibility.failed")
         }
 
         guard let announcement else { return }

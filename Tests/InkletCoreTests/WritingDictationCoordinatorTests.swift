@@ -27,7 +27,7 @@ final class WritingDictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.subject.phase, .failed("dictation.error.missingAPIKey"))
     }
 
-    func testEditorUnavailableClosesClientBeforeFailureAndNeverRequestsMicrophone() async {
+    func testEditorUnavailableClosesClientSilentlyAndNeverRequestsMicrophone() async {
         let harness = DictationHarness(transactionAvailable: false)
         harness.client.blockClose()
         let begin = Task { await harness.subject.beginHold() }
@@ -42,7 +42,36 @@ final class WritingDictationCoordinatorTests: XCTestCase {
         await begin.value
 
         XCTAssertEqual(harness.client.closeCount, 1)
-        XCTAssertEqual(harness.subject.phase, .failed("dictation.error.editorUnavailable"))
+        XCTAssertEqual(harness.subject.phase, .idle)
+        XCTAssertTrue(harness.phases.isEmpty)
+    }
+
+    func testCaptureStartErrorsUseSpecificDictationErrorKeys() async {
+        let permission = await phaseForCaptureStartError(.microphonePermissionDenied)
+        let noDevice = await phaseForCaptureStartError(.noAudioInputDevice)
+        let recording = await phaseForCaptureStartError(.recordingUnavailable)
+        let overflow = await phaseForCaptureStartError(.realtimeBufferOverflow)
+
+        XCTAssertEqual(permission, .failed("dictation.error.microphonePermission"))
+        XCTAssertEqual(noDevice, .failed("dictation.error.noAudioInputDevice"))
+        XCTAssertEqual(recording, .failed("dictation.error.recordingUnavailable"))
+        XCTAssertEqual(overflow, .failed("dictation.error.realtimeBufferOverflow"))
+    }
+
+    func testRealtimeErrorsUsePhaseSpecificDictationErrorKeys() async {
+        let connection = await phaseForClientFactoryError(
+            RealtimeTranscriptionError.connectionClosed
+        )
+        let connectionTimeout = await phaseForClientFactoryError(
+            RealtimeTranscriptionError.connectionTimedOut
+        )
+        let finalTimeout = await phaseForClientFactoryError(
+            RealtimeTranscriptionError.finalTranscriptTimedOut
+        )
+
+        XCTAssertEqual(connection, .failed("dictation.error.connection"))
+        XCTAssertEqual(connectionTimeout, .failed("dictation.error.connectionTimeout"))
+        XCTAssertEqual(finalTimeout, .failed("dictation.error.finalTimeout"))
     }
 
     func testBeginWhileSessionIsActiveIsIgnoredWithoutRestartingCaptureOrTransaction() async {
@@ -164,6 +193,11 @@ final class WritingDictationCoordinatorTests: XCTestCase {
         XCTAssertTrue(harness.fallbackRequests.isEmpty)
         XCTAssertEqual(harness.transaction.restoreCount, 1)
         XCTAssertEqual(harness.client.closeCount, 1)
+        XCTAssertEqual(harness.subject.phase, .idle)
+        XCTAssertFalse(harness.phases.contains { phase in
+            if case .failed = phase { return true }
+            return false
+        })
     }
 
     func testSuccessfulEmptyRealtimeCompletionRestoresWithoutFallback() async {
@@ -549,7 +583,11 @@ final class WritingDictationCoordinatorTests: XCTestCase {
         XCTAssertTrue(harness.fallbackRequests.isEmpty)
         XCTAssertEqual(harness.client.closeCount, 1)
         XCTAssertEqual(harness.deletedURLs, [harness.capture.recordingURL])
-        XCTAssertEqual(harness.subject.phase, .failed("dictation.error.fallback"))
+        XCTAssertEqual(harness.subject.phase, .idle)
+        XCTAssertFalse(harness.phases.contains { phase in
+            if case .failed = phase { return true }
+            return false
+        })
     }
 
     func testSuccessFailureAndCancelDeleteEachOwnedTemporaryFileExactlyOnce() async {
@@ -865,6 +903,43 @@ final class WritingDictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.subject.phase, .failed("dictation.error.fallback"))
         XCTAssertEqual(harness.client.closeCount, 1)
         XCTAssertEqual(harness.deletedURLs, [harness.capture.recordingURL])
+    }
+
+    private func phaseForCaptureStartError(
+        _ error: AudioRecorder.AudioRecorderError
+    ) async -> WritingDictationCoordinator.Phase {
+        let capture = FakeDictationCapture()
+        capture.startError = error
+        let client = FakeRealtimeClient()
+        let transaction = FakeDictationTransaction()
+        let subject = WritingDictationCoordinator(
+            configProvider: { VoiceInputConfig.defaultConfig() },
+            audioCapture: capture,
+            makeRealtimeClient: { client },
+            beginTransaction: { transaction },
+            transcribeFallback: { _, _ in "unused" }
+        )
+
+        await subject.beginHold()
+        await subject.cancelAndWait()
+        return subject.phase
+    }
+
+    private func phaseForClientFactoryError(
+        _ error: Error
+    ) async -> WritingDictationCoordinator.Phase {
+        let capture = FakeDictationCapture()
+        let transaction = FakeDictationTransaction()
+        let subject = WritingDictationCoordinator(
+            configProvider: { VoiceInputConfig.defaultConfig() },
+            audioCapture: capture,
+            makeRealtimeClient: { throw error },
+            beginTransaction: { transaction },
+            transcribeFallback: { _, _ in "unused" }
+        )
+
+        await subject.beginHold()
+        return subject.phase
     }
 }
 

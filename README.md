@@ -8,7 +8,7 @@ Homepage: [gitinklet.app](https://gitinklet.app)
 
 **Inklet** is a macOS writing assistant that helps you turn typed, pasted, or spoken thoughts into clear text without leaving the app you are already using.
 
-Use the global shortcut to open a small writing popover, or use the voice shortcut to dictate a short phrase. Inklet can rewrite, summarize, clean up speech transcription, and insert the result back into the text field you were using.
+Use the global shortcut to open the writing popover, then type, paste, or dictate into the same editable source draft. Realtime dictation stays inside Writing Assistant so you can review the transcript before deciding whether to transform or insert it.
 
 ## Demo
 
@@ -29,11 +29,10 @@ curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install
 1. Open Inklet from your Applications folder. For a source build, run `scripts/run-local-app.sh` from the repository root, then use `/Applications/Inklet Local.app`.
 2. Click the Inklet menu bar icon and open Settings.
 3. Grant Accessibility permission when macOS asks. Inklet uses this one generic permission to read selections, perform a configured copy fallback, return focus to the previous app, and paste confirmed results. Inklet stays in the background while System Settings is open and returns to General settings when you close it.
-4. Enter your OpenAI API key in General. Inklet uses this one key for writing, voice transcription, selection translation, and pronunciation.
-5. Configure Write Assistant with the model, writing shortcut, generation settings, and prompt modes you want to use.
-6. Optional: configure Voice Write Assistant with a microphone, speech preset, voice shortcut, recording mode, and what happens after transcription.
-7. Optional: configure Selection Assistant with a translation language, Force Selection mode, AI pronunciation voice, and pronunciation speed, then preview the voice in Settings.
-8. Grant Microphone permission the first time you use voice dictation.
+4. Enter your OpenAI API key in General. Inklet uses this one key for writing, realtime dictation, selection translation, and pronunciation.
+5. Configure Writing Assistant with the model, writing shortcut, generation settings, prompt modes, Dictation hold shortcut, and microphone you want to use. Advanced Dictation exposes one recovery endpoint and model; the realtime model is fixed by Inklet.
+6. Optional: configure Selection Assistant with a translation language, Force Selection mode, AI pronunciation voice, and pronunciation speed, then preview the voice in Settings.
+7. Grant Microphone permission on the first valid Dictation hold. Opening Inklet, visiting Settings, or pressing the Dictation shortcut outside the active source editor does not request it.
 
 ## Everyday Use
 
@@ -46,20 +45,22 @@ Text workflow:
 5. Press `Enter` to transform it.
 6. Press `Enter` again to insert the result.
 
-Voice workflow:
+Dictation workflow:
 
-1. Focus any text field in another app.
-2. Hold Right Option to record with the selected microphone.
-3. Speak a short phrase.
-4. Release Right Option to stop recording.
-5. Inklet transcribes the audio, then either uses your cleanup mode, asks you to choose a prompt mode, or inserts the raw transcript based on your Voice settings.
+1. **Open Writing Assistant** with `Option+Space`.
+2. **Confirm a Prompt Mode** and focus the editable source draft. Dictation is unavailable in the mode picker and result editor.
+3. **Hold the configured Dictation shortcut** (Right Option by default) while the source editor is active. A short press does nothing.
+4. Speak normally while the draft updates in place. If the realtime connection fails, keep holding and speaking while Inklet keeps one temporary recovery recording.
+5. **Release to finalize** the transcript. Inklet makes at most one file-transcription recovery attempt, then deletes the temporary recording when the session ends.
+6. Review and edit the dictated draft. Dictation by itself does not run the Prompt Mode or insert text into another app.
+7. **Press Return only when ready** to run the confirmed Prompt Mode; press Return again only when you want to insert the result.
 
-The default voice shortcut is Right Option with press-and-hold recording. In Settings, you can change the shortcut to Right Command, Left Option, Left Command, or Disabled, and you can choose press-and-hold, tap-to-toggle, or double-tap recording.
+The Dictation shortcut is source-local and hold-only. You can change its modifier key to Right Command, Left Option, Left Command, or Disabled in Settings. Escape, focus loss, popover closure, or opening another source session cancels dictation and restores the original draft.
 
 ## What It Does
 
 - Opens from a global macOS hotkey. The default is `Option+Space`.
-- Starts short voice dictation from a modifier-key shortcut. The default is Right Option with press-and-hold recording; tap-to-toggle and double-tap modes are also available.
+- Streams realtime dictation into the active Writing Assistant source editor while a modifier-key shortcut is held. The default is Right Option.
 - Shows Selection Actions after you select text in another Mac app and pause briefly, with EasyDict-style selection reading, quick translation, a customizable Translate prompt, AI pronunciation, resizable translation results that remember their last size, and 7-day local caching for repeated translations.
 - Ignores selected text longer than 1,500 characters to avoid accidental long-page triggers.
 - Plays selected text directly, and can play both the original text and translated text from the translation result.
@@ -72,9 +73,9 @@ The default voice shortcut is Right Option with press-and-hold recording. In Set
 - Keeps simulated `Command+C` off by default. Menu Copy remains the safe Force Selection fallback; you can explicitly enable simulated copy as an advanced fallback for apps without a usable Copy menu, but it may interfere with games, remote desktops, or virtual machines.
 - Serializes temporary clipboard reads and restores the prior snapshot only while the same read still owns the observed copy result; newer clipboard contents win. The double-copy trigger is passive: it consumes the copy the user already made without issuing another synthetic copy or restoring older clipboard data. Right-click remains native and never starts a selection read.
 - Does not use browser-specific selection code and does not request browser Automation. Chrome, Safari, Edge, and native apps use the same generic path.
-- Lets you edit prompt modes, OpenAI model, timeout, writing shortcut, voice shortcut, voice recording mode, microphone, speech preset, speech endpoint, speech model, post-transcription handling, selection translation language, selection Translate prompt, Force Selection mode, simulated-copy permission, AI pronunciation voice, and AI pronunciation speed.
-- Shows local History for successful Write, Voice, and Selection results, with consecutive duplicate entries collapsed, selectable source/result text, a result copy control, and a clear-all action.
-- Uses one shared OpenAI API key for writing, voice transcription, selection translation, and pronunciation.
+- Lets you edit prompt modes, OpenAI model, timeout, writing shortcut, Dictation hold shortcut, microphone, recovery endpoint and model, selection translation language, selection Translate prompt, Force Selection mode, simulated-copy permission, AI pronunciation voice, and AI pronunciation speed.
+- Shows local History for successful Write and Selection results, with consecutive duplicate entries collapsed, selectable source/result text, a result copy control, and a clear-all action. Existing legacy Voice entries remain readable.
+- Uses one shared OpenAI API key for writing, realtime dictation, selection translation, and pronunciation.
 - Provides English and Chinese app UI localization.
 
 ## Current Status
@@ -93,7 +94,7 @@ Inklet is an early MVP. The repository currently includes:
 - Swift 6 toolchain.
 - Full Xcode is recommended for XCTest support.
 - Accessibility permission for Inklet, required for generic selection reading, configured copy fallback, returning focus to the previous app, and pasting the generated result.
-- Microphone permission for voice dictation.
+- Microphone permission for realtime dictation while the shortcut is held.
 - An OpenAI API key.
 
 ## Build And Run
@@ -118,7 +119,7 @@ If tests fail because `XCTest` is unavailable, install the full Xcode app instea
 ## Keyboard Flow
 
 - `Option+Space`: open the writing popover.
-- `Right Option`: hold to record voice dictation by default. This shortcut and its hold, tap, or double-tap recording mode can be changed or disabled in Settings.
+- `Right Option`: hold for Dictation while the Writing Assistant source editor is active. Change the modifier or disable it in Settings; a short press remains inert.
 - `Up` / `Down` in the mode launcher: move the highlight through fuzzy-ranked prompt modes.
 - `Tab`, `Return`, or keypad `Enter` in the mode launcher: commit the highlighted prompt mode and focus the source editor. Return remains available to confirm text or an IME candidate during active composition; Return with Command, Shift, Option, or Control does not commit a mode.
 - `Enter` in the editor: transform the source text, insert a result generated by the current mode, or regenerate a stale result from a previous mode with the newly committed mode.
@@ -165,13 +166,13 @@ If macOS blocks automatic access to the matching legacy container, Settings keep
 
 ## Privacy
 
-- Inklet uses your configured OpenAI API key to call OpenAI for writing, voice transcription, selection translation, and pronunciation.
-- Voice dictation sends temporary audio to OpenAI transcription.
+- Inklet uses your configured OpenAI API key to call OpenAI for writing, realtime dictation, selection translation, and pronunciation.
+- While you hold the Dictation shortcut, active microphone audio is streamed directly to OpenAI Realtime transcription. Inklet also keeps one temporary local recovery recording, uses it for at most one recovery attempt if needed, and deletes it when the session ends.
 - Your OpenAI API key is stored locally on your Mac.
 - Inklet uses Accessibility permission for generic selection reading, configured copy fallback, returning focus to the previous app, and pasting text.
-- Inklet uses Microphone permission only while recording voice dictation.
+- Inklet uses Microphone permission only during a valid Dictation hold in the active Writing Assistant source editor. Finishing dictation leaves an editable draft and does not insert into another app.
 - Inklet temporarily uses the clipboard for insertion and configured Force Selection fallback reads. A Force Selection read restores the previous clipboard only if Inklet's temporary copied value is still current, and does not overwrite a later external clipboard change.
-- Inklet saves successful Write, Voice, and Selection source/result text locally in History until you clear it in Settings, while skipping consecutive duplicate entries.
+- Inklet saves successful Write and Selection source/result text locally in History until you clear it in Settings, while skipping consecutive duplicate entries. An unprocessed dictated draft creates no History entry; existing legacy Voice entries remain locally readable.
 - Selection Actions capture the source app and selection location, validate that source before and during the read, and use Accessibility to read its current selection. If Accessibility does not return selected text, the configured Force Selection mode can briefly invoke menu Copy and read the resulting clipboard text through the protected transaction described above. Simulated `Command+C` is off by default and runs only after an explicit advanced opt-in. You can turn Force Selection off in Settings. This path sends no browser-targeted Apple Events and does not request browser Automation. Pressing `Command+C` twice quickly after selecting text explicitly reads the copy you already made. Inklet does not save merely selected text unless a successful action is recorded in local History.
 - Selection Assistant caches successful translation results locally for 7 days using hashed cache keys to speed repeated translations.
 - Selection Assistant translation sends selected text and your custom Translate instructions to OpenAI when no local cached translation is available; AI pronunciation sends selected text to OpenAI.

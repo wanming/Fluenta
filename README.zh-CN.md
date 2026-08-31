@@ -8,7 +8,7 @@
 
 **Inklet** 是一款 macOS 写作助手，可以把你输入、粘贴或说出的想法整理成清晰自然的文字，并直接插回正在使用的应用。
 
-你可以用全局快捷键打开一个小型写作窗口，也可以用语音快捷键录入一小段话。Inklet 能改写、总结、清理语音转写内容，并把结果插入回原来的文本框。
+你可以用全局快捷键打开写作浮窗，然后在同一份可编辑原文草稿中输入、粘贴或听写。实时听写已合并到写作助手，转写完成后会停留在草稿里，等待你检查和编辑。
 
 ## 演示
 
@@ -29,11 +29,10 @@ curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install
 1. 从 Applications 文件夹打开 Inklet。需要运行源码构建时，请在仓库根目录执行 `scripts/run-local-app.sh`，然后使用 `/Applications/Inklet Local.app`。
 2. 点击菜单栏里的 Inklet 图标，打开 Settings。
 3. 按 macOS 提示授予 Accessibility 权限。Inklet 用这一个通用权限读取选区、执行已配置的复制备用流程、回到上一个应用并粘贴确认后的结果。系统设置打开期间 Inklet 会留在后台；关闭系统设置后 Inklet 会返回 General 设置页。
-4. 在 General 中填写 OpenAI API key。Inklet 会用这一把 key 处理写作、语音转写、选区翻译和发音。
-5. 在 Write Assistant 中配置模型、写作快捷键、生成参数和 prompt modes。
-6. 可选：在 Voice Write Assistant 中配置麦克风、speech preset、语音快捷键、录音方式和转写后的处理方式。
-7. 可选：在 Selection Assistant 中配置翻译语言、强制取词模式、AI 发音声音和发音速度，并在设置中试听该声音。
-8. 第一次使用语音输入时，请授予 Microphone 权限。
+4. 在 General 中填写 OpenAI API key。Inklet 会用这一把 key 处理写作、实时听写、选区翻译和发音。
+5. 在 Writing Assistant 中配置模型、写作快捷键、生成参数、Prompt 模式、听写长按快捷键和麦克风。高级听写只提供一次恢复所用的端点和模型；实时模型由 Inklet 固定。
+6. 可选：在 Selection Assistant 中配置翻译语言、强制取词模式、AI 发音声音和发音速度，并在设置中试听该声音。
+7. 第一次有效长按听写快捷键时授予 Microphone 权限。只打开 Inklet、查看 Settings，或在原文编辑器之外按快捷键都不会请求权限。
 
 ## 日常使用
 
@@ -46,20 +45,22 @@ curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install
 5. 按 `Enter` 让 Inklet 处理文本。
 6. 再按一次 `Enter` 插入结果。
 
-语音输入流程：
+听写流程：
 
-1. 在任意应用里聚焦一个文本框。
-2. 按住 Right Option，用选中的麦克风开始录音。
-3. 说一小段话。
-4. 松开 Right Option 停止录音。
-5. Inklet 会转写音频，然后根据 Voice 设置使用整理模式、每次询问 prompt mode，或直接插入原始转写。
+1. 用 `Option+Space` **打开写作助手**。
+2. **确认一个 Prompt 模式**，并让可编辑的原文草稿获得焦点。模式选择器和结果编辑器中不能开始听写。
+3. 在原文编辑器处于活动状态时，**长按已配置的听写快捷键**（默认 Right Option）。短按不会执行任何操作。
+4. 正常说话，转写草稿会原位更新。如果实时连接失败，继续长按并说话，Inklet 会保留一份临时恢复录音。
+5. **松开以完成转写**。Inklet 最多进行一次文件转写恢复尝试，并在听写会话结束时删除临时录音。
+6. 检查并编辑听写草稿。听写本身不会运行 Prompt 模式，也不会把文本插入其他 App。
+7. **准备好后再按 Return** 运行已确认的 Prompt 模式；只有要插入结果时才再按一次 Return。
 
-默认语音快捷键是 Right Option，默认录音方式是按住录音。你可以在 Settings 中改成 Right Command、Left Option、Left Command，或直接关闭；录音方式也可以改成单击开始/停止或双击开始/停止。
+听写快捷键仅在原文编辑器内生效，并且只支持长按。你可以在 Settings 中把修饰键改为 Right Command、Left Option、Left Command，或直接关闭。Escape、焦点丢失、关闭浮窗或开始新的原文会话都会取消听写并恢复原草稿。
 
 ## 功能
 
 - 使用全局 macOS 快捷键打开。默认是 `Option+Space`。
-- 用 modifier key 快捷键开始短语音输入。默认是 Right Option 按住录音，也可以改成单击开始/停止或双击开始/停止。
+- 在写作助手原文编辑器处于活动状态时，长按 modifier key 快捷键，把实时听写写入草稿。默认是 Right Option。
 - 选中文本并短暂停顿后显示选区动作，可快速翻译、自定义 Translate prompt、使用 AI 发音；翻译结果窗口可调整大小并记住上次尺寸，也会为重复翻译提供 7 天本地缓存。
 - 超过 1,500 个字符的选中文本会被忽略，避免误选整页时触发。
 - 可直接播放选中文本，也可在翻译结果里分别播放原文和译文。
@@ -72,9 +73,9 @@ curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install
 - 默认关闭模拟 `Command+C`。菜单复制仍是安全的强制取词备用方式；对于没有可用复制菜单的 App，可以显式开启模拟复制这一高级备用选项，但它可能干扰游戏、远程桌面或虚拟机。
 - 临时剪贴板读取会串行执行。只有同一次读取仍持有已观察到的复制结果时，Inklet 才恢复之前的快照；较新的剪贴板内容优先。双击复制触发是被动流程：它只读取用户已经完成的复制，不会再发一次合成复制，也不会恢复更旧的剪贴板数据。右键点击保留原生行为，不会开始选区读取。
 - 不包含浏览器专用的选区代码，也不会请求浏览器 Automation。Chrome、Safari、Edge 和原生 App 使用同一条通用流程。
-- 可以编辑 prompt modes、OpenAI 模型、timeout、写作快捷键、语音快捷键、语音录音方式、麦克风、speech preset、speech endpoint、speech model、转写后处理方式、选区翻译语言、选区 Translate prompt、强制取词模式、模拟复制权限、AI 发音声音和 AI 发音速度。
-- 在本地 History 中查看成功的写作、语音和选区结果，连续重复项会自动合并，原文/结果文本可选择，可一键复制结果或清空全部历史。
-- 使用一把共享的 OpenAI API key 处理写作、语音转写、选区翻译和发音。
+- 可以编辑 Prompt 模式、OpenAI 模型、timeout、写作快捷键、听写长按快捷键、麦克风、恢复转写端点和模型、选区翻译语言、选区 Translate prompt、强制取词模式、模拟复制权限、AI 发音声音和 AI 发音速度。
+- 在本地 History 中查看成功的写作和选区结果，连续重复项会自动合并，原文/结果文本可选择，可一键复制结果或清空全部历史；旧版 Voice History 仍可读取。
+- 使用一把共享的 OpenAI API key 处理写作、实时听写、选区翻译和发音。
 - 提供英文和中文应用界面。
 
 ## 当前状态
@@ -93,7 +94,7 @@ Inklet 是早期 MVP。当前仓库包含：
 - Swift 6 toolchain。
 - 推荐安装完整 Xcode，以获得 XCTest 支持。
 - Accessibility 权限，用于通用选区读取、按设置启用的复制备用流程、回到上一个应用并粘贴生成结果。
-- Microphone 权限，用于语音输入。
+- Microphone 权限，仅在有效长按听写快捷键时用于实时听写。
 - 一个 OpenAI API key。
 
 ## 从源码构建和运行
@@ -118,7 +119,7 @@ swift test
 ## 快捷键
 
 - `Option+Space`：打开写作 popover。
-- `Right Option`：默认按住进行语音输入。可以在 Settings 中修改快捷键、关闭语音快捷键，或改成单击/双击录音方式。
+- `Right Option`：写作助手原文编辑器处于活动状态时长按听写。可在 Settings 中修改修饰键或关闭；短按始终不执行操作。
 - 模式启动器中的 `↑` / `↓`：在按模糊匹配度排序的 Prompt 模式之间移动高亮。
 - 模式启动器中的 `Tab`、`Return` 或小键盘 `Enter`：确认高亮的 Prompt 模式并聚焦源文本编辑器。输入法正在组合文字时，Return 仍用于确认文字或候选项；配合 Command、Shift、Option 或 Control 的 Return 不会确认模式。
 - 编辑器中的 `Enter`：处理源文本；插入由当前模式生成的结果；如果可见结果由之前的模式生成，则用刚确认的新模式重新生成。
@@ -165,13 +166,13 @@ docs/                    手动测试说明和隐私政策
 
 ## 隐私
 
-- Inklet 使用你配置的 OpenAI API key 调用 OpenAI，处理写作、语音转写、选区翻译和发音。
-- 使用语音输入时，临时音频会发送到 OpenAI 转写接口。
+- Inklet 使用你配置的 OpenAI API key 调用 OpenAI，处理写作、实时听写、选区翻译和发音。
+- 长按听写快捷键期间，活动麦克风音频会直接流式发送到 OpenAI Realtime 转写服务。Inklet 还会保存一份临时本地恢复录音，仅在需要时用于一次恢复尝试，并在会话结束时删除。
 - OpenAI API key 存储在你的 Mac 本地。
 - Inklet 使用 Accessibility 权限完成通用选区读取、按设置启用的复制备用流程、回到上一个应用并粘贴文本。
-- Inklet 只在录音语音输入时使用 Microphone 权限。
+- Inklet 只在写作助手原文编辑器内有效长按听写快捷键时使用 Microphone 权限。听写完成后仍停留在可编辑草稿，不会插入其他 App。
 - Inklet 会临时使用剪贴板完成插入和已配置的强制取词备用读取。强制取词仅在 Inklet 的临时复制内容仍是当前内容时恢复原剪贴板，不会覆盖之后发生的外部剪贴板变化。
-- Inklet 会把成功的写作、语音和选区原文/结果作为本地 History 保存，直到你在 Settings 中清空；连续重复项会自动跳过。
+- Inklet 会把成功的写作和选区原文/结果作为本地 History 保存，直到你在 Settings 中清空；连续重复项会自动跳过。未经处理的听写草稿不会创建 History；已有的旧版 Voice 条目仍可在本机读取。
 - 选区动作会捕获来源 App 和选区位置，在读取前和读取期间验证来源，然后通过 Accessibility 读取该 App 的当前选区。如果 Accessibility 没有返回选中文本，设置中的强制取词模式可以短暂调用菜单复制，并通过上面所述的受保护剪贴板事务读取复制出的文本。模拟 `Command+C` 默认关闭，只有显式开启高级选项后才会运行。你可以在设置中关闭强制取词。此流程不会发送针对浏览器的 Apple Events，也不会请求浏览器 Automation。选中文本后快速按两次 `Command+C`，会显式读取你已经完成的复制。Inklet 不会保存仅被选中的文本；只有成功完成的动作会进入本地 History。
 - Selection Assistant 会把成功的翻译结果用哈希缓存键在本地缓存 7 天，以加速重复翻译。
 - 当本地没有可用缓存时，Selection Assistant 翻译会把选中文本和自定义 Translate 指令发送到 OpenAI；AI 发音会把选中文本发送到 OpenAI。
