@@ -235,7 +235,10 @@ final class UpdateCheckCoordinator {
         }
         activeRequest = nil
         setChecking(false)
-        guard isStarted, lifecycleGeneration == generation else { return }
+        guard isStarted,
+              lifecycleGeneration == generation,
+              activeRequest == nil
+        else { return }
 
         if request.intents.contains(.manual) {
             presentManualOutcome(outcome, generation: generation)

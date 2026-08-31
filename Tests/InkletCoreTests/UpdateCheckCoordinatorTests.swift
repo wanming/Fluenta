@@ -754,6 +754,43 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
         XCTAssertTrue(fixture.presenter.events.isEmpty)
     }
 
+    func testFalseCheckingEdgeStartingNewManualCheckSuppressesOldOutcome() async {
+        let fixture = makeFixture(automaticChecksEnabled: false)
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
+        fixture.coordinator.start()
+
+        let firstStart = fixture.checker.expectStart(description: "first manual check starts")
+        let secondStart = fixture.checker.expectStart(description: "second manual check starts")
+        let firstFinished = expectation(description: "first false edge starts second check")
+        let secondFinished = expectation(description: "second check finishes")
+        var checkingEdges: [Bool] = []
+        var didStartSecondCheck = false
+        fixture.coordinator.onCheckingStateChange = { isChecking in
+            checkingEdges.append(isChecking)
+            if !isChecking, !didStartSecondCheck {
+                didStartSecondCheck = true
+                fixture.coordinator.checkManually()
+                firstFinished.fulfill()
+            } else if !isChecking {
+                secondFinished.fulfill()
+            }
+        }
+
+        fixture.coordinator.checkManually()
+        await fulfillment(of: [firstStart], timeout: 1)
+        fixture.checker.succeed(.updateAvailable(makeRelease(buildNumber: 2)), at: 0)
+        await fulfillment(of: [firstFinished, secondStart], timeout: 1)
+
+        XCTAssertTrue(fixture.coordinator.isChecking)
+        XCTAssertTrue(fixture.presenter.events.isEmpty)
+
+        fixture.checker.succeed(.upToDate(makeRelease(buildNumber: 1)), at: 1)
+        await fulfillment(of: [secondFinished], timeout: 1)
+
+        XCTAssertEqual(checkingEdges, [true, false, true, false])
+        XCTAssertEqual(fixture.presenter.events, [.upToDate("1.0.0")])
+    }
+
     func testStopRestartPreventsOldCompletionFromClearingOrPresentingOverNewTask() async {
         let fixture = makeFixture(automaticChecksEnabled: false)
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
