@@ -100,6 +100,10 @@ final class SelectionActionWindowController: NSWindowController {
     var onRetryTranslation: (() -> Void)?
     var onDismiss: (() -> Void)?
 
+    var isPanelVisible: Bool {
+        window?.isVisible == true
+    }
+
     private var state: SelectionActionViewState = .menu(errorMessage: nil, feedback: nil)
     private let panelWidth: CGFloat = 300
     private let minimumPanelHeight: CGFloat = 46

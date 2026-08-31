@@ -29,7 +29,8 @@ final class AppCoordinatorSourceTests: XCTestCase {
         ))
         XCTAssertTrue(factoryBlock.contains("currentVersion: BuildInfo.displayVersion"))
         XCTAssertTrue(factoryBlock.contains("scheduler: FoundationUpdateCheckOneShotScheduler()"))
-        XCTAssertTrue(factoryBlock.contains("presenter: UpdateCheckAlertPresenter()"))
+        XCTAssertTrue(source.contains("private lazy var updateCheckAlertPresenter"))
+        XCTAssertTrue(factoryBlock.contains("presenter: updateCheckAlertPresenter"))
         XCTAssertTrue(factoryBlock.contains("canPresentAutomatically: { [weak self] in"))
         XCTAssertTrue(factoryBlock.contains("self?.canPresentAutomaticUpdate ?? false"))
         XCTAssertTrue(factoryBlock.contains("checker.check(currentBuildNumber: currentBuildNumber)"))
@@ -39,8 +40,20 @@ final class AppCoordinatorSourceTests: XCTestCase {
             1
         )
         XCTAssertTrue(factoryBlock.contains("coordinator.onCheckingStateChange = { [weak self] _ in"))
-        XCTAssertTrue(factoryBlock.contains("self?.configureMainMenu()"))
-        XCTAssertTrue(factoryBlock.contains("self?.configureStatusItemMenu()"))
+        XCTAssertTrue(factoryBlock.contains("self?.refreshUpdateCheckMenuItems()"))
+        XCTAssertFalse(factoryBlock.contains("self?.configureMainMenu()"))
+        XCTAssertFalse(factoryBlock.contains("self?.configureStatusItemMenu()"))
+
+        let presenterStart = try XCTUnwrap(source.range(of: "private lazy var updateCheckAlertPresenter"))
+        let coordinatorStart = try XCTUnwrap(source.range(
+            of: "private lazy var updateCheckCoordinator",
+            range: presenterStart.upperBound..<source.endIndex
+        ))
+        let presenterBlock = source[presenterStart.lowerBound..<coordinatorStart.lowerBound]
+        XCTAssertTrue(presenterBlock.contains("presenter.onPresentationStateChange = { [weak self] isPresenting in"))
+        XCTAssertTrue(presenterBlock.contains("guard !isPresenting else { return }"))
+        XCTAssertTrue(presenterBlock.contains("Task { @MainActor [weak self] in"))
+        XCTAssertTrue(presenterBlock.contains("self?.refreshMigrationImportEligibility()"))
     }
 
     func testUpdateCheckerFollowsAppLifecycle() throws {
@@ -77,17 +90,28 @@ final class AppCoordinatorSourceTests: XCTestCase {
         ))
         let helperBlock = source[helperStart.lowerBound..<statusMenuStart.lowerBound]
 
-        XCTAssertTrue(helperBlock.contains("let isChecking = updateCheckCoordinator.isChecking"))
-        XCTAssertEqual(
-            helperBlock.components(separatedBy: "updateCheckCoordinator.isChecking").count - 1,
-            1
-        )
-        XCTAssertTrue(helperBlock.contains("\"app.menu.checkingForUpdates\""))
-        XCTAssertTrue(helperBlock.contains("\"app.menu.checkForUpdates\""))
         XCTAssertTrue(helperBlock.contains("action: #selector(checkForUpdates)"))
         XCTAssertTrue(helperBlock.contains("item.target = self"))
-        XCTAssertTrue(helperBlock.contains("item.isEnabled = !isChecking"))
         XCTAssertFalse(helperBlock.contains("image"))
+        XCTAssertTrue(source.contains("private var mainUpdateCheckMenuItem: NSMenuItem?"))
+        XCTAssertTrue(source.contains("private var statusUpdateCheckMenuItem: NSMenuItem?"))
+
+        let refreshItemsStart = try XCTUnwrap(source.range(
+            of: "private func refreshUpdateCheckMenuItems()"
+        ))
+        let statusMenuStartFromRefresh = try XCTUnwrap(source.range(
+            of: "\n    private func configureStatusItemMenu()",
+            range: refreshItemsStart.upperBound..<source.endIndex
+        ))
+        let refreshItemsBlock = source[
+            refreshItemsStart.lowerBound..<statusMenuStartFromRefresh.lowerBound
+        ]
+        XCTAssertTrue(refreshItemsBlock.contains("let isChecking = updateCheckCoordinator.isChecking"))
+        XCTAssertTrue(refreshItemsBlock.contains("\"app.menu.checkingForUpdates\""))
+        XCTAssertTrue(refreshItemsBlock.contains("\"app.menu.checkForUpdates\""))
+        XCTAssertTrue(refreshItemsBlock.contains("item.title = title"))
+        XCTAssertTrue(refreshItemsBlock.contains("item.isEnabled = !isChecking"))
+        XCTAssertTrue(refreshItemsBlock.contains("[mainUpdateCheckMenuItem, statusUpdateCheckMenuItem]"))
 
         let mainMenuStart = try XCTUnwrap(source.range(of: "private func configureMainMenu()"))
         let settingsShortcutStart = try XCTUnwrap(source.range(
@@ -96,9 +120,10 @@ final class AppCoordinatorSourceTests: XCTestCase {
         ))
         let mainMenuBlock = source[mainMenuStart.lowerBound..<settingsShortcutStart.lowerBound]
         let aboutAdd = try XCTUnwrap(mainMenuBlock.range(of: "appMenu.addItem(aboutItem)"))
-        let mainUpdateAdd = try XCTUnwrap(mainMenuBlock.range(
-            of: "appMenu.addItem(makeCheckForUpdatesMenuItem())"
+        let mainUpdateReference = try XCTUnwrap(mainMenuBlock.range(
+            of: "mainUpdateCheckMenuItem = updateItem"
         ))
+        let mainUpdateAdd = try XCTUnwrap(mainMenuBlock.range(of: "appMenu.addItem(updateItem)"))
         let mainSeparator = try XCTUnwrap(mainMenuBlock.range(
             of: "appMenu.addItem(NSMenuItem.separator())",
             range: mainUpdateAdd.upperBound..<mainMenuBlock.endIndex
@@ -107,7 +132,8 @@ final class AppCoordinatorSourceTests: XCTestCase {
             of: "appMenu.addItem(quitItem)",
             range: mainSeparator.upperBound..<mainMenuBlock.endIndex
         ))
-        XCTAssertLessThan(aboutAdd.lowerBound, mainUpdateAdd.lowerBound)
+        XCTAssertLessThan(aboutAdd.lowerBound, mainUpdateReference.lowerBound)
+        XCTAssertLessThan(mainUpdateReference.lowerBound, mainUpdateAdd.lowerBound)
         XCTAssertLessThan(mainUpdateAdd.lowerBound, mainSeparator.lowerBound)
         XCTAssertLessThan(mainSeparator.lowerBound, quitAdd.lowerBound)
 
@@ -124,9 +150,10 @@ final class AppCoordinatorSourceTests: XCTestCase {
             range: statusOpen.upperBound..<statusMenuBlock.endIndex
         ))
         let settingsAdd = try XCTUnwrap(statusMenuBlock.range(of: "menu.addItem(settingsItem)"))
-        let statusUpdateAdd = try XCTUnwrap(statusMenuBlock.range(
-            of: "menu.addItem(makeCheckForUpdatesMenuItem())"
+        let statusUpdateReference = try XCTUnwrap(statusMenuBlock.range(
+            of: "statusUpdateCheckMenuItem = updateItem"
         ))
+        let statusUpdateAdd = try XCTUnwrap(statusMenuBlock.range(of: "menu.addItem(updateItem)"))
         let statusSeparator = try XCTUnwrap(statusMenuBlock.range(
             of: "menu.addItem(NSMenuItem.separator())",
             range: statusUpdateAdd.upperBound..<statusMenuBlock.endIndex
@@ -141,7 +168,8 @@ final class AppCoordinatorSourceTests: XCTestCase {
         ))
         XCTAssertLessThan(statusOpen.lowerBound, statusFirstSeparator.lowerBound)
         XCTAssertLessThan(statusFirstSeparator.lowerBound, settingsAdd.lowerBound)
-        XCTAssertLessThan(settingsAdd.lowerBound, statusUpdateAdd.lowerBound)
+        XCTAssertLessThan(settingsAdd.lowerBound, statusUpdateReference.lowerBound)
+        XCTAssertLessThan(statusUpdateReference.lowerBound, statusUpdateAdd.lowerBound)
         XCTAssertLessThan(statusUpdateAdd.lowerBound, statusSeparator.lowerBound)
         XCTAssertLessThan(statusSeparator.lowerBound, statusAbout.lowerBound)
         XCTAssertLessThan(statusAbout.lowerBound, statusQuit.lowerBound)
@@ -157,6 +185,46 @@ final class AppCoordinatorSourceTests: XCTestCase {
         XCTAssertFalse(languageObserverBlock.contains("makeUpdateCheckCoordinator"))
     }
 
+    func testUpdateMenusTrackPresentationAndFlushOnClose() throws {
+        let source = try appCoordinatorSource()
+
+        XCTAssertTrue(source.contains("final class AppCoordinator: NSObject, NSMenuDelegate"))
+        XCTAssertTrue(source.contains("private var trackedMenus: Set<ObjectIdentifier> = []"))
+
+        let mainMenuStart = try XCTUnwrap(source.range(of: "private func configureMainMenu()"))
+        let settingsShortcutStart = try XCTUnwrap(source.range(
+            of: "\n    private func installSettingsShortcutMonitor",
+            range: mainMenuStart.upperBound..<source.endIndex
+        ))
+        let mainMenuBlock = source[mainMenuStart.lowerBound..<settingsShortcutStart.lowerBound]
+        XCTAssertTrue(mainMenuBlock.contains("appMenu.delegate = self"))
+        XCTAssertTrue(mainMenuBlock.contains("editMenu.delegate = self"))
+
+        let statusMenuStart = try XCTUnwrap(source.range(of: "private func configureStatusItemMenu()"))
+        let checkActionStart = try XCTUnwrap(source.range(
+            of: "\n    @objc func checkForUpdates()",
+            range: statusMenuStart.upperBound..<source.endIndex
+        ))
+        let statusMenuBlock = source[statusMenuStart.lowerBound..<checkActionStart.lowerBound]
+        XCTAssertTrue(statusMenuBlock.contains("menu.delegate = self"))
+
+        let willOpenStart = try XCTUnwrap(source.range(of: "func menuWillOpen(_ menu: NSMenu)"))
+        let didCloseStart = try XCTUnwrap(source.range(
+            of: "\n    func menuDidClose(_ menu: NSMenu)",
+            range: willOpenStart.upperBound..<source.endIndex
+        ))
+        let willOpenBlock = source[willOpenStart.lowerBound..<didCloseStart.lowerBound]
+        XCTAssertTrue(willOpenBlock.contains("trackedMenus.insert(ObjectIdentifier(menu))"))
+
+        let didCloseEnd = try XCTUnwrap(source.range(
+            of: "\n    @objc func checkForUpdates()",
+            range: didCloseStart.upperBound..<source.endIndex
+        ))
+        let didCloseBlock = source[didCloseStart.lowerBound..<didCloseEnd.lowerBound]
+        XCTAssertTrue(didCloseBlock.contains("trackedMenus.remove(ObjectIdentifier(menu))"))
+        XCTAssertTrue(didCloseBlock.contains("refreshMigrationImportEligibility()"))
+    }
+
     func testUpdateActionAndAutomaticPresentationUseCentralizedEligibility() throws {
         let source = try appCoordinatorSource()
         let automaticGateStart = try XCTUnwrap(source.range(
@@ -167,9 +235,16 @@ final class AppCoordinatorSourceTests: XCTestCase {
             range: automaticGateStart.upperBound..<source.endIndex
         ))
         let automaticGateBlock = source[automaticGateStart.lowerBound..<refreshStart.lowerBound]
-        XCTAssertTrue(automaticGateBlock.contains("!isMigrationMaintenanceActive"))
-        XCTAssertTrue(automaticGateBlock.contains("!isRecordingHotkey"))
-        XCTAssertTrue(automaticGateBlock.contains("migrationWorkflowsAreIdle"))
+        XCTAssertTrue(automaticGateBlock.contains("AutomaticUpdatePresentationState("))
+        XCTAssertTrue(automaticGateBlock.contains("isMigrationMaintenanceActive: isMigrationMaintenanceActive"))
+        XCTAssertTrue(automaticGateBlock.contains("isRecordingHotkey: isRecordingHotkey"))
+        XCTAssertTrue(automaticGateBlock.contains("migrationWorkflowsAreIdle: migrationWorkflowsAreIdle"))
+        XCTAssertTrue(automaticGateBlock.contains("isSelectingMigrationSource: migrationPresentationModel.phase == .selecting"))
+        XCTAssertTrue(automaticGateBlock.contains("hasModalWindow: NSApp.modalWindow != nil"))
+        XCTAssertTrue(automaticGateBlock.contains("isSelectionPanelVisible: selectionActionWindowController.isPanelVisible"))
+        XCTAssertTrue(automaticGateBlock.contains("isMenuTracking: !trackedMenus.isEmpty"))
+        XCTAssertTrue(automaticGateBlock.contains("isUpdateAlertPresenting: updateCheckAlertPresenter.isPresentingAlert"))
+        XCTAssertTrue(automaticGateBlock.contains(").canPresent"))
 
         let requestMigrationStart = try XCTUnwrap(source.range(
             of: "\n    private func requestAssistedMigrationImport",
@@ -212,17 +287,75 @@ final class AppCoordinatorSourceTests: XCTestCase {
         XCTAssertTrue(checkActionBlock.contains("updateCheckCoordinator.checkManually()"))
     }
 
-    func testUpdateWiringDoesNotAddUpdaterFrameworkOrInstallBehavior() throws {
+    func testUpdateEligibilityRefreshesAfterMigrationSelectionAndSelectionPanelHide() throws {
         let source = try appCoordinatorSource()
+        let migrationStart = try XCTUnwrap(source.range(of: "private func requestAssistedMigrationImport()"))
+        let maintenanceStart = try XCTUnwrap(source.range(
+            of: "\n    private func enterMigrationMaintenance()",
+            range: migrationStart.upperBound..<source.endIndex
+        ))
+        let migrationBlock = source[migrationStart.lowerBound..<maintenanceStart.lowerBound]
+        let beginSelecting = try XCTUnwrap(migrationBlock.range(
+            of: "migrationPresentationModel.beginSelecting()"
+        ))
+        let finalRefresh = try XCTUnwrap(migrationBlock.range(
+            of: "defer { refreshMigrationImportEligibility() }",
+            range: beginSelecting.upperBound..<migrationBlock.endIndex
+        ))
+        let panelBegin = try XCTUnwrap(migrationBlock.range(of: "await panel.begin()"))
+        XCTAssertLessThan(beginSelecting.lowerBound, finalRefresh.lowerBound)
+        XCTAssertLessThan(finalRefresh.lowerBound, panelBegin.lowerBound)
+
+        let effectsStart = try XCTUnwrap(source.range(of: "private func handleSelectionActionEffects"))
+        let dismissStart = try XCTUnwrap(source.range(
+            of: "\n    private func handleSelectionDismissRequest",
+            range: effectsStart.upperBound..<source.endIndex
+        ))
+        let effectsBlock = source[effectsStart.lowerBound..<dismissStart.lowerBound]
+        let hideEffect = try XCTUnwrap(effectsBlock.range(of: "case .hidePanel:"))
+        let cancelWork = try XCTUnwrap(effectsBlock.range(
+            of: "\n            case .cancelWork:",
+            range: hideEffect.upperBound..<effectsBlock.endIndex
+        ))
+        let hideBlock = effectsBlock[hideEffect.lowerBound..<cancelWork.lowerBound]
+        let hidePanel = try XCTUnwrap(hideBlock.range(
+            of: "selectionActionWindowController.hidePanel()"
+        ))
+        let refresh = try XCTUnwrap(hideBlock.range(of: "refreshMigrationImportEligibility()"))
+        XCTAssertLessThan(hidePanel.lowerBound, refresh.lowerBound)
+    }
+
+    func testUpdateWiringDoesNotAddUpdaterFrameworkOrInstallBehavior() throws {
+        let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let packageSource = try String(
+            contentsOf: packageRoot.appendingPathComponent("Package.swift"),
+            encoding: .utf8
+        )
+        let sourcesRoot = packageRoot.appendingPathComponent("Sources", isDirectory: true)
+        let sourceURLs = try XCTUnwrap(
+            FileManager.default.enumerator(
+                at: sourcesRoot,
+                includingPropertiesForKeys: [.isRegularFileKey]
+            )?.allObjects as? [URL]
+        ).filter {
+            (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }
         let forbiddenTokens = [
-            "import Sparkle",
+            "Sparkle",
+            "SUUpdater",
             "SPUStandardUpdaterController",
             "downloadUpdate",
             "installUpdate",
+            "downloadAndInstall",
         ]
 
-        for token in forbiddenTokens {
-            XCTAssertFalse(source.contains(token), "AppCoordinator must not contain \(token)")
+        for sourceURL in [packageRoot.appendingPathComponent("Package.swift")] + sourceURLs {
+            let source = sourceURL == packageRoot.appendingPathComponent("Package.swift")
+                ? packageSource
+                : try String(contentsOf: sourceURL, encoding: .utf8)
+            for token in forbiddenTokens {
+                XCTAssertFalse(source.contains(token), "\(sourceURL.path) must not contain \(token)")
+            }
         }
     }
 

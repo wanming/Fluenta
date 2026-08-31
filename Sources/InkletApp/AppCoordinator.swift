@@ -45,7 +45,7 @@ private struct PendingUserCopyRead {
 }
 
 @MainActor
-final class AppCoordinator: NSObject {
+final class AppCoordinator: NSObject, NSMenuDelegate {
     private static let systemSettingsBundleIdentifier = "com.apple.systempreferences"
 
     private let migrationOutcome: LegacySandboxMigrationOutcome
@@ -97,7 +97,20 @@ final class AppCoordinator: NSObject {
     private var currentTranslationText = ""
     private var selectionPronunciationReturnState = SelectionPronunciationReturnState.menu
     private var panelDismissalPolicy = SelectionPanelDismissalPolicy()
+    private var mainUpdateCheckMenuItem: NSMenuItem?
+    private var statusUpdateCheckMenuItem: NSMenuItem?
+    private var trackedMenus: Set<ObjectIdentifier> = []
     private lazy var voiceCoordinator = makeVoiceInputCoordinator()
+    private lazy var updateCheckAlertPresenter: UpdateCheckAlertPresenter = {
+        let presenter = UpdateCheckAlertPresenter()
+        presenter.onPresentationStateChange = { [weak self] isPresenting in
+            guard !isPresenting else { return }
+            Task { @MainActor [weak self] in
+                self?.refreshMigrationImportEligibility()
+            }
+        }
+        return presenter
+    }()
     private lazy var updateCheckCoordinator = makeUpdateCheckCoordinator()
 
     init(
@@ -273,7 +286,7 @@ final class AppCoordinator: NSObject {
             automaticChecksEnabled: storagePaths.bundleIdentifier == InkletStoragePaths.productionBundleIdentifier,
             currentVersion: BuildInfo.displayVersion,
             scheduler: FoundationUpdateCheckOneShotScheduler(),
-            presenter: UpdateCheckAlertPresenter(),
+            presenter: updateCheckAlertPresenter,
             canPresentAutomatically: { [weak self] in
                 self?.canPresentAutomaticUpdate ?? false
             },
@@ -282,8 +295,7 @@ final class AppCoordinator: NSObject {
             }
         )
         coordinator.onCheckingStateChange = { [weak self] _ in
-            self?.configureMainMenu()
-            self?.configureStatusItemMenu()
+            self?.refreshUpdateCheckMenuItems()
         }
         return coordinator
     }
@@ -418,6 +430,7 @@ final class AppCoordinator: NSObject {
 
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
+        appMenu.delegate = self
         let aboutItem = NSMenuItem(
             title: L10n.text("app.menu.about"),
             action: #selector(openAbout),
@@ -425,7 +438,9 @@ final class AppCoordinator: NSObject {
         )
         aboutItem.target = self
         appMenu.addItem(aboutItem)
-        appMenu.addItem(makeCheckForUpdatesMenuItem())
+        let updateItem = makeCheckForUpdatesMenuItem()
+        mainUpdateCheckMenuItem = updateItem
+        appMenu.addItem(updateItem)
         appMenu.addItem(NSMenuItem.separator())
         let quitItem = NSMenuItem(
             title: L10n.text("app.menu.quit"),
@@ -438,6 +453,7 @@ final class AppCoordinator: NSObject {
 
         let editMenuItem = NSMenuItem()
         let editMenu = NSMenu(title: "Edit")
+        editMenu.delegate = self
         editMenu.addItem(NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"))
 
         let redoItem = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
@@ -464,6 +480,7 @@ final class AppCoordinator: NSObject {
         mainMenu.addItem(editMenuItem)
 
         NSApp.mainMenu = mainMenu
+        refreshUpdateCheckMenuItems()
     }
 
     private func installSettingsShortcutMonitor() {
@@ -499,9 +516,16 @@ final class AppCoordinator: NSObject {
     }
 
     private var canPresentAutomaticUpdate: Bool {
-        !isMigrationMaintenanceActive
-            && !isRecordingHotkey
-            && migrationWorkflowsAreIdle
+        AutomaticUpdatePresentationState(
+            isMigrationMaintenanceActive: isMigrationMaintenanceActive,
+            isRecordingHotkey: isRecordingHotkey,
+            migrationWorkflowsAreIdle: migrationWorkflowsAreIdle,
+            isSelectingMigrationSource: migrationPresentationModel.phase == .selecting,
+            hasModalWindow: NSApp.modalWindow != nil,
+            isSelectionPanelVisible: selectionActionWindowController.isPanelVisible,
+            isMenuTracking: !trackedMenus.isEmpty,
+            isUpdateAlertPresenting: updateCheckAlertPresenter.isPresentingAlert
+        ).canPresent
     }
 
     private func refreshMigrationImportEligibility() {
@@ -520,6 +544,7 @@ final class AppCoordinator: NSObject {
         }
 
         migrationPresentationModel.beginSelecting()
+        defer { refreshMigrationImportEligibility() }
         let panel = NSOpenPanel()
         panel.title = L10n.text("legacyMigration.panel.title")
         panel.message = L10n.text("legacyMigration.panel.message")
@@ -886,6 +911,7 @@ final class AppCoordinator: NSObject {
             case .hidePanel:
                 SelectionActionDiagnostics.log("effect hidePanel")
                 selectionActionWindowController.hidePanel()
+                refreshMigrationImportEligibility()
             case .cancelWork:
                 SelectionActionDiagnostics.log("effect cancelWork")
                 selectionTranslationTask?.cancel()
@@ -1416,21 +1442,29 @@ final class AppCoordinator: NSObject {
     }
 
     private func makeCheckForUpdatesMenuItem() -> NSMenuItem {
-        let isChecking = updateCheckCoordinator.isChecking
         let item = NSMenuItem(
-            title: L10n.text(
-                isChecking ? "app.menu.checkingForUpdates" : "app.menu.checkForUpdates"
-            ),
+            title: "",
             action: #selector(checkForUpdates),
             keyEquivalent: ""
         )
         item.target = self
-        item.isEnabled = !isChecking
         return item
+    }
+
+    private func refreshUpdateCheckMenuItems() {
+        let isChecking = updateCheckCoordinator.isChecking
+        let title = L10n.text(
+            isChecking ? "app.menu.checkingForUpdates" : "app.menu.checkForUpdates"
+        )
+        for item in [mainUpdateCheckMenuItem, statusUpdateCheckMenuItem].compactMap({ $0 }) {
+            item.title = title
+            item.isEnabled = !isChecking
+        }
     }
 
     private func configureStatusItemMenu() {
         let menu = NSMenu()
+        menu.delegate = self
         menu.addItem(
             NSMenuItem(
                 title: L10n.text("app.menu.openPopover"),
@@ -1446,7 +1480,9 @@ final class AppCoordinator: NSObject {
         )
         settingsItem.keyEquivalentModifierMask = [.command]
         menu.addItem(settingsItem)
-        menu.addItem(makeCheckForUpdatesMenuItem())
+        let updateItem = makeCheckForUpdatesMenuItem()
+        statusUpdateCheckMenuItem = updateItem
+        menu.addItem(updateItem)
         menu.addItem(NSMenuItem.separator())
         menu.addItem(
             NSMenuItem(
@@ -1464,6 +1500,16 @@ final class AppCoordinator: NSObject {
         )
         menu.items.forEach { $0.target = self }
         statusItem.menu = menu
+        refreshUpdateCheckMenuItems()
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        trackedMenus.insert(ObjectIdentifier(menu))
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        trackedMenus.remove(ObjectIdentifier(menu))
+        refreshMigrationImportEligibility()
     }
 
     @objc func checkForUpdates() {

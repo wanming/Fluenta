@@ -3,6 +3,9 @@ import InkletCore
 
 @MainActor
 final class UpdateCheckAlertPresenter: UpdateCheckPresenting {
+    private(set) var isPresentingAlert = false
+    var onPresentationStateChange: (@MainActor (Bool) -> Void)?
+
     enum AlertStyle: Equatable {
         case informational
         case warning
@@ -57,8 +60,7 @@ final class UpdateCheckAlertPresenter: UpdateCheckPresenting {
             secondaryButtonTitle: L10n.text("update.action.later"),
             alertStyle: .informational
         )
-        applicationActivator()
-        let response = alertRunner(content)
+        let response = runAlert(content)
         if response == .alertFirstButtonReturn {
             urlOpener(release.pageURL)
         }
@@ -72,8 +74,7 @@ final class UpdateCheckAlertPresenter: UpdateCheckPresenting {
             secondaryButtonTitle: nil,
             alertStyle: .informational
         )
-        applicationActivator()
-        _ = alertRunner(content)
+        _ = runAlert(content)
     }
 
     func presentFailure(retry: @escaping @MainActor () -> Void) {
@@ -84,8 +85,7 @@ final class UpdateCheckAlertPresenter: UpdateCheckPresenting {
             secondaryButtonTitle: L10n.text("update.action.cancel"),
             alertStyle: .warning
         )
-        applicationActivator()
-        let response = alertRunner(content)
+        let response = runAlert(content)
         if response == .alertFirstButtonReturn {
             retry()
         }
@@ -104,6 +104,17 @@ final class UpdateCheckAlertPresenter: UpdateCheckPresenting {
             alert.addButton(withTitle: secondaryButtonTitle)
         }
         return alert.runModal()
+    }
+
+    private func runAlert(_ content: AlertContent) -> NSApplication.ModalResponse {
+        isPresentingAlert = true
+        onPresentationStateChange?(true)
+        defer {
+            isPresentingAlert = false
+            onPresentationStateChange?(false)
+        }
+        applicationActivator()
+        return alertRunner(content)
     }
 
     private func usefulReleaseName(for release: InkletRelease) -> String? {

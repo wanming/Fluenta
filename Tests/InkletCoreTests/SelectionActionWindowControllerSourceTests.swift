@@ -1,6 +1,16 @@
 import XCTest
 
 final class SelectionActionWindowControllerSourceTests: XCTestCase {
+    func testSelectionPanelVisibilityIsExposedReadOnly() throws {
+        let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let sourceURL = packageRoot.appendingPathComponent("Sources/InkletApp/SelectionActionWindowController.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("var isPanelVisible: Bool {"))
+        XCTAssertTrue(source.contains("window?.isVisible == true"))
+        XCTAssertFalse(source.contains("var isPanelVisible: Bool ="))
+    }
+
     func testSelectionResultWindowSupportsBackgroundDragAndResizeOnlyForResultStates() throws {
         let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let sourceURL = packageRoot.appendingPathComponent("Sources/InkletApp/SelectionActionWindowController.swift")

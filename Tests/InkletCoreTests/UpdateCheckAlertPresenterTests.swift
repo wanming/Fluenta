@@ -175,6 +175,87 @@ final class UpdateCheckAlertPresenterTests: XCTestCase {
         XCTAssertEqual(recorder.events, [.activation, .alert, .activation, .alert, .activation, .alert])
     }
 
+    func testPresentationStateBracketsActivatorAndRunnerForEveryAlertKind() {
+        let recorder = AlertRecorder(response: .alertSecondButtonReturn)
+        var presenter: UpdateCheckAlertPresenter!
+        presenter = UpdateCheckAlertPresenter(
+            alertRunner: { _ in
+                XCTAssertTrue(presenter.isPresentingAlert)
+                recorder.events.append(.alert)
+                defer { recorder.events.append(.runnerReturn) }
+                return recorder.response
+            },
+            urlOpener: { _ in XCTFail("Later must not open a URL") },
+            applicationActivator: {
+                XCTAssertTrue(presenter.isPresentingAlert)
+                recorder.events.append(.activation)
+            }
+        )
+        presenter.onPresentationStateChange = { isPresenting in
+            XCTAssertEqual(presenter.isPresentingAlert, isPresenting)
+            recorder.events.append(.presentation(isPresenting))
+        }
+
+        presenter.presentUpdate(release(), currentVersion: "1.2.3")
+        presenter.presentUpToDate(currentVersion: "1.2.3")
+        presenter.presentFailure { XCTFail("Cancel must not retry") }
+
+        let alertLifecycle: [AlertRecorder.Event] = [
+            .presentation(true),
+            .activation,
+            .alert,
+            .runnerReturn,
+            .presentation(false),
+        ]
+        XCTAssertEqual(recorder.events, alertLifecycle + alertLifecycle + alertLifecycle)
+        XCTAssertFalse(presenter.isPresentingAlert)
+    }
+
+    func testPresentationStateEndsBeforeUpdateAndRetrySideEffects() {
+        let recorder = AlertRecorder(response: .alertFirstButtonReturn)
+        var presenter: UpdateCheckAlertPresenter!
+        presenter = UpdateCheckAlertPresenter(
+            alertRunner: { _ in
+                XCTAssertTrue(presenter.isPresentingAlert)
+                recorder.events.append(.alert)
+                defer { recorder.events.append(.runnerReturn) }
+                return recorder.response
+            },
+            urlOpener: { _ in
+                XCTAssertFalse(presenter.isPresentingAlert)
+                recorder.events.append(.openURL)
+            },
+            applicationActivator: { recorder.events.append(.activation) }
+        )
+        presenter.onPresentationStateChange = {
+            recorder.events.append(.presentation($0))
+        }
+
+        presenter.presentUpdate(release(), currentVersion: "1.2.3")
+        XCTAssertEqual(recorder.events, [
+            .presentation(true),
+            .activation,
+            .alert,
+            .runnerReturn,
+            .presentation(false),
+            .openURL,
+        ])
+
+        recorder.events.removeAll()
+        presenter.presentFailure {
+            XCTAssertFalse(presenter.isPresentingAlert)
+            recorder.events.append(.retry)
+        }
+        XCTAssertEqual(recorder.events, [
+            .presentation(true),
+            .activation,
+            .alert,
+            .runnerReturn,
+            .presentation(false),
+            .retry,
+        ])
+    }
+
     private func makePresenter(recorder: AlertRecorder) -> UpdateCheckAlertPresenter {
         UpdateCheckAlertPresenter(
             alertRunner: {
@@ -202,8 +283,12 @@ final class UpdateCheckAlertPresenterTests: XCTestCase {
 @MainActor
 private final class AlertRecorder {
     enum Event: Equatable {
+        case presentation(Bool)
         case activation
         case alert
+        case runnerReturn
+        case openURL
+        case retry
     }
 
     let response: NSApplication.ModalResponse
