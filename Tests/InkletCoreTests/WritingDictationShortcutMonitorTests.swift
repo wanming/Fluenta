@@ -47,7 +47,7 @@ final class WritingDictationShortcutMonitorTests: XCTestCase {
 
     func testModifierAlreadyDownRequiresFreshReleaseBeforeHolding() {
         let harness = ShortcutMonitorHarness()
-        harness.currentFlags = .option
+        harness.configuredKeyIsDown = true
         harness.subject.activateEditorContext()
 
         let gateRelease = harness.sendModifier(keyCode: 61, flags: [])
@@ -69,21 +69,45 @@ final class WritingDictationShortcutMonitorTests: XCTestCase {
         harness.subject.activateEditorContext(modifierAlreadyDown: true)
 
         harness.sendModifier(keyCode: 58, flags: [])
-        harness.sendModifier(keyCode: 61, flags: .option)
+        harness.sendModifier(keyCode: 61, flags: .option, configuredKeyIsDown: true)
         harness.scheduler.fireNext()
-        harness.sendModifier(keyCode: 61, flags: .option)
+        harness.sendModifier(keyCode: 61, flags: .option, configuredKeyIsDown: true)
         harness.scheduler.fireNext()
 
         XCTAssertEqual(harness.actions, [])
         XCTAssertEqual(harness.scheduler.delays, [])
 
-        harness.sendModifier(keyCode: 61, flags: [])
-        harness.sendModifier(keyCode: 61, flags: .option)
+        harness.sendModifier(keyCode: 61, flags: [], configuredKeyIsDown: false)
+        harness.sendModifier(keyCode: 61, flags: .option, configuredKeyIsDown: true)
         harness.scheduler.fireNext()
-        harness.sendModifier(keyCode: 61, flags: [])
+        harness.sendModifier(keyCode: 61, flags: [], configuredKeyIsDown: false)
 
         XCTAssertEqual(harness.actions, [.start, .stop])
         XCTAssertEqual(harness.scheduler.delays, [0.08])
+    }
+
+    func testRightOptionReleaseOpensGateWhileLeftOptionKeepsAggregateFlagSet() {
+        let harness = ShortcutMonitorHarness(shortcut: .rightOption)
+        harness.subject.activateEditorContext(modifierAlreadyDown: true)
+
+        harness.sendModifier(keyCode: 61, flags: .option, configuredKeyIsDown: false)
+        harness.sendModifier(keyCode: 61, flags: .option, configuredKeyIsDown: true)
+        harness.scheduler.fireNext()
+        harness.sendModifier(keyCode: 61, flags: .option, configuredKeyIsDown: false)
+
+        XCTAssertEqual(harness.actions, [.start, .stop])
+    }
+
+    func testRightCommandReleaseOpensGateWhileLeftCommandKeepsAggregateFlagSet() {
+        let harness = ShortcutMonitorHarness(shortcut: .rightCommand)
+        harness.subject.activateEditorContext(modifierAlreadyDown: true)
+
+        harness.sendModifier(keyCode: 54, flags: .command, configuredKeyIsDown: false)
+        harness.sendModifier(keyCode: 54, flags: .command, configuredKeyIsDown: true)
+        harness.scheduler.fireNext()
+        harness.sendModifier(keyCode: 54, flags: .command, configuredKeyIsDown: false)
+
+        XCTAssertEqual(harness.actions, [.start, .stop])
     }
 
     func testKeyDownInterruptsPendingCandidateWithoutConsumingEvent() {
@@ -268,7 +292,7 @@ private final class ShortcutMonitorHarness {
     let scheduler = ManualHoldScheduler()
     let eventMonitors = LocalEventMonitorHarness()
     var now: TimeInterval = 0
-    var currentFlags: NSEvent.ModifierFlags = []
+    var configuredKeyIsDown = false
     var isEligible: Bool
     private(set) var actions: [Action] = []
     private let shortcut: VoiceInputConfig.Shortcut
@@ -278,7 +302,7 @@ private final class ShortcutMonitorHarness {
             scheduler.schedule(after: delay, action: action)
         },
         currentTime: { [weak self] in self?.now ?? 0 },
-        currentModifierFlags: { [weak self] in self?.currentFlags ?? [] },
+        configuredKeyState: { [weak self] _ in self?.configuredKeyIsDown == true },
         addLocalMonitor: { [eventMonitors] mask, handler in
             eventMonitors.add(mask: mask, handler: handler)
         },
@@ -309,9 +333,14 @@ private final class ShortcutMonitorHarness {
     @discardableResult
     func sendModifier(
         keyCode: UInt16,
-        flags: NSEvent.ModifierFlags
+        flags: NSEvent.ModifierFlags,
+        configuredKeyIsDown: Bool? = nil
     ) -> (sent: NSEvent, returned: NSEvent) {
-        send(type: .flagsChanged, keyCode: keyCode, flags: flags)
+        if keyCode == shortcut.keyCode {
+            self.configuredKeyIsDown = configuredKeyIsDown
+                ?? flags.contains(shortcut.modifierFlag)
+        }
+        return send(type: .flagsChanged, keyCode: keyCode, flags: flags)
     }
 
     @discardableResult
@@ -326,6 +355,34 @@ private final class ShortcutMonitorHarness {
     ) -> (sent: NSEvent, returned: NSEvent) {
         let event = makeKeyEvent(type: type, keyCode: keyCode, flags: flags)
         return (event, subject.handle(event))
+    }
+}
+
+private extension VoiceInputConfig.Shortcut {
+    var keyCode: UInt16? {
+        switch self {
+        case .rightOption:
+            61
+        case .rightCommand:
+            54
+        case .leftOption:
+            58
+        case .leftCommand:
+            55
+        case .disabled:
+            nil
+        }
+    }
+
+    var modifierFlag: NSEvent.ModifierFlags {
+        switch self {
+        case .rightOption, .leftOption:
+            .option
+        case .rightCommand, .leftCommand:
+            .command
+        case .disabled:
+            []
+        }
     }
 }
 

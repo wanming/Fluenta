@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import InkletCore
 
 @MainActor
@@ -34,7 +35,7 @@ final class WritingDictationShortcutMonitor {
         _ action: @escaping @MainActor () -> Void
     ) -> any CancellableHold
     typealias CurrentTime = @MainActor () -> TimeInterval
-    typealias CurrentModifierFlags = @MainActor () -> NSEvent.ModifierFlags
+    typealias ConfiguredKeyState = @MainActor (_ keyCode: UInt16) -> Bool
     typealias LocalMonitorInstaller = @MainActor (
         _ mask: NSEvent.EventTypeMask,
         _ handler: @escaping (NSEvent) -> NSEvent?
@@ -44,7 +45,7 @@ final class WritingDictationShortcutMonitor {
     private let holdActivationDelay: TimeInterval
     private let scheduleHold: HoldScheduler
     private let currentTime: CurrentTime
-    private let currentModifierFlags: CurrentModifierFlags
+    private let configuredKeyState: ConfiguredKeyState
     private let addLocalMonitor: LocalMonitorInstaller
     private let removeLocalMonitor: LocalMonitorRemover
 
@@ -71,8 +72,8 @@ final class WritingDictationShortcutMonitor {
         currentTime: @escaping CurrentTime = {
             ProcessInfo.processInfo.systemUptime
         },
-        currentModifierFlags: @escaping CurrentModifierFlags = {
-            NSEvent.modifierFlags
+        configuredKeyState: @escaping ConfiguredKeyState = { keyCode in
+            CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(keyCode))
         },
         addLocalMonitor: @escaping LocalMonitorInstaller = { mask, handler in
             NSEvent.addLocalMonitorForEvents(matching: mask, handler: handler)
@@ -84,7 +85,7 @@ final class WritingDictationShortcutMonitor {
         self.holdActivationDelay = holdActivationDelay
         self.scheduleHold = scheduleHold
         self.currentTime = currentTime
-        self.currentModifierFlags = currentModifierFlags
+        self.configuredKeyState = configuredKeyState
         self.addLocalMonitor = addLocalMonitor
         self.removeLocalMonitor = removeLocalMonitor
     }
@@ -123,7 +124,7 @@ final class WritingDictationShortcutMonitor {
 
     func activateEditorContext() {
         activateEditorContext(
-            modifierAlreadyDown: isConfiguredModifierDown(in: currentModifierFlags())
+            modifierAlreadyDown: shortcut.keyCode.map(configuredKeyState) ?? false
         )
     }
 
@@ -159,8 +160,9 @@ final class WritingDictationShortcutMonitor {
               event.keyCode == expectedKeyCode
         else { return }
 
+        let isConfiguredKeyDown = configuredKeyState(expectedKeyCode)
         if isAwaitingFreshRelease {
-            guard !isConfiguredModifierDown(in: event.modifierFlags) else { return }
+            guard !isConfiguredKeyDown else { return }
             isAwaitingFreshRelease = false
             modifierPressTracker = VoiceShortcutModifierPressTracker()
             return
@@ -169,7 +171,7 @@ final class WritingDictationShortcutMonitor {
         switch modifierPressTracker.transition(
             keyCode: event.keyCode,
             expectedKeyCode: expectedKeyCode,
-            isConfiguredModifierDown: isConfiguredModifierDown(in: event.modifierFlags)
+            isConfiguredModifierDown: isConfiguredKeyDown
         ) {
         case .began:
             beginCandidateIfEligible()
@@ -265,16 +267,6 @@ final class WritingDictationShortcutMonitor {
         }
     }
 
-    private func isConfiguredModifierDown(in flags: NSEvent.ModifierFlags) -> Bool {
-        switch shortcut {
-        case .rightOption, .leftOption:
-            flags.contains(.option)
-        case .rightCommand, .leftCommand:
-            flags.contains(.command)
-        case .disabled:
-            false
-        }
-    }
 }
 
 private extension VoiceInputConfig.Shortcut {
