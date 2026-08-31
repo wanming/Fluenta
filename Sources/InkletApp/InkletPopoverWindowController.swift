@@ -68,6 +68,11 @@ private final class ClearHostingView<Content: View>: NSHostingView<Content> {
 
 @MainActor
 final class InkletPopoverWindowController: NSWindowController, NSWindowDelegate {
+    private struct DictationGestureToken: Equatable {
+        let contextGeneration: UInt
+        let gestureGeneration: UInt
+    }
+
     private let model: InkletPopoverViewModel
     private let configStore: UserDefaultsConfigStore
     private let apiKeyStore: LocalAPIKeyStore
@@ -81,6 +86,11 @@ final class InkletPopoverWindowController: NSWindowController, NSWindowDelegate 
     private var presentationTask: Task<Void, Never>?
     private var dictationContextGeneration: UInt = 0
     private var dictationContextCleanupTask: Task<Void, Never>?
+    private var dictationConfigurationGeneration: UInt = 0
+    private var dictationConfigurationTask: Task<Void, Never>?
+    private var dictationGestureGeneration: UInt = 0
+    private var activeDictationGestureToken: DictationGestureToken?
+    private var dictationGestureTask: Task<Void, Never>?
     private let popoverWidth: CGFloat = 600
 
     var onOpenSettings: (() -> Void)? {
@@ -108,12 +118,16 @@ final class InkletPopoverWindowController: NSWindowController, NSWindowDelegate 
             apiKeyStore: apiKeyStore,
             historyStore: historyStore
         )
+        let panel = InkletPopoverPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 168),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
         let audioRecorder = AudioRecorder()
         let sourceEditorBridge = WritingSourceEditorBridge()
         let dictationCoordinator = WritingDictationCoordinator(
-            configProvider: {
-                ((try? configStore.load()) ?? AppConfig.defaultConfig()).voiceInput
-            },
+            configProvider: { model.currentVoiceInputConfig },
             audioCapture: audioRecorder,
             makeRealtimeClient: {
                 guard let apiKey = apiKeyStore.loadAPIKey(
@@ -133,7 +147,8 @@ final class InkletPopoverWindowController: NSWindowController, NSWindowDelegate 
                     in: .whitespacesAndNewlines
                 )
                 guard let endpoint = URL(string: endpointString),
-                      endpoint.scheme == "http" || endpoint.scheme == "https",
+                      let endpointScheme = endpoint.scheme?.lowercased(),
+                      endpointScheme == "http" || endpointScheme == "https",
                       endpoint.host != nil
                 else {
                     throw SpeechTranscriptionError.invalidEndpoint
@@ -158,8 +173,13 @@ final class InkletPopoverWindowController: NSWindowController, NSWindowDelegate 
                 return result.text
             },
             phaseHandler: { phase in
+                let previousPhase = model.dictationPhase
                 model.setDictationPhase(phase)
-                Self.postDictationPhaseAnnouncement(phase)
+                Self.postDictationPhaseAnnouncement(
+                    phase,
+                    previousPhase: previousPhase,
+                    in: panel
+                )
             }
         )
         let dictationShortcutMonitor = WritingDictationShortcutMonitor()
@@ -172,12 +192,6 @@ final class InkletPopoverWindowController: NSWindowController, NSWindowDelegate 
         self.dictationCoordinator = dictationCoordinator
         self.dictationShortcutMonitor = dictationShortcutMonitor
 
-        let panel = InkletPopoverPanel(
-            contentRect: NSRect(x: 0, y: 0, width: popoverWidth, height: 168),
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false
-        )
         panel.title = "Inklet"
         panel.backgroundColor = .clear
         panel.isOpaque = false
@@ -234,9 +248,7 @@ final class InkletPopoverWindowController: NSWindowController, NSWindowDelegate 
             self?.focusSourceTextView(for: request)
         }
         model.onCancelDictation = { [weak self] in
-            Task { @MainActor in
-                await self?.dictationCoordinator.cancel()
-            }
+            self?.scheduleDictationCancellation()
         }
 
         model.$popoverSession
@@ -288,11 +300,10 @@ final class InkletPopoverWindowController: NSWindowController, NSWindowDelegate 
 
     func hide() {
         let generation = advancePresentationGeneration()
-        invalidateDictationContext()
         presentationTask?.cancel()
         presentationTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.dictationCoordinator.cancelAndWait()
+            await self.cancelActiveDictationAndWait()
             guard self.presentationGeneration == generation else { return }
             self.window?.orderOut(nil)
             self.presentationTask = nil
@@ -309,45 +320,60 @@ final class InkletPopoverWindowController: NSWindowController, NSWindowDelegate 
         let pendingPresentationTask = presentationTask
         presentationTask = nil
         pendingPresentationTask?.cancel()
-        let pendingContextCleanupTask = dictationContextCleanupTask
-        invalidateDictationContext()
+        dictationConfigurationGeneration &+= 1
+        let pendingConfigurationTask = dictationConfigurationTask
+        dictationConfigurationTask = nil
         dictationShortcutMonitor.stop()
         detachSourceEditor()
-        await dictationCoordinator.cancelAndWait()
+        await cancelActiveDictationAndWait()
+        await pendingConfigurationTask?.value
         await pendingPresentationTask?.value
-        await pendingContextCleanupTask?.value
         guard presentationGeneration == generation else { return }
         window?.orderOut(nil)
     }
 
     func reloadDictationConfiguration() {
-        let config = (try? configStore.load()) ?? AppConfig.defaultConfig()
-        dictationShortcutMonitor.configure(
-            shortcut: config.voiceInput.shortcut,
-            isEligible: { [weak self] in
-                guard let self, let window = self.window else { return false }
-                let sourceEditorBridge = self.sourceEditorBridge
-                let model = self.model
-                return sourceEditorBridge.isEligible(in: window, model: model)
-            },
-            onStart: { [weak self] in
-                Task { @MainActor in
-                    await self?.dictationCoordinator.beginHold()
+        dictationConfigurationGeneration &+= 1
+        let generation = dictationConfigurationGeneration
+        let config = model.currentVoiceInputConfig
+        invalidateDictationContext()
+        let pendingConfigurationTask = dictationConfigurationTask
+        let pendingGestureTask = dictationGestureTask
+        let task = Task { @MainActor [weak self] in
+            await pendingConfigurationTask?.value
+            guard let self else { return }
+            await self.dictationCoordinator.cancelAndWait()
+            await pendingGestureTask?.value
+            await self.dictationCoordinator.cancelAndWait()
+            guard self.dictationConfigurationGeneration == generation else { return }
+
+            self.dictationShortcutMonitor.configure(
+                shortcut: config.shortcut,
+                isEligible: { [weak self] in
+                    guard let self, let window = self.window else { return false }
+                    let sourceEditorBridge = self.sourceEditorBridge
+                    let model = self.model
+                    return sourceEditorBridge.isEligible(in: window, model: model)
+                },
+                onStart: { [weak self] in
+                    self?.scheduleDictationHoldStart()
+                },
+                onStop: { [weak self] in
+                    self?.scheduleDictationHoldStop()
+                },
+                onCancel: { [weak self] in
+                    self?.scheduleDictationCancellation()
                 }
-            },
-            onStop: { [weak self] in
-                Task { @MainActor in
-                    await self?.dictationCoordinator.endHold()
-                }
-            },
-            onCancel: { [weak self] in
-                self?.scheduleDictationContextCancellation()
+            )
+            self.dictationShortcutMonitor.start()
+            if self.model.route == .editor, self.window?.isKeyWindow == true {
+                self.dictationShortcutMonitor.activateEditorContext()
             }
-        )
-        dictationShortcutMonitor.start()
-        if model.route == .editor, window?.isKeyWindow == true {
-            activateDictationEditorContext()
+            guard self.dictationConfigurationGeneration == generation else { return }
+            self.dictationConfigurationTask = nil
         }
+        dictationConfigurationTask = task
+        dictationGestureTask = task
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
@@ -376,42 +402,83 @@ final class InkletPopoverWindowController: NSWindowController, NSWindowDelegate 
 
     private func activateDictationEditorContext() {
         dictationContextGeneration &+= 1
-        dictationContextCleanupTask?.cancel()
-        dictationContextCleanupTask = nil
-        dictationShortcutMonitor.activateEditorContext()
+        let generation = dictationContextGeneration
+        let pendingGestureTask = dictationGestureTask
+        dictationGestureTask = Task { @MainActor [weak self] in
+            await pendingGestureTask?.value
+            guard let self, self.dictationContextGeneration == generation else { return }
+            self.dictationShortcutMonitor.activateEditorContext()
+        }
     }
 
     private func invalidateDictationContext() {
         dictationContextGeneration &+= 1
-        dictationContextCleanupTask?.cancel()
-        dictationContextCleanupTask = nil
+        activeDictationGestureToken = nil
         dictationShortcutMonitor.invalidateContext()
     }
 
     private func invalidateDictationContextAndCancel() {
         invalidateDictationContext()
-        scheduleDictationContextCancellation()
+        scheduleDictationCancellation()
     }
 
-    private func scheduleDictationContextCancellation() {
-        let generation = dictationContextGeneration
-        dictationContextCleanupTask?.cancel()
-        dictationContextCleanupTask = Task { @MainActor [weak self] in
+    private func scheduleDictationHoldStart() {
+        dictationGestureGeneration &+= 1
+        let token = DictationGestureToken(
+            contextGeneration: dictationContextGeneration,
+            gestureGeneration: dictationGestureGeneration
+        )
+        activeDictationGestureToken = token
+        let pendingGestureTask = dictationGestureTask
+        dictationGestureTask = Task { @MainActor [weak self] in
+            await pendingGestureTask?.value
             guard let self,
-                  !Task.isCancelled,
-                  self.dictationContextGeneration == generation
+                  self.dictationContextGeneration == token.contextGeneration,
+                  self.activeDictationGestureToken == token
             else { return }
-            await self.dictationCoordinator.cancelAndWait()
-            guard !Task.isCancelled,
-                  self.dictationContextGeneration == generation
-            else { return }
-            self.dictationContextCleanupTask = nil
+            await self.dictationCoordinator.beginHold()
         }
     }
 
+    private func scheduleDictationHoldStop() {
+        guard let token = activeDictationGestureToken,
+              token.gestureGeneration == dictationGestureGeneration
+        else { return }
+        activeDictationGestureToken = nil
+        let pendingGestureTask = dictationGestureTask
+        dictationGestureTask = Task { @MainActor [weak self] in
+            guard let self,
+                  self.dictationContextGeneration == token.contextGeneration
+            else { return }
+            await self.dictationCoordinator.endHold()
+            await pendingGestureTask?.value
+            guard self.dictationContextGeneration == token.contextGeneration else { return }
+            await self.dictationCoordinator.endHold()
+        }
+    }
+
+    private func scheduleDictationCancellation() {
+        activeDictationGestureToken = nil
+        let generation = dictationContextGeneration
+        let pendingGestureTask = dictationGestureTask
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.dictationCoordinator.cancelAndWait()
+            await pendingGestureTask?.value
+            await self.dictationCoordinator.cancelAndWait()
+            guard self.dictationContextGeneration == generation else { return }
+            self.dictationContextCleanupTask = nil
+        }
+        dictationContextCleanupTask = task
+        dictationGestureTask = task
+    }
+
     private func cancelActiveDictationAndWait() async {
-        let pendingContextCleanupTask = dictationContextCleanupTask
         invalidateDictationContext()
+        scheduleDictationCancellation()
+        let pendingGestureTask = dictationGestureTask
+        let pendingContextCleanupTask = dictationContextCleanupTask
+        await pendingGestureTask?.value
         await dictationCoordinator.cancelAndWait()
         await pendingContextCleanupTask?.value
     }
@@ -422,31 +489,33 @@ final class InkletPopoverWindowController: NSWindowController, NSWindowDelegate 
     }
 
     private static func postDictationPhaseAnnouncement(
-        _ phase: WritingDictationCoordinator.Phase
+        _ phase: WritingDictationCoordinator.Phase,
+        previousPhase: WritingDictationCoordinator.Phase,
+        in panel: NSPanel
     ) {
         let announcement: String?
         switch phase {
         case .idle:
+            announcement = previousPhase.isActive
+                ? L10n.text("dictation.accessibility.cancelled")
+                : nil
+        case .connecting, .recordingForFallback:
             announcement = nil
-        case .connecting:
-            announcement = L10n.text("dictation.status.connecting")
         case .listening:
             announcement = L10n.text("dictation.accessibility.listening")
-        case .recordingForFallback:
-            announcement = L10n.text("dictation.accessibility.recordingFallback")
         case .finalizing:
             announcement = L10n.text("dictation.status.finalizing")
         case .recovering:
             announcement = L10n.text("dictation.status.recovering")
         case .complete:
-            announcement = L10n.text("dictation.accessibility.ready")
+            announcement = L10n.text("dictation.accessibility.completed")
         case .failed(let errorKey):
             announcement = L10n.text(errorKey)
         }
 
         guard let announcement else { return }
         NSAccessibility.post(
-            element: NSApp as Any,
+            element: panel,
             notification: .announcementRequested,
             userInfo: [
                 NSAccessibility.NotificationUserInfoKey.announcement: announcement,
