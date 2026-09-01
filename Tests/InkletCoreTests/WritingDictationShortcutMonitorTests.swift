@@ -33,6 +33,15 @@ final class WritingDictationShortcutMonitorTests: XCTestCase {
         XCTAssertEqual(harness.actions, [.start, .stop])
     }
 
+    func testRightOptionHoldUsesEventFlagsWhenQuartzKeyStateIsFalse() {
+        let harness = ShortcutMonitorHarness()
+        harness.subject.activateEditorContext(modifierAlreadyDown: false)
+        harness.sendModifier(keyCode: 61, flags: .option, configuredKeyIsDown: false)
+        harness.scheduler.fireNext()
+        harness.sendModifier(keyCode: 61, flags: [], configuredKeyIsDown: false)
+        XCTAssertEqual(harness.actions, [.start, .stop])
+    }
+
     func testEligibilityIsRecheckedWhenHoldDelayElapses() {
         let harness = ShortcutMonitorHarness()
         harness.activateEditorContext()
@@ -68,7 +77,7 @@ final class WritingDictationShortcutMonitorTests: XCTestCase {
         let harness = ShortcutMonitorHarness()
         harness.subject.activateEditorContext(modifierAlreadyDown: true)
 
-        harness.sendModifier(keyCode: 58, flags: [])
+        harness.sendModifier(keyCode: 58, flags: .option)
         harness.sendModifier(keyCode: 61, flags: .option, configuredKeyIsDown: true)
         harness.scheduler.fireNext()
         harness.sendModifier(keyCode: 61, flags: .option, configuredKeyIsDown: true)
@@ -86,26 +95,34 @@ final class WritingDictationShortcutMonitorTests: XCTestCase {
         XCTAssertEqual(harness.scheduler.delays, [0.08])
     }
 
-    func testRightOptionReleaseOpensGateWhileLeftOptionKeepsAggregateFlagSet() {
+    func testRightOptionGateStaysClosedUntilModifierFamilyReleases() {
         let harness = ShortcutMonitorHarness(shortcut: .rightOption)
         harness.subject.activateEditorContext(modifierAlreadyDown: true)
 
         harness.sendModifier(keyCode: 61, flags: .option, configuredKeyIsDown: false)
+        XCTAssertEqual(harness.actions, [])
+        XCTAssertEqual(harness.scheduler.delays, [])
+
+        harness.sendModifier(keyCode: 58, flags: [])
         harness.sendModifier(keyCode: 61, flags: .option, configuredKeyIsDown: true)
         harness.scheduler.fireNext()
-        harness.sendModifier(keyCode: 61, flags: .option, configuredKeyIsDown: false)
+        harness.sendModifier(keyCode: 61, flags: [], configuredKeyIsDown: false)
 
         XCTAssertEqual(harness.actions, [.start, .stop])
     }
 
-    func testRightCommandReleaseOpensGateWhileLeftCommandKeepsAggregateFlagSet() {
+    func testRightCommandGateStaysClosedUntilModifierFamilyReleases() {
         let harness = ShortcutMonitorHarness(shortcut: .rightCommand)
         harness.subject.activateEditorContext(modifierAlreadyDown: true)
 
         harness.sendModifier(keyCode: 54, flags: .command, configuredKeyIsDown: false)
+        XCTAssertEqual(harness.actions, [])
+        XCTAssertEqual(harness.scheduler.delays, [])
+
+        harness.sendModifier(keyCode: 55, flags: [])
         harness.sendModifier(keyCode: 54, flags: .command, configuredKeyIsDown: true)
         harness.scheduler.fireNext()
-        harness.sendModifier(keyCode: 54, flags: .command, configuredKeyIsDown: false)
+        harness.sendModifier(keyCode: 54, flags: [], configuredKeyIsDown: false)
 
         XCTAssertEqual(harness.actions, [.start, .stop])
     }

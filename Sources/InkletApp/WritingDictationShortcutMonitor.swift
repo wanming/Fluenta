@@ -1,5 +1,4 @@
 import AppKit
-import CoreGraphics
 import InkletCore
 
 @MainActor
@@ -68,7 +67,14 @@ final class WritingDictationShortcutMonitor {
             DispatchWorkItemHold(after: delay, action: action)
         },
         configuredKeyState: @escaping ConfiguredKeyState = { keyCode in
-            CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(keyCode))
+            switch keyCode {
+            case 58, 61:
+                NSEvent.modifierFlags.contains(.option)
+            case 54, 55:
+                NSEvent.modifierFlags.contains(.command)
+            default:
+                false
+            }
         },
         addLocalMonitor: @escaping LocalMonitorInstaller = { mask, handler in
             NSEvent.addLocalMonitorForEvents(matching: mask, handler: handler)
@@ -151,22 +157,25 @@ final class WritingDictationShortcutMonitor {
 
     private func handleFlagsChanged(_ event: NSEvent) {
         guard isEditorContextActive,
-              let expectedKeyCode = shortcut.keyCode,
-              event.keyCode == expectedKeyCode
+              let expectedKeyCode = shortcut.keyCode
         else { return }
 
-        let isConfiguredKeyDown = configuredKeyState(expectedKeyCode)
+        let modifierIsDown = event.modifierFlags
+            .intersection(.deviceIndependentFlagsMask)
+            .contains(shortcut.modifierFlag)
         if isAwaitingFreshRelease {
-            guard !isConfiguredKeyDown else { return }
+            guard !modifierIsDown else { return }
             isAwaitingFreshRelease = false
             modifierPressTracker.resetForLifecycleBoundary()
             return
         }
 
+        guard event.keyCode == expectedKeyCode else { return }
+
         switch modifierPressTracker.transition(
             keyCode: event.keyCode,
             expectedKeyCode: expectedKeyCode,
-            isConfiguredModifierDown: isConfiguredKeyDown
+            isConfiguredModifierDown: modifierIsDown
         ) {
         case .began:
             beginCandidateIfEligible()
@@ -260,6 +269,17 @@ private extension VoiceInputConfig.Shortcut {
             55
         case .disabled:
             nil
+        }
+    }
+
+    var modifierFlag: NSEvent.ModifierFlags {
+        switch self {
+        case .rightOption, .leftOption:
+            .option
+        case .rightCommand, .leftCommand:
+            .command
+        case .disabled:
+            []
         }
     }
 }
