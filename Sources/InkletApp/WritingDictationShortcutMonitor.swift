@@ -14,9 +14,7 @@ private final class DispatchWorkItemHold: CancellableHold {
         after delay: TimeInterval,
         action: @escaping @MainActor () -> Void
     ) {
-        let workItem = DispatchWorkItem { @MainActor in
-            action()
-        }
+        let workItem = DispatchWorkItem { action() }
         self.workItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }

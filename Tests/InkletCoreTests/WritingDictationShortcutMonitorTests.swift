@@ -42,6 +42,26 @@ final class WritingDictationShortcutMonitorTests: XCTestCase {
         XCTAssertEqual(harness.actions, [.start, .stop])
     }
 
+    func testDefaultHoldSchedulerStartsAfterDelay() async {
+        let holdStarted = expectation(description: "default hold scheduler started dictation")
+        let subject = WritingDictationShortcutMonitor(
+            holdActivationDelay: 0.01,
+            configuredKeyState: { _ in false }
+        )
+        subject.configure(
+            shortcut: .rightOption,
+            isEligible: { true },
+            onStart: { holdStarted.fulfill() },
+            onStop: {},
+            onCancel: {}
+        )
+        subject.activateEditorContext(modifierAlreadyDown: false)
+
+        subject.handle(makeKeyEvent(type: .flagsChanged, keyCode: 61, flags: .option))
+        await fulfillment(of: [holdStarted], timeout: 1)
+        subject.handle(makeKeyEvent(type: .flagsChanged, keyCode: 61, flags: []))
+    }
+
     func testEligibilityIsRecheckedWhenHoldDelayElapses() {
         let harness = ShortcutMonitorHarness()
         harness.activateEditorContext()
