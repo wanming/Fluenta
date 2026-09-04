@@ -65,7 +65,22 @@ final class DictationEditorTransactionTests: XCTestCase {
     }
 
     func testLongProvisionalReplacementKeepsCaretLineVisible() throws {
-        let fixture = makeScrollableTextView()
+        let leading = Array(
+            repeating: "前置内容 Leading context",
+            count: 8
+        ).joined(separator: "\n") + "\n"
+        let trailing = "\n" + Array(
+            repeating: "后续内容 Trailing context",
+            count: 12
+        ).joined(separator: "\n")
+        let selection = NSRange(
+            location: (leading as NSString).length,
+            length: 0
+        )
+        let fixture = makeScrollableTextView(
+            initialString: leading + trailing,
+            selection: selection
+        )
         let textView = fixture.textView
         let subject = try XCTUnwrap(makeTransaction(textView))
         let draft = Array(
@@ -75,16 +90,24 @@ final class DictationEditorTransactionTests: XCTestCase {
 
         try subject.replaceProvisional(with: draft)
 
+        let expectedCaretLocation =
+            (leading as NSString).length + (draft as NSString).length
+        let caretRange = textView.selectedRange()
+        XCTAssertEqual(
+            caretRange,
+            NSRange(location: expectedCaretLocation, length: 0)
+        )
+
         let layoutManager = try XCTUnwrap(textView.layoutManager)
         let textContainer = try XCTUnwrap(textView.textContainer)
         layoutManager.ensureLayout(for: textContainer)
 
-        let lastCharacterRange = NSRange(
-            location: (textView.string as NSString).length - 1,
+        let caretLineCharacterRange = NSRange(
+            location: max(caretRange.location - 1, 0),
             length: 1
         )
         let glyphRange = layoutManager.glyphRange(
-            forCharacterRange: lastCharacterRange,
+            forCharacterRange: caretLineCharacterRange,
             actualCharacterRange: nil
         )
         let caretLineRect = layoutManager.lineFragmentRect(
@@ -95,6 +118,11 @@ final class DictationEditorTransactionTests: XCTestCase {
         XCTAssertTrue(
             NSContainsRect(textView.visibleRect, caretLineRect),
             "The editor must scroll the inserted caret line into view"
+        )
+        XCTAssertLessThan(
+            NSMaxY(textView.visibleRect),
+            NSMaxY(textView.bounds),
+            "The editor must not scroll the document bottom into view"
         )
     }
 
@@ -522,7 +550,10 @@ final class DictationEditorTransactionTests: XCTestCase {
         return textView
     }
 
-    private func makeScrollableTextView() -> (
+    private func makeScrollableTextView(
+        initialString: String,
+        selection: NSRange
+    ) -> (
         scrollView: NSScrollView,
         textView: TestTextView
     ) {
@@ -558,8 +589,8 @@ final class DictationEditorTransactionTests: XCTestCase {
         textView.autoresizingMask = [.width]
         textView.allowsUndo = true
         textView.testUndoManager.groupsByEvent = false
-        textView.string = ""
-        textView.setSelectedRange(NSRange(location: 0, length: 0))
+        textView.string = initialString
+        textView.setSelectedRange(selection)
         textView.testUndoManager.removeAllActions()
 
         scrollView.documentView = textView
