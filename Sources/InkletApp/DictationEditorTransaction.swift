@@ -319,7 +319,9 @@ final class DictationEditorTransaction: DictationEditorTransacting {
         }
 
         ownedRange.length = (replacement as NSString).length
-        textView.setSelectedRange(NSRange(location: NSMaxRange(ownedRange), length: 0))
+        let caretRange = NSRange(location: NSMaxRange(ownedRange), length: 0)
+        textView.setSelectedRange(caretRange)
+        textView.scrollRangeToVisible(caretRange)
 
         if shouldUnderline, ownedRange.length > 0 {
             replacedUnderlineRuns = Self.temporaryAttributeRuns(

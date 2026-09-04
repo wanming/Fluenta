@@ -64,6 +64,40 @@ final class DictationEditorTransactionTests: XCTestCase {
         )
     }
 
+    func testLongProvisionalReplacementKeepsCaretLineVisible() throws {
+        let fixture = makeScrollableTextView()
+        let textView = fixture.textView
+        let subject = try XCTUnwrap(makeTransaction(textView))
+        let draft = Array(
+            repeating: "今天中午吃什么？ What should I eat?",
+            count: 24
+        ).joined(separator: "\n")
+
+        try subject.replaceProvisional(with: draft)
+
+        let layoutManager = try XCTUnwrap(textView.layoutManager)
+        let textContainer = try XCTUnwrap(textView.textContainer)
+        layoutManager.ensureLayout(for: textContainer)
+
+        let lastCharacterRange = NSRange(
+            location: (textView.string as NSString).length - 1,
+            length: 1
+        )
+        let glyphRange = layoutManager.glyphRange(
+            forCharacterRange: lastCharacterRange,
+            actualCharacterRange: nil
+        )
+        let caretLineRect = layoutManager.lineFragmentRect(
+            forGlyphAt: glyphRange.location,
+            effectiveRange: nil
+        )
+
+        XCTAssertTrue(
+            NSContainsRect(textView.visibleRect, caretLineRect),
+            "The editor must scroll the inserted caret line into view"
+        )
+    }
+
     func testUTF16OwnedRangeHandlesChineseEmojiAndCombiningMarks() throws {
         let original = "甲👩‍💻e\u{301}乙"
         let range = (original as NSString).range(of: "👩‍💻e\u{301}")
@@ -486,6 +520,50 @@ final class DictationEditorTransactionTests: XCTestCase {
         textView.setSelectedRange(selection)
         textView.testUndoManager.removeAllActions()
         return textView
+    }
+
+    private func makeScrollableTextView() -> (
+        scrollView: NSScrollView,
+        textView: TestTextView
+    ) {
+        let scrollView = NSScrollView(
+            frame: NSRect(x: 0, y: 0, width: 160, height: 40)
+        )
+        scrollView.hasVerticalScroller = false
+        scrollView.hasHorizontalScroller = false
+
+        let textView = TestTextView(
+            frame: NSRect(
+                x: 0,
+                y: 0,
+                width: scrollView.contentSize.width,
+                height: scrollView.contentSize.height
+            )
+        )
+        textView.font = .systemFont(ofSize: 14)
+        textView.textContainerInset = .zero
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(
+            width: scrollView.contentSize.width,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.minSize = .zero
+        textView.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.allowsUndo = true
+        textView.testUndoManager.groupsByEvent = false
+        textView.string = ""
+        textView.setSelectedRange(NSRange(location: 0, length: 0))
+        textView.testUndoManager.removeAllActions()
+
+        scrollView.documentView = textView
+        return (scrollView, textView)
     }
 
     private func makeWindowedTextView(
