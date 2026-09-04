@@ -60,7 +60,7 @@ actor URLSessionRealtimeWebSocketTransport: RealtimeWebSocketTransport {
 
 public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
     public static let model = "gpt-live-transcribe"
-    public static let defaultEndpoint = URL(string: "wss://api.openai.com/v1/realtime?model=gpt-live-transcribe")!
+    public static let defaultEndpoint = URL(string: "wss://api.openai.com/v1/realtime?intent=transcription")!
 
     private enum State {
         case fresh

@@ -3,11 +3,11 @@ import XCTest
 @testable import InkletCore
 
 final class OpenAIRealtimeTranscriptionClientTests: XCTestCase {
-    func testConnectUsesFixedEndpointAndTrimmedAuthorizationHeader() async throws {
+    func testConnectUsesDedicatedTranscriptionIntentAndTrimmedAuthorizationHeader() async throws {
         let transport = FakeRealtimeTransport()
         let client = OpenAIRealtimeTranscriptionClient(
             apiKeyProvider: { "  test-key  " },
-            endpoint: URL(string: "wss://api.openai.com/v1/realtime?model=gpt-live-transcribe")!,
+            endpoint: OpenAIRealtimeTranscriptionClient.defaultEndpoint,
             transport: transport
         )
         await transport.enqueue(#"{"type":"session.updated"}"#)
@@ -17,9 +17,9 @@ final class OpenAIRealtimeTranscriptionClientTests: XCTestCase {
 
         XCTAssertEqual(
             OpenAIRealtimeTranscriptionClient.defaultEndpoint.absoluteString,
-            "wss://api.openai.com/v1/realtime?model=gpt-live-transcribe"
+            "wss://api.openai.com/v1/realtime?intent=transcription"
         )
-        XCTAssertEqual(snapshot.requestURL, "wss://api.openai.com/v1/realtime?model=gpt-live-transcribe")
+        XCTAssertEqual(snapshot.requestURL, "wss://api.openai.com/v1/realtime?intent=transcription")
         XCTAssertEqual(snapshot.authorization, "Bearer test-key")
     }
 
