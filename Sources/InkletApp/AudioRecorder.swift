@@ -4,6 +4,7 @@ import Foundation
 
 @MainActor
 protocol DictationAudioCapturing: AnyObject {
+    func authorizeMicrophone() async throws
     func startStreaming(microphoneDeviceID: String?) async throws -> AsyncThrowingStream<Data, Error>
     func stop() async throws -> URL
     func cancel() async
@@ -153,6 +154,7 @@ final class AudioRecorder: DictationAudioCapturing {
     private let removeRecording: (URL) -> Void
     private var activeCapture: ActiveCapture?
     private var startGeneration: UInt64 = 0
+    private var preparedPermissionGeneration: UInt64?
 
     init(
         microphonePermissionResolver: MicrophonePermissionResolver? = nil,
@@ -192,17 +194,24 @@ final class AudioRecorder: DictationAudioCapturing {
         self.removeRecording = removeRecording
     }
 
+    func authorizeMicrophone() async throws {
+        let generation = beginStart()
+        try await resolveMicrophonePermission(generation: generation)
+        preparedPermissionGeneration = generation
+    }
+
     func startStreaming(
         microphoneDeviceID: String?
     ) async throws -> AsyncThrowingStream<Data, Error> {
-        let generation = beginStart()
-        try validateStart(generation)
-
-        let hasMicrophoneAccess = await microphonePermissionResolver()
-        try validateStart(generation)
-        guard hasMicrophoneAccess else {
-            throw AudioRecorderError.microphonePermissionDenied
+        let generation: UInt64
+        if let preparedPermissionGeneration {
+            generation = preparedPermissionGeneration
+            self.preparedPermissionGeneration = nil
+        } else {
+            generation = beginStart()
+            try await resolveMicrophonePermission(generation: generation)
         }
+        try validateStart(generation)
 
         await cancelActiveCapture()
         try validateStart(generation)
@@ -286,12 +295,23 @@ final class AudioRecorder: DictationAudioCapturing {
     }
 
     private func beginStart() -> UInt64 {
+        preparedPermissionGeneration = nil
         startGeneration &+= 1
         return startGeneration
     }
 
     private func invalidatePendingStarts() {
+        preparedPermissionGeneration = nil
         startGeneration &+= 1
+    }
+
+    private func resolveMicrophonePermission(generation: UInt64) async throws {
+        try validateStart(generation)
+        let hasMicrophoneAccess = await microphonePermissionResolver()
+        try validateStart(generation)
+        guard hasMicrophoneAccess else {
+            throw AudioRecorderError.microphonePermissionDenied
+        }
     }
 
     private func validateStart(_ generation: UInt64) throws {

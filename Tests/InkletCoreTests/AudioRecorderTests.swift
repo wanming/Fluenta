@@ -287,6 +287,46 @@ final class AudioRecorderTests: XCTestCase {
         XCTAssertTrue(capture is AudioRecorder)
     }
 
+    func testAuthorizedPreflightIsConsumedByTheNextStreamingStart() async throws {
+        let backend = FakeAudioRecorderCaptureBackend(bufferLimit: 2)
+        var permissionResolutionCount = 0
+        let recorder = AudioRecorder(
+            microphonePermissionResolver: {
+                permissionResolutionCount += 1
+                return true
+            },
+            captureBackendFactory: { backend }
+        )
+
+        try await recorder.authorizeMicrophone()
+        _ = try await recorder.startStreaming(microphoneDeviceID: nil)
+
+        XCTAssertEqual(permissionResolutionCount, 1)
+        XCTAssertEqual(backend.events, [.startRecording])
+
+        await recorder.cancel()
+    }
+
+    func testCancelInvalidatesPreparedPermissionBeforeANewerStart() async throws {
+        let backend = FakeAudioRecorderCaptureBackend(bufferLimit: 2)
+        var permissionResolutionCount = 0
+        let recorder = AudioRecorder(
+            microphonePermissionResolver: {
+                permissionResolutionCount += 1
+                return true
+            },
+            captureBackendFactory: { backend }
+        )
+
+        try await recorder.authorizeMicrophone()
+        await recorder.cancel()
+        _ = try await recorder.startStreaming(microphoneDeviceID: nil)
+
+        XCTAssertEqual(permissionResolutionCount, 2)
+
+        await recorder.cancel()
+    }
+
     func testCancelWhilePermissionIsPendingPreventsBackendResolutionAndCaptureStart() async {
         let permissionGate = AsyncValueGate<Bool>()
         let backend = FakeAudioRecorderCaptureBackend(bufferLimit: 2)

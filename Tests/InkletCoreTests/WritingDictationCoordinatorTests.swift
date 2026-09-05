@@ -1227,6 +1227,8 @@ private final class FakeDictationCapture: DictationAudioCapturing {
     private var stopBlocked = false
     private let stopGate = ManualGate()
 
+    func authorizeMicrophone() async throws {}
+
     func startStreaming(microphoneDeviceID: String?) async throws -> AsyncThrowingStream<Data, Error> {
         startCount += 1
         startInFlight = true
