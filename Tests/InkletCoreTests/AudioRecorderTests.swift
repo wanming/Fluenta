@@ -307,6 +307,36 @@ final class AudioRecorderTests: XCTestCase {
         await recorder.cancel()
     }
 
+    func testAuthorizedPreflightGrantIsConsumedOnlyOnce() async throws {
+        let firstBackend = FakeAudioRecorderCaptureBackend(bufferLimit: 2)
+        let secondBackend = FakeAudioRecorderCaptureBackend(bufferLimit: 2)
+        var permissionResolutionCount = 0
+        var backendResolutionCount = 0
+        let recorder = AudioRecorder(
+            microphonePermissionResolver: {
+                permissionResolutionCount += 1
+                return true
+            },
+            captureBackendResolver: { _ in
+                defer { backendResolutionCount += 1 }
+                return backendResolutionCount == 0 ? firstBackend : secondBackend
+            }
+        )
+
+        try await recorder.authorizeMicrophone()
+        _ = try await recorder.startStreaming(microphoneDeviceID: nil)
+        _ = try await recorder.startStreaming(microphoneDeviceID: nil)
+
+        XCTAssertEqual(permissionResolutionCount, 2)
+        XCTAssertEqual(
+            firstBackend.events,
+            [.startRecording, .detachRealtime, .finalizeFile, .stopSession]
+        )
+        XCTAssertEqual(secondBackend.events, [.startRecording])
+
+        await recorder.cancel()
+    }
+
     func testCancelInvalidatesPreparedPermissionBeforeANewerStart() async throws {
         let backend = FakeAudioRecorderCaptureBackend(bufferLimit: 2)
         var permissionResolutionCount = 0
@@ -323,6 +353,112 @@ final class AudioRecorderTests: XCTestCase {
         _ = try await recorder.startStreaming(microphoneDeviceID: nil)
 
         XCTAssertEqual(permissionResolutionCount, 2)
+
+        await recorder.cancel()
+    }
+
+    func testCancelWhileMicrophoneAuthorizationIsPendingPreventsCaptureStart() async {
+        let permissionGate = AsyncValueGate<Bool>()
+        let backend = FakeAudioRecorderCaptureBackend(bufferLimit: 2)
+        var backendResolutionCount = 0
+        let recorder = AudioRecorder(
+            microphonePermissionResolver: {
+                await permissionGate.wait()
+            },
+            captureBackendResolver: { _ in
+                backendResolutionCount += 1
+                return backend
+            }
+        )
+
+        let authorizationTask = Task {
+            try await recorder.authorizeMicrophone()
+        }
+        await permissionGate.waitUntilWaiting()
+
+        await recorder.cancel()
+        permissionGate.resume(returning: true)
+
+        do {
+            try await authorizationTask.value
+            XCTFail("Expected the pending authorization to be cancelled")
+        } catch is CancellationError {
+            // Expected: recorder cancellation invalidates the pending authorization generation.
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+
+        XCTAssertEqual(backendResolutionCount, 0)
+        XCTAssertEqual(backend.events, [])
+    }
+
+    func testDeniedMicrophoneAuthorizationIsNotCachedForLaterStart() async throws {
+        let backend = FakeAudioRecorderCaptureBackend(bufferLimit: 2)
+        var permissionResults = [false, true]
+        var permissionResolutionCount = 0
+        let recorder = AudioRecorder(
+            microphonePermissionResolver: {
+                permissionResolutionCount += 1
+                return permissionResults.removeFirst()
+            },
+            captureBackendFactory: { backend }
+        )
+
+        do {
+            try await recorder.authorizeMicrophone()
+            XCTFail("Expected microphone authorization to be denied")
+        } catch let error as AudioRecorder.AudioRecorderError {
+            guard case .microphonePermissionDenied = error else {
+                return XCTFail("Expected microphonePermissionDenied, got \(error)")
+            }
+        } catch {
+            XCTFail("Expected AudioRecorderError, got \(error)")
+        }
+
+        _ = try await recorder.startStreaming(microphoneDeviceID: nil)
+
+        XCTAssertEqual(permissionResolutionCount, 2)
+        XCTAssertEqual(backend.events, [.startRecording])
+
+        await recorder.cancel()
+    }
+
+    func testNewerAuthorizationSupersedesOlderPendingAuthorizationWithoutOverwritingGrant() async throws {
+        let firstPermissionGate = AsyncValueGate<Bool>()
+        let backend = FakeAudioRecorderCaptureBackend(bufferLimit: 2)
+        var permissionResolutionCount = 0
+        let recorder = AudioRecorder(
+            microphonePermissionResolver: {
+                permissionResolutionCount += 1
+                if permissionResolutionCount == 1 {
+                    return await firstPermissionGate.wait()
+                }
+                return true
+            },
+            captureBackendFactory: { backend }
+        )
+
+        let olderAuthorizationTask = Task {
+            try await recorder.authorizeMicrophone()
+        }
+        await firstPermissionGate.waitUntilWaiting()
+
+        try await recorder.authorizeMicrophone()
+        firstPermissionGate.resume(returning: true)
+
+        do {
+            try await olderAuthorizationTask.value
+            XCTFail("Expected the older authorization to be superseded")
+        } catch is CancellationError {
+            // Expected: only the newest authorization generation may remain prepared.
+        } catch {
+            XCTFail("Expected CancellationError, got \(error)")
+        }
+
+        _ = try await recorder.startStreaming(microphoneDeviceID: nil)
+
+        XCTAssertEqual(permissionResolutionCount, 2)
+        XCTAssertEqual(backend.events, [.startRecording])
 
         await recorder.cancel()
     }
