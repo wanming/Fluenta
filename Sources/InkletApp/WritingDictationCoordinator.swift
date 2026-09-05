@@ -240,6 +240,18 @@ final class WritingDictationCoordinator {
         defer { completeOperation(startOperationID) }
 
         do {
+            try await audioCapture.authorizeMicrophone()
+            guard let current = session,
+                  current.id == sessionID,
+                  !current.terminalWon
+            else { return }
+
+            let connectOperationID = spawnOperation(sessionID: sessionID, kind: .connect) {
+                coordinator, _ in
+                await coordinator.connect(sessionID: sessionID)
+            }
+            session?.connectOperationID = connectOperationID
+
             let stream = try await audioCapture.startStreaming(
                 microphoneDeviceID: config.microphoneDeviceID
             )
@@ -261,11 +273,11 @@ final class WritingDictationCoordinator {
             }
             session?.frameOperationID = frameOperationID
 
-            let connectOperationID = spawnOperation(sessionID: sessionID, kind: .connect) {
-                coordinator, _ in
-                await coordinator.connect(sessionID: sessionID)
+            if session?.realtimeAvailable == true {
+                beginListeningIfReady(sessionID: sessionID)
+            } else {
+                publishFallbackRecordingIfReady(sessionID: sessionID)
             }
-            session?.connectOperationID = connectOperationID
         } catch let error as CancellationError {
             session?.captureStartInFlight = false
             guard session?.id == sessionID, session?.terminalWon == false else { return }
@@ -359,14 +371,22 @@ final class WritingDictationCoordinator {
             }
         }
 
+        beginListeningIfReady(sessionID: sessionID)
+    }
+
+    private func beginListeningIfReady(sessionID: UUID) {
         guard let current = session,
               current.id == sessionID,
+              current.captureStarted,
+              current.connectionReady,
               current.realtimeAvailable,
               !current.terminalWon
         else { return }
-        if !current.releaseRequested {
+
+        if !current.releaseRequested, phase != .listening {
             publish(.listening)
         }
+        guard current.receiveOperationID == nil else { return }
         let receiveOperationID = spawnOperation(sessionID: sessionID, kind: .receive) {
             coordinator, _ in
             await coordinator.receiveEvents(sessionID: sessionID)
@@ -640,9 +660,21 @@ final class WritingDictationCoordinator {
         else { return }
         if updated.releaseRequested, updated.recordingURL != nil {
             startFallback(sessionID: sessionID)
-        } else if newlyLost, !updated.releaseRequested {
-            publish(.recordingForFallback)
+        } else if newlyLost {
+            publishFallbackRecordingIfReady(sessionID: sessionID)
         }
+    }
+
+    private func publishFallbackRecordingIfReady(sessionID: UUID) {
+        guard let current = session,
+              current.id == sessionID,
+              !current.realtimeAvailable,
+              current.captureStarted,
+              !current.releaseRequested,
+              !current.terminalWon,
+              phase != .recordingForFallback
+        else { return }
+        publish(.recordingForFallback)
     }
 
     @discardableResult

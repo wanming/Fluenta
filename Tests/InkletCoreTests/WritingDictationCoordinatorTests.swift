@@ -5,6 +5,206 @@ import XCTest
 
 @MainActor
 final class WritingDictationCoordinatorTests: XCTestCase {
+    func testConnectionStartsWhileCaptureStartIsPendingAndListeningWaitsForBoth() async {
+        let harness = DictationHarness()
+        let connectStarted = expectation(description: "Realtime connect started")
+        connectStarted.assertForOverFulfill = true
+        harness.client.connectStartHandler = { connectStarted.fulfill() }
+        harness.capture.blockStart()
+        let begin = Task { await harness.subject.beginHold() }
+        await harness.capture.waitUntilStartWasCalled()
+        await fulfillment(of: [connectStarted], timeout: 1)
+        harness.client.connectStartHandler = nil
+
+        XCTAssertEqual(harness.client.connectCount, 1)
+
+        harness.client.completeConnection()
+        XCTAssertEqual(harness.subject.phase, .connecting)
+        XCTAssertEqual(harness.client.receiveStartCount, 0)
+
+        harness.capture.resumeStart()
+        await begin.value
+        await harness.client.waitUntilReceiveStarts()
+
+        XCTAssertEqual(harness.subject.phase, .listening)
+        XCTAssertEqual(harness.client.receiveStartCount, 1)
+        await harness.subject.cancelAndWait()
+    }
+
+    func testConnectionReadyAfterReleaseStartsReceivingWithoutPublishingListening() async {
+        let harness = DictationHarness()
+        await harness.subject.beginHold()
+
+        await harness.subject.endHold()
+        harness.client.completeConnection()
+        await harness.client.waitUntilReceiveStarts()
+
+        XCTAssertEqual(harness.client.receiveStartCount, 1)
+        XCTAssertFalse(harness.phases.contains(.listening))
+        await harness.subject.cancelAndWait()
+    }
+
+    func testConnectionFailureBeforeCaptureStartsWaitsToPublishFallbackRecording() async {
+        let harness = DictationHarness()
+        let connectStarted = expectation(description: "Realtime connect started")
+        connectStarted.assertForOverFulfill = true
+        harness.client.connectStartHandler = { connectStarted.fulfill() }
+        let closeStarted = expectation(description: "Realtime close started")
+        closeStarted.assertForOverFulfill = true
+        harness.client.closeStartHandler = { closeStarted.fulfill() }
+        let fallbackPublished = expectation(description: "Fallback recording published")
+        fallbackPublished.assertForOverFulfill = true
+        harness.phaseCallback = { phase in
+            if phase == .recordingForFallback {
+                fallbackPublished.fulfill()
+            }
+        }
+        harness.capture.blockStart()
+        let begin = Task { await harness.subject.beginHold() }
+        await harness.capture.waitUntilStartWasCalled()
+        await fulfillment(of: [connectStarted], timeout: 1)
+        harness.client.connectStartHandler = nil
+
+        XCTAssertEqual(harness.client.connectCount, 1)
+        harness.client.failConnection(with: RealtimeTranscriptionError.connectionClosed)
+        await fulfillment(of: [closeStarted], timeout: 1)
+        harness.client.closeStartHandler = nil
+
+        XCTAssertEqual(harness.subject.phase, .connecting)
+        XCTAssertFalse(harness.phases.contains(.recordingForFallback))
+
+        harness.capture.resumeStart()
+        await begin.value
+        await fulfillment(of: [fallbackPublished], timeout: 1)
+        harness.phaseCallback = nil
+
+        XCTAssertEqual(harness.subject.phase, .recordingForFallback)
+        await harness.subject.cancelAndWait()
+    }
+
+    func testFallbackRecordingPublishesOnceWhenCaptureStartsDuringBlockedRealtimeClose() async {
+        let harness = DictationHarness()
+        let connectStarted = expectation(description: "Realtime connect started")
+        connectStarted.assertForOverFulfill = true
+        harness.client.connectStartHandler = { connectStarted.fulfill() }
+        let closeStarted = expectation(description: "Realtime close started")
+        closeStarted.assertForOverFulfill = true
+        harness.client.closeStartHandler = { closeStarted.fulfill() }
+        let duplicateFallback = expectation(description: "Duplicate fallback publication")
+        duplicateFallback.isInverted = true
+        var fallbackPublicationCount = 0
+        harness.phaseCallback = { phase in
+            guard phase == .recordingForFallback else { return }
+            fallbackPublicationCount += 1
+            if fallbackPublicationCount == 2 {
+                duplicateFallback.fulfill()
+            }
+        }
+        harness.capture.blockStart()
+        harness.client.blockClose()
+        let begin = Task { await harness.subject.beginHold() }
+        await harness.capture.waitUntilStartWasCalled()
+        await fulfillment(of: [connectStarted], timeout: 1)
+        harness.client.connectStartHandler = nil
+
+        XCTAssertEqual(harness.client.connectCount, 1)
+        harness.client.failConnection(with: RealtimeTranscriptionError.connectionClosed)
+        await fulfillment(of: [closeStarted], timeout: 1)
+        harness.client.closeStartHandler = nil
+        XCTAssertEqual(harness.subject.phase, .connecting)
+
+        harness.capture.resumeStart()
+        await begin.value
+        XCTAssertEqual(harness.subject.phase, .recordingForFallback)
+        XCTAssertEqual(fallbackPublicationCount, 1)
+
+        harness.client.resumeClose()
+        await fulfillment(of: [duplicateFallback], timeout: 1)
+        XCTAssertEqual(fallbackPublicationCount, 1)
+
+        harness.phaseCallback = nil
+        await harness.subject.cancelAndWait()
+    }
+
+    func testCaptureFailureAfterConnectionReadyNeverListensAndCleansUpOnce() async {
+        let harness = DictationHarness()
+        let connectStarted = expectation(description: "Realtime connect started")
+        connectStarted.assertForOverFulfill = true
+        harness.client.connectStartHandler = { connectStarted.fulfill() }
+        let connectionCompleted = expectation(description: "Realtime connection completed")
+        connectionCompleted.assertForOverFulfill = true
+        harness.client.connectionCompletionHandler = { connectionCompleted.fulfill() }
+        harness.capture.startError = AudioRecorder.AudioRecorderError.recordingUnavailable
+        harness.capture.blockStart()
+        let begin = Task { await harness.subject.beginHold() }
+        await harness.capture.waitUntilStartWasCalled()
+        await fulfillment(of: [connectStarted], timeout: 1)
+        harness.client.connectStartHandler = nil
+
+        XCTAssertEqual(harness.client.connectCount, 1)
+        harness.client.completeConnection()
+        await fulfillment(of: [connectionCompleted], timeout: 1)
+        harness.client.connectionCompletionHandler = nil
+
+        XCTAssertEqual(harness.subject.phase, .connecting)
+        XCTAssertEqual(harness.client.receiveStartCount, 0)
+
+        harness.capture.resumeStart()
+        await begin.value
+        await harness.subject.cancelAndWait()
+
+        XCTAssertFalse(harness.phases.contains(.listening))
+        XCTAssertEqual(harness.client.receiveStartCount, 0)
+        XCTAssertEqual(harness.client.closeCount, 1)
+        XCTAssertEqual(harness.transaction.restoreCount, 1)
+        XCTAssertEqual(harness.subject.phase, .failed("dictation.error.fallback"))
+    }
+
+    func testAuthorizationMustFinishBeforeCaptureAndConnectionStart() async {
+        let harness = DictationHarness()
+        let connectStarted = expectation(description: "Realtime connect started")
+        connectStarted.assertForOverFulfill = true
+        harness.client.connectStartHandler = { connectStarted.fulfill() }
+        harness.capture.blockAuthorization()
+        harness.capture.blockStart()
+        let begin = Task { await harness.subject.beginHold() }
+        await harness.capture.waitUntilAuthorizationWasRequested()
+
+        XCTAssertEqual(harness.capture.authorizationCount, 1)
+        XCTAssertEqual(harness.capture.startCount, 0)
+        XCTAssertEqual(harness.client.connectCount, 0)
+
+        harness.capture.resumeAuthorization()
+        await harness.capture.waitUntilStartWasCalled()
+        await fulfillment(of: [connectStarted], timeout: 1)
+        harness.client.connectStartHandler = nil
+
+        XCTAssertEqual(harness.capture.startCount, 1)
+        XCTAssertEqual(harness.client.connectCount, 1)
+
+        let cancel = Task { await harness.subject.cancelAndWait() }
+        await harness.transaction.waitUntilRestored()
+        harness.capture.resumeStart()
+        await begin.value
+        await cancel.value
+    }
+
+    func testAuthorizationFailureRestoresWithoutStartingCaptureOrRealtime() async {
+        let harness = DictationHarness()
+        harness.capture.authorizationError =
+            AudioRecorder.AudioRecorderError.microphonePermissionDenied
+
+        await harness.subject.beginHold()
+        await harness.subject.cancelAndWait()
+
+        XCTAssertEqual(harness.capture.authorizationCount, 1)
+        XCTAssertEqual(harness.capture.startCount, 0)
+        XCTAssertEqual(harness.client.connectCount, 0)
+        XCTAssertEqual(harness.transaction.restoreCount, 1)
+        XCTAssertEqual(harness.client.closeCount, 1)
+        XCTAssertEqual(harness.subject.phase, .failed("dictation.error.microphonePermission"))
+    }
+
     func testBeginHoldCreatesTransactionStartsCaptureAndPublishesListeningAfterConnection() async {
         let harness = DictationHarness()
         await harness.subject.beginHold()
@@ -22,6 +222,7 @@ final class WritingDictationCoordinatorTests: XCTestCase {
     func testInvalidPreflightDoesNotRequestMicrophoneOrCreateTransaction() async {
         let harness = DictationHarness(clientFactoryError: RealtimeTranscriptionError.missingAPIKey)
         await harness.subject.beginHold()
+        XCTAssertEqual(harness.capture.authorizationCount, 0)
         XCTAssertEqual(harness.capture.startCount, 0)
         XCTAssertEqual(harness.transactionBeginCount, 0)
         XCTAssertEqual(harness.subject.phase, .failed("dictation.error.missingAPIKey"))
@@ -34,6 +235,7 @@ final class WritingDictationCoordinatorTests: XCTestCase {
         await harness.client.waitUntilClosed()
 
         XCTAssertEqual(harness.transactionBeginCount, 1)
+        XCTAssertEqual(harness.capture.authorizationCount, 0)
         XCTAssertEqual(harness.capture.startCount, 0)
         XCTAssertTrue(harness.phases.isEmpty)
         XCTAssertEqual(harness.subject.phase, .idle)
@@ -1011,9 +1213,14 @@ private final class DictationHarness {
             self?.phaseCallback?(phase)
         },
         errorKey: { error in
-            error as? RealtimeTranscriptionError == .missingAPIKey
-                ? "dictation.error.missingAPIKey"
-                : "dictation.error.fallback"
+            switch error {
+            case RealtimeTranscriptionError.missingAPIKey:
+                "dictation.error.missingAPIKey"
+            case AudioRecorder.AudioRecorderError.microphonePermissionDenied:
+                "dictation.error.microphonePermission"
+            default:
+                "dictation.error.fallback"
+            }
         },
         finalTimeoutSeconds: finalTimeoutSeconds,
         finalTimeoutWaiter: timeoutWaiter,
@@ -1209,14 +1416,19 @@ private final class FakeDictationCapture: DictationAudioCapturing {
 
     let recordingURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("DictationHarness-\(UUID().uuidString).m4a")
+    private(set) var authorizationCount = 0
     private(set) var startCount = 0
     private(set) var stopCount = 0
     private(set) var cancelCount = 0
     private(set) var createdURLs: [URL] = []
+    var authorizationError: Error?
     var startError: Error?
     var stopError: Error?
     var recordingFile: RecordingFile = .nonempty
     private var frameSource: FakeFrameSource?
+    private var authorizationBlocked = false
+    private let authorizationGate = ManualGate()
+    private var authorizationWaiters: [CheckedContinuation<Void, Never>] = []
     private var startBlocked = false
     private var startInFlight = false
     private var startCancellationRequested = false
@@ -1227,7 +1439,16 @@ private final class FakeDictationCapture: DictationAudioCapturing {
     private var stopBlocked = false
     private let stopGate = ManualGate()
 
-    func authorizeMicrophone() async throws {}
+    func authorizeMicrophone() async throws {
+        authorizationCount += 1
+        let waiters = authorizationWaiters
+        authorizationWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        if authorizationBlocked {
+            await authorizationGate.wait()
+        }
+        if let authorizationError { throw authorizationError }
+    }
 
     func startStreaming(microphoneDeviceID: String?) async throws -> AsyncThrowingStream<Data, Error> {
         startCount += 1
@@ -1300,12 +1521,21 @@ private final class FakeDictationCapture: DictationAudioCapturing {
         let index = await frameSource.send(data)
         await frameSource.waitUntilAccepted(index)
     }
+    func blockAuthorization() { authorizationBlocked = true }
     func blockStart() { startBlocked = true }
     func blockStop() { stopBlocked = true }
     func resumeStart() {
         startBlocked = false
         startContinuation?.resume()
         startContinuation = nil
+    }
+    func resumeAuthorization() {
+        authorizationBlocked = false
+        authorizationGate.open()
+    }
+    func waitUntilAuthorizationWasRequested() async {
+        if authorizationCount > 0 { return }
+        await withCheckedContinuation { authorizationWaiters.append($0) }
     }
     func waitUntilStartWasCalled() async {
         if startCount > 0 { return }
@@ -1432,10 +1662,15 @@ private final class FakeDictationTransaction: DictationEditorTransacting {
 @MainActor
 private final class FakeRealtimeClient: RealtimeTranscriptionClient, @unchecked Sendable {
     private(set) var operations: [String] = []
+    private(set) var connectCount = 0
+    private(set) var receiveStartCount = 0
     private(set) var commitCount = 0
     private(set) var closeCount = 0
     private(set) var appendedAfterCommit = false
     var didCommit: Bool { commitCount > 0 }
+    var connectStartHandler: (() -> Void)?
+    var connectionCompletionHandler: (() -> Void)?
+    var closeStartHandler: (() -> Void)?
     var closeUnblocksConnect = true
     var nextAppendError: Error?
     var commitError: Error?
@@ -1449,7 +1684,6 @@ private final class FakeRealtimeClient: RealtimeTranscriptionClient, @unchecked 
     private var shouldBlockNextEvent = false
     private var nextEventGate: ManualGate?
     private var nextEventBlockWaiters: [CheckedContinuation<Void, Never>] = []
-    private var receiveStarted = false
     private var receiveStartWaiters: [CheckedContinuation<Void, Never>] = []
     private var shouldBlockNextAppend = false
     private var appendGate: ManualGate?
@@ -1464,12 +1698,16 @@ private final class FakeRealtimeClient: RealtimeTranscriptionClient, @unchecked 
     private let closeGate = ManualGate()
 
     func connect(timeoutSeconds: TimeInterval) async throws {
+        connectCount += 1
+        connectStartHandler?()
         do {
             if let pendingConnectionResult {
                 self.pendingConnectionResult = nil
-                return try pendingConnectionResult.get()
+                try pendingConnectionResult.get()
+            } else {
+                try await withCheckedThrowingContinuation { connectContinuation = $0 }
             }
-            try await withCheckedThrowingContinuation { connectContinuation = $0 }
+            connectionCompletionHandler?()
         } catch {
             connectErrorWasThrown = true
             let waiters = connectErrorWaiters
@@ -1531,7 +1769,7 @@ private final class FakeRealtimeClient: RealtimeTranscriptionClient, @unchecked 
     }
 
     func nextEvent() async throws -> RealtimeTranscriptionEvent {
-        receiveStarted = true
+        receiveStartCount += 1
         let waiters = receiveStartWaiters
         receiveStartWaiters.removeAll()
         waiters.forEach { $0.resume() }
@@ -1574,6 +1812,7 @@ private final class FakeRealtimeClient: RealtimeTranscriptionClient, @unchecked 
 
     func close() async {
         closeCount += 1
+        closeStartHandler?()
         let waiters = closeWaiters
         closeWaiters.removeAll()
         waiters.forEach { $0.resume() }
@@ -1589,7 +1828,7 @@ private final class FakeRealtimeClient: RealtimeTranscriptionClient, @unchecked 
     }
 
     func waitUntilReceiveStarts() async {
-        if receiveStarted { return }
+        if receiveStartCount > 0 { return }
         await withCheckedContinuation { receiveStartWaiters.append($0) }
     }
     func waitUntilConnectErrorWasThrown() async {
