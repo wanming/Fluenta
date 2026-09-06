@@ -292,7 +292,7 @@ final class WritingDictationShortcutMonitorTests: XCTestCase {
         XCTAssertEqual(harness.eventMonitors.removeCount, 2)
     }
 
-    func testStoppedMonitorCanReleaseLastReferenceOffMainActor() async {
+    func testStoppedMonitorCanReleaseLastReferenceOffMainActor() async throws {
         let eventMonitors = LocalEventMonitorHarness()
         var subject: WritingDictationShortcutMonitor? = WritingDictationShortcutMonitor(
             addLocalMonitor: { mask, handler in
@@ -302,7 +302,7 @@ final class WritingDictationShortcutMonitorTests: XCTestCase {
                 eventMonitors.remove(monitor)
             }
         )
-        weak let weakSubject = subject
+        let weakSubject = WeakObjectReference(try XCTUnwrap(subject))
 
         subject?.start()
         subject?.stop()
@@ -317,12 +317,12 @@ final class WritingDictationShortcutMonitorTests: XCTestCase {
         }
         await detachedOwnsReference.wait()
         subject = nil
-        XCTAssertNotNil(weakSubject)
+        XCTAssertNotNil(weakSubject.value)
 
         await releaseDetachedReference.open()
         await releaseTask.value
 
-        XCTAssertNil(weakSubject)
+        XCTAssertNil(weakSubject.value)
     }
 }
 
