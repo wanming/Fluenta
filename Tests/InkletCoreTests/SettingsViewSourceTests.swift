@@ -42,17 +42,25 @@ final class SettingsViewSourceTests: XCTestCase {
         ))
     }
 
-    func testWriteAssistantContainsMergedDictationControls() throws {
+    func testWriteAssistantExposesRecoveryModelWithoutEditableEndpoint() throws {
         let source = try settingsViewSource()
 
         XCTAssertFalse(source.contains("case voiceWriteAssistant"))
         XCTAssertTrue(source.contains("settings.group.writing"))
         XCTAssertTrue(source.contains("settings.group.dictation"))
         XCTAssertTrue(source.contains("$model.config.voiceInput.shortcut"))
+        XCTAssertTrue(source.contains("settings.row.microphone"))
         XCTAssertTrue(source.contains("selectedMicrophoneBinding"))
         XCTAssertFalse(source.contains("$model.config.voiceInput.speechEndpoint"))
         XCTAssertTrue(source.contains("$model.config.voiceInput.speechModel"))
-        XCTAssertTrue(source.contains("settings.error.invalidFallbackSpeechEndpoint"))
+        XCTAssertTrue(source.contains("settings.group.dictationAdvanced"))
+        XCTAssertTrue(source.contains("settings.row.fallbackSpeechModel"))
+        XCTAssertFalse(source.contains("settings.row.fallbackSpeechEndpoint"))
+        XCTAssertFalse(source.contains("settings.help.fallbackSpeechEndpoint"))
+        XCTAssertFalse(source.contains("settings.error.invalidFallbackSpeechEndpoint"))
+        XCTAssertFalse(source.contains("URL(string: config.voiceInput.speechEndpoint"))
+        XCTAssertFalse(source.contains("speechEndpoint.scheme"))
+        XCTAssertFalse(source.contains("speechEndpoint.host"))
         XCTAssertFalse(source.contains("voice.error.invalidSpeechEndpoint"))
         XCTAssertFalse(source.contains("settings.voiceRecordingMode.holdKey"))
     }

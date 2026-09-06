@@ -423,15 +423,24 @@ final class WritingModeLauncherSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("LLMProviderPreset.openAI.id"))
         XCTAssertTrue(source.contains("RealtimeTranscriptionError.missingAPIKey"))
         XCTAssertTrue(source.contains("OpenAIRealtimeTranscriptionClient("))
-        XCTAssertTrue(source.contains("OpenAISpeechTranscriptionProvider("))
-        XCTAssertTrue(source.contains("apiKeyProvider: { apiKey }"))
         XCTAssertFalse(source.contains("config.speechEndpoint"))
         XCTAssertFalse(source.contains("endpoint: endpoint"))
         XCTAssertFalse(source.contains("let endpointScheme = endpoint.scheme?.lowercased()"))
         XCTAssertFalse(source.contains("endpointScheme == \"http\" || endpointScheme == \"https\""))
         XCTAssertFalse(source.contains("endpoint.host != nil"))
-        XCTAssertTrue(source.contains("model: config.speechModel"))
-        XCTAssertTrue(source.contains("timeoutSeconds: 20"))
+
+        let fallbackStart = try XCTUnwrap(source.range(of: "transcribeFallback:"))
+        let phaseHandlerStart = try XCTUnwrap(source.range(
+            of: "phaseHandler:",
+            range: fallbackStart.upperBound..<source.endIndex
+        ))
+        let fallbackBlock = source[fallbackStart.lowerBound..<phaseHandlerStart.lowerBound]
+        XCTAssertTrue(fallbackBlock.contains("apiKeyStore.loadAPIKey("))
+        XCTAssertTrue(fallbackBlock.contains("forProviderID: LLMProviderPreset.openAI.id"))
+        XCTAssertTrue(fallbackBlock.contains("OpenAISpeechTranscriptionProvider("))
+        XCTAssertTrue(fallbackBlock.contains("apiKeyProvider: { apiKey }"))
+        XCTAssertTrue(fallbackBlock.contains("model: config.speechModel"))
+        XCTAssertTrue(fallbackBlock.contains("timeoutSeconds: 20"))
 
         let coordinatorStart = try XCTUnwrap(source.range(of: "WritingDictationCoordinator("))
         let monitorStart = try XCTUnwrap(source.range(

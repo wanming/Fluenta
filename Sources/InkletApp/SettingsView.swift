@@ -482,13 +482,6 @@ final class SettingsViewModel: ObservableObject {
                     return false
                 }
                 config.providerID = LLMProviderPreset.openAI.id
-                guard let speechEndpoint = URL(string: config.voiceInput.speechEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
-                      speechEndpoint.scheme?.hasPrefix("http") == true,
-                      speechEndpoint.host != nil
-                else {
-                    message = L10n.text("settings.error.invalidFallbackSpeechEndpoint")
-                    return false
-                }
 
                 _ = try Hotkey.parse(config.hotkey)
                 try configStore.save(config)
