@@ -28,7 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install
 
 Inklet uses GitHub Releases as its only update source. Production builds check GitHub for public metadata for the latest stable release about once every 24 hours. An update is announced only after that release has an uploaded `Inklet.dmg`; **View on GitHub** opens that exact release page. Inklet never downloads or installs updates automatically.
 
-Use **Check for Updates…** from the app menu to check manually in either the production app or Inklet Local. Inklet Local never schedules automatic checks. Automatic check failures are silent, while a manual check offers **Retry**. If writing, voice, Selection Actions, migration, a modal, or an open menu makes Inklet busy, an automatic update notice waits until the app is idle.
+Use **Check for Updates…** from the app menu to check manually in either the production app or Inklet Local. Inklet Local never schedules automatic checks. Automatic check failures are silent, while a manual check offers **Retry**. If writing, dictation, Selection Actions, migration, a modal, or an open menu makes Inklet busy, an automatic update notice waits until the app is idle.
 
 ## First-Time Setup
 
@@ -36,7 +36,7 @@ Use **Check for Updates…** from the app menu to check manually in either the p
 2. Click the Inklet menu bar icon and open Settings.
 3. Grant Accessibility permission when macOS asks. Inklet uses this one generic permission to read selections, perform a configured copy fallback, return focus to the previous app, and paste confirmed results. Inklet stays in the background while System Settings is open and returns to General settings when you close it.
 4. Enter your OpenAI API key in General. Inklet uses this one key for writing, realtime dictation, selection translation, and pronunciation.
-5. Configure Writing Assistant with the model, writing shortcut, generation settings, prompt modes, Dictation hold shortcut, and microphone you want to use. Advanced Dictation exposes one recovery endpoint and model; the realtime model is fixed by Inklet.
+5. Configure Writing Assistant with the model, writing shortcut, generation settings, prompt modes, Dictation hold shortcut, and microphone you want to use. Advanced Dictation exposes only the recovery model; the recovery endpoint is not editable. The realtime model is fixed by Inklet.
 6. Optional: configure Selection Assistant with a translation language, Force Selection mode, AI pronunciation voice, and pronunciation speed, then preview the voice in Settings.
 7. Grant Microphone permission on the first valid Dictation hold. Opening Inklet, visiting Settings, or pressing the Dictation shortcut outside the active source editor does not request it.
 
@@ -57,7 +57,7 @@ Dictation workflow:
 2. **Confirm a Prompt Mode**. Dictation is unavailable in the mode picker and result editor.
 3. **Put the caret in the source draft, or select text to replace.** Dictation inserts at the caret or replaces the selection.
 4. **Hold the configured Dictation shortcut** (Right Option by default) and speak normally while the draft updates in place. A short press does nothing. If the realtime connection fails, keep holding and speaking while Inklet keeps one temporary recovery recording.
-5. **Release to finalize** the transcript. Inklet makes at most one file-transcription recovery attempt, then deletes the temporary recording when the session ends.
+5. **Release to finalize** the transcript. If recovery is needed, Inklet sends one request to `https://api.openai.com/v1/audio/transcriptions` with the same existing OpenAI API key used by realtime dictation. The temporary recording remains local until the fallback request actually begins, is uploaded at most once, and is deleted when the session ends.
 6. Review and edit the dictated draft. Dictation by itself does not run the Prompt Mode or insert text into another app.
 7. **Press Return only when ready** to run the confirmed Prompt Mode; press Return again only when you want to insert the result.
 
@@ -79,7 +79,7 @@ The Dictation shortcut is source-local and hold-only. You can change its modifie
 - Keeps simulated `Command+C` off by default. Menu Copy remains the safe Force Selection fallback; you can explicitly enable simulated copy as an advanced fallback for apps without a usable Copy menu, but it may interfere with games, remote desktops, or virtual machines.
 - Serializes temporary clipboard reads and restores the prior snapshot only while the same read still owns the observed copy result; newer clipboard contents win. The double-copy trigger is passive: it consumes the copy the user already made without issuing another synthetic copy or restoring older clipboard data. Right-click remains native and never starts a selection read.
 - Does not use browser-specific selection code and does not request browser Automation. Chrome, Safari, Edge, and native apps use the same generic path.
-- Lets you edit prompt modes, OpenAI model, timeout, writing shortcut, Dictation hold shortcut, microphone, recovery endpoint and model, selection translation language, selection Translate prompt, Force Selection mode, simulated-copy permission, AI pronunciation voice, and AI pronunciation speed.
+- Lets you edit prompt modes, OpenAI model, timeout, writing shortcut, Dictation hold shortcut, microphone, recovery model, selection translation language, selection Translate prompt, Force Selection mode, simulated-copy permission, AI pronunciation voice, and AI pronunciation speed.
 - Shows local History for successful Write and Selection results, with consecutive duplicate entries collapsed, selectable source/result text, a result copy control, and a clear-all action. Existing legacy Voice entries remain readable.
 - Uses one shared OpenAI API key for writing, realtime dictation, selection translation, and pronunciation.
 - Provides English, Simplified Chinese, Traditional Chinese, Japanese, Korean, Spanish, French, German, Portuguese, and Italian app UI localization.
@@ -173,7 +173,7 @@ If macOS blocks automatic access to the matching legacy container, Settings keep
 ## Privacy
 
 - Inklet uses your configured OpenAI API key to call OpenAI for writing, realtime dictation, selection translation, and pronunciation.
-- While you hold the Dictation shortcut, active microphone audio is streamed directly to OpenAI Realtime transcription. Inklet also keeps one temporary local recovery recording, uses it for at most one recovery attempt if needed, and deletes it when the session ends.
+- While you hold the Dictation shortcut, active microphone audio is streamed directly to OpenAI Realtime transcription. Inklet also keeps one temporary local recovery recording. It remains local until the fallback request actually begins, is uploaded at most once to `https://api.openai.com/v1/audio/transcriptions` using the same existing OpenAI API key used by realtime dictation, and is deleted on every terminal session path.
 - Your OpenAI API key is stored locally on your Mac.
 - Inklet uses Accessibility permission for generic selection reading, configured copy fallback, returning focus to the previous app, and pasting text.
 - Inklet uses Microphone permission only during a valid Dictation hold in the active Writing Assistant source editor. Finishing dictation leaves an editable draft and does not insert into another app.

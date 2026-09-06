@@ -21,7 +21,7 @@ final class UpdateCheckDocumentationTests: XCTestCase {
                 "Automatic check failures are silent",
                 "Retry",
                 "writing",
-                "voice",
+                "dictation",
                 "Selection Actions",
                 "migration"
             ],
@@ -47,7 +47,7 @@ final class UpdateCheckDocumentationTests: XCTestCase {
                 "自动检查失败时保持静默",
                 "重试",
                 "写作",
-                "语音",
+                "听写",
                 "选区动作",
                 "迁移"
             ],
@@ -102,8 +102,12 @@ final class UpdateCheckDocumentationTests: XCTestCase {
 
     func testPrivacyPolicyDisclosesOnlyPublicReleaseMetadataRequest() throws {
         let privacyPolicy = try document(named: "docs/privacy-policy.md")
-        XCTAssertTrue(
-            privacyPolicy.contains("Last updated: August 30, 2026"),
+        let updateLines = privacyPolicy.split(separator: "\n").filter {
+            $0.hasPrefix("Last updated:")
+        }
+        XCTAssertEqual(
+            updateLines,
+            ["Last updated: September 5, 2026"],
             "Privacy policy must carry the update-check disclosure date"
         )
 
@@ -172,7 +176,7 @@ final class UpdateCheckDocumentationTests: XCTestCase {
                 "silent",
                 "24 hours",
                 "writing",
-                "voice",
+                "dictation",
                 "Selection Actions",
                 "migration",
                 "menu",

@@ -93,6 +93,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
     private var lastTargetApplication: NSRunningApplication?
     private var isRecordingHotkey = false
     private var selectionActionCoordinator: SelectionActionCoordinator
+    private let selectionTaskRegistry = SelectionTaskRegistry()
     private var selectionReadTask: Task<Void, Never>?
     private var selectionTranslationTask: Task<Void, Never>?
     private var selectionTTSTask: Task<Void, Never>?
@@ -100,6 +101,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
     private var selectionReadTaskID: UUID?
     private var selectionTranslationTaskID: UUID?
     private var selectionTTSTaskID: UUID?
+    private var selectionCopyFeedbackTaskID: UUID?
     private var isSelectionSpeechPlaying = false
     private var isMigrationMaintenanceActive = false
     private var isStopping = false
@@ -110,6 +112,14 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
     private var mainUpdateCheckMenuItem: NSMenuItem?
     private var statusUpdateCheckMenuItem: NSMenuItem?
     private var trackedMenus: Set<ObjectIdentifier> = []
+    private lazy var automaticUpdatePresentationGate = AutomaticUpdatePresentationGate(
+        canPresent: { [weak self] in
+            self?.canPresentAutomaticUpdate ?? false
+        },
+        present: { [weak self] in
+            self?.updateCheckCoordinator.presentPendingAutomaticUpdateIfPossible()
+        }
+    )
     private lazy var updateCheckAlertPresenter: UpdateCheckAlertPresenter = {
         let presenter = UpdateCheckAlertPresenter()
         presenter.onPresentationStateChange = { [weak self] isPresenting in
@@ -198,7 +208,8 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
             self?.openSettings()
         }
         self.windowController.onBusyChange = { [weak self] _ in
-            self?.refreshMigrationImportEligibility()
+            guard let self, !self.isStopping else { return }
+            self.refreshMigrationImportEligibility()
         }
         self.settingsController.onRequestMigrationImport = { [weak self] in
             Task { @MainActor in
@@ -217,12 +228,12 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
             self?.refreshMigrationImportEligibility()
         }
         self.selectionActionMonitor.onCandidateSelection = { [weak self] point in
-            Task { @MainActor in
-                self?.handleSelectionActionCandidate(at: point)
-            }
+            guard let self, !self.isStopping else { return }
+            self.handleSelectionActionCandidate(at: point)
         }
         self.selectionActionMonitor.onCopyTrigger = { [weak self] trigger in
             guard let self,
+                  !self.isStopping,
                   !isMigrationMaintenanceActive,
                   trigger.sourceProcessIdentifier > 0,
                   trigger.sourceProcessIdentifier != NSRunningApplication.current.processIdentifier,
@@ -239,13 +250,15 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
             self.handleSelectionActionCopyTrigger(pendingUserCopyRead)
         }
         self.selectionActionMonitor.onDismiss = { [weak self] reason in
-            Task { @MainActor in
-                guard let self else { return }
-                self.handleSelectionDismissRequest(
-                    reason: String(describing: reason),
-                    bypassingPanelGrace: reason.bypassesPanelGrace
-                )
-            }
+            guard let self, !self.isStopping else { return }
+            self.handleSelectionDismissRequest(
+                reason: String(describing: reason),
+                bypassingPanelGrace: reason.bypassesPanelGrace
+            )
+        }
+        self.selectionActionMonitor.onInteractionStateChange = { [weak self] isActive in
+            guard let self, !self.isStopping, !isActive else { return }
+            self.automaticUpdatePresentationGate.schedule()
         }
         self.selectionActionWindowController.onTranslate = { [weak self] in
             Task { @MainActor in
@@ -276,13 +289,14 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
             }
         }
         self.selectionActionWindowController.onDismiss = { [weak self] in
-            guard let self else { return }
+            guard let self, !self.isStopping else { return }
             self.forceDismissSelectionActions(reason: "selectionPanelEscape")
         }
         self.speechPlaybackService.onFinish = { [weak self] in
-            self?.isSelectionSpeechPlaying = false
-            self?.restoreSelectionPronunciationReturnState()
-            self?.refreshMigrationImportEligibility()
+            guard let self, !self.isStopping else { return }
+            self.isSelectionSpeechPlaying = false
+            self.restoreSelectionPronunciationReturnState()
+            self.refreshMigrationImportEligibility()
         }
     }
 
@@ -294,15 +308,15 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
             currentVersion: BuildInfo.displayVersion,
             scheduler: FoundationUpdateCheckOneShotScheduler(),
             presenter: updateCheckAlertPresenter,
-            canPresentAutomatically: { [weak self] in
-                self?.canPresentAutomaticUpdate ?? false
-            },
             check: {
                 try await checker.check(currentBuildNumber: currentBuildNumber)
             }
         )
         coordinator.onCheckingStateChange = { [weak self] _ in
             self?.refreshUpdateCheckMenuItems()
+        }
+        coordinator.onPendingAutomaticUpdate = { [weak self] in
+            self?.automaticUpdatePresentationGate.schedule()
         }
         return coordinator
     }
@@ -320,7 +334,8 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
         ) { [weak self] notification in
             let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             Task { @MainActor in
-                self?.handleActivatedApplication(application)
+                guard let self, !self.isStopping else { return }
+                self.handleActivatedApplication(application)
             }
         }
 
@@ -345,7 +360,8 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.configureSelectionActions()
+                guard let self, !self.isStopping else { return }
+                self.configureSelectionActions()
             }
         }
 
@@ -355,7 +371,8 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.openPopover()
+                guard let self, !self.isStopping else { return }
+                self.openPopover()
             }
         }
 
@@ -366,7 +383,8 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
         ) { [weak self] notification in
             let isRecording = notification.userInfo?["isRecording"] as? Bool ?? false
             Task { @MainActor in
-                self?.setHotkeyRecording(isRecording)
+                guard let self, !self.isStopping else { return }
+                self.setHotkeyRecording(isRecording)
             }
         }
 
@@ -376,8 +394,9 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.configureMainMenu()
-                self?.configureStatusItemMenu()
+                guard let self, !self.isStopping else { return }
+                self.configureMainMenu()
+                self.configureStatusItemMenu()
             }
         }
 
@@ -394,7 +413,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
     func stop() async {
         isStopping = true
         updateCheckCoordinator.stop()
-        await windowController.cancelDictationAndWait()
+        automaticUpdatePresentationGate.cancel()
         if let configObserver {
             NotificationCenter.default.removeObserver(configObserver)
             self.configObserver = nil
@@ -425,11 +444,22 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
         }
         hotkeyManager.unregister()
         selectionActionMonitor.stop()
-        selectionReadTask?.cancel()
-        selectionTranslationTask?.cancel()
-        selectionTTSTask?.cancel()
-        selectionCopyFeedbackTask?.cancel()
+        let selectionTasks = selectionTaskRegistry.snapshotAndClear()
+        selectionReadTask = nil
+        selectionTranslationTask = nil
+        selectionTTSTask = nil
+        selectionCopyFeedbackTask = nil
+        selectionReadTaskID = nil
+        selectionTranslationTaskID = nil
+        selectionTTSTaskID = nil
+        selectionCopyFeedbackTaskID = nil
+        selectionTasks.cancel()
         speechPlaybackService.stop()
+        isSelectionSpeechPlaying = false
+
+        await windowController.cancelDictationAndWait()
+        await selectionClipboardReader.cancelActiveRead()
+        await selectionTasks.waitForCompletion()
     }
 
     private func configureMainMenu() {
@@ -492,18 +522,20 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
     }
 
     private func installSettingsShortcutMonitor() {
-        guard settingsShortcutMonitor == nil else {
+        guard !isStopping, settingsShortcutMonitor == nil else {
             return
         }
 
         settingsShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, !self.isStopping else { return event }
             let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             guard event.keyCode == 43, modifiers == .command else {
                 return event
             }
 
             Task { @MainActor in
-                self?.openSettings()
+                guard !self.isStopping else { return }
+                self.openSettings()
             }
             return nil
         }
@@ -530,16 +562,19 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
             isSelectingMigrationSource: migrationPresentationModel.phase == .selecting,
             hasModalWindow: NSApp.modalWindow != nil,
             isSelectionPanelVisible: selectionActionWindowController.isPanelVisible,
+            isSelectionInteractionActive: selectionActionMonitor.isInteractionActive,
             isMenuTracking: !trackedMenus.isEmpty,
-            isUpdateAlertPresenting: updateCheckAlertPresenter.isPresentingAlert
+            isUpdateAlertPresenting: updateCheckAlertPresenter.isPresentingAlert,
+            isStopping: isStopping
         ).canPresent
     }
 
     private func refreshMigrationImportEligibility() {
+        guard !isStopping else { return }
         migrationPresentationModel.setWorkflowsIdle(
             canRequestAssistedMigration
         )
-        updateCheckCoordinator.presentPendingAutomaticUpdateIfPossible()
+        automaticUpdatePresentationGate.schedule()
     }
 
     private func requestAssistedMigrationImport() async {
@@ -628,6 +663,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
         selectionTTSTaskID = nil
         selectionCopyFeedbackTask?.cancel()
         selectionCopyFeedbackTask = nil
+        selectionCopyFeedbackTaskID = nil
         forceDismissSelectionActions(reason: "migrationMaintenance")
         selectionActionWindowController.hidePanel()
         speechPlaybackService.stop()
@@ -682,6 +718,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
     }
 
     private func handleActivatedApplication(_ application: NSRunningApplication?) {
+        guard !isStopping else { return }
         rememberTargetApplication(application)
         if SelectionActivationDismissalPolicy.shouldDismiss(
             activatedProcessIdentifier: application?.processIdentifier,
@@ -697,7 +734,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
     }
 
     private func registerConfiguredHotkey() {
-        guard !isMigrationMaintenanceActive, !isRecordingHotkey else {
+        guard !isStopping, !isMigrationMaintenanceActive, !isRecordingHotkey else {
             return
         }
 
@@ -713,7 +750,8 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
 
             try hotkeyManager.register(hotkey) { [weak self] in
                 Task { @MainActor in
-                    self?.openPopover()
+                    guard let self, !self.isStopping else { return }
+                    self.openPopover()
                 }
             }
         } catch {
@@ -722,7 +760,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
     }
 
     private func configureSelectionActions() {
-        guard !isMigrationMaintenanceActive else {
+        guard !isStopping, !isMigrationMaintenanceActive else {
             selectionActionMonitor.stop()
             return
         }
@@ -733,14 +771,16 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
             "configure enabled=\(config.selectionActions.isEnabled) accessibilityTrusted=\(isAccessibilityTrusted)"
         )
         if config.selectionActions.isEnabled, isAccessibilityTrusted {
-            selectionActionMonitor.start()
+            if !selectionActionMonitor.start() {
+                SelectionActionDiagnostics.log("selection action monitor installation unavailable")
+            }
         } else {
             selectionActionMonitor.stop()
         }
     }
 
     private func handleSelectionActionCandidate(at point: SelectionPoint) {
-        guard !isMigrationMaintenanceActive else { return }
+        guard !isStopping, !isMigrationMaintenanceActive else { return }
         guard let sourceApp = NSWorkspace.shared.frontmostApplication,
               sourceApp.processIdentifier != NSRunningApplication.current.processIdentifier
         else {
@@ -759,14 +799,15 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
     }
 
     private func handleSelectionActionCopyTrigger(_ pendingUserCopyRead: PendingUserCopyRead) {
-        guard !isMigrationMaintenanceActive else { return }
+        guard !isStopping, !isMigrationMaintenanceActive else { return }
 
         handleSelectionActionEffects(selectionActionCoordinator.handle(.dismiss))
         let taskID = UUID()
         selectionReadTaskID = taskID
-        selectionReadTask = Task { [weak self] in
+        let task = Task { [weak self] in
             guard let self else { return }
             defer {
+                self.selectionTaskRegistry.remove(id: taskID)
                 if self.selectionReadTaskID == taskID {
                     self.selectionReadTask = nil
                     self.selectionReadTaskID = nil
@@ -776,6 +817,13 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
             let handoffOutcome = await selectionClipboardReader.finishUserCopyHandoff(
                 pendingUserCopyRead.clipboardHandoff
             )
+            guard !Task.isCancelled,
+                  !isStopping,
+                  !isMigrationMaintenanceActive,
+                  selectionReadTaskID == taskID
+            else {
+                return
+            }
             switch handoffOutcome {
             case .unobservedSyntheticAction:
                 SelectionActionDiagnostics.log("copy trigger ignored unobserved synthetic action")
@@ -788,6 +836,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
                 after: pendingUserCopyRead.clipboardHandoff.boundaryChangeCount
             )
             guard !Task.isCancelled,
+                  !isStopping,
                   !isMigrationMaintenanceActive,
                   selectionReadTaskID == taskID,
                   selectionSourceValidator.isCurrent(pendingUserCopyRead.sourceProcessIdentifier)
@@ -808,6 +857,8 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
             selectionCopyFeedbackTask?.cancel()
             selectionActionWindowController.showMenu(at: pendingUserCopyRead.location)
         }
+        selectionReadTask = task
+        selectionTaskRegistry.register(task, id: taskID)
         refreshMigrationImportEligibility()
     }
 
@@ -815,6 +866,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
         _ effects: [SelectionActionEffect],
         pendingSelectionRead: PendingSelectionRead? = nil
     ) {
+        guard !isStopping else { return }
         for effect in effects {
             switch effect {
             case .scheduleRead(let delayMilliseconds):
@@ -823,9 +875,10 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
                 selectionReadTask?.cancel()
                 let taskID = UUID()
                 selectionReadTaskID = taskID
-                selectionReadTask = Task { [weak self] in
+                let task = Task { [weak self] in
                     guard let self else { return }
                     defer {
+                        self.selectionTaskRegistry.remove(id: taskID)
                         if self.selectionReadTaskID == taskID {
                             self.selectionReadTask = nil
                             self.selectionReadTaskID = nil
@@ -837,9 +890,11 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
                     } catch {
                         return
                     }
-                    guard !Task.isCancelled else { return }
+                    guard !Task.isCancelled, !isStopping else { return }
                     await self.completeScheduledSelectionRead(pendingSelectionRead)
                 }
+                selectionReadTask = task
+                selectionTaskRegistry.register(task, id: taskID)
                 refreshMigrationImportEligibility()
             case .cancelRead:
                 SelectionActionDiagnostics.log("effect cancelRead")
@@ -882,6 +937,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
     }
 
     private func handleSelectionDismissRequest(reason: String = "unknown", bypassingPanelGrace: Bool = false) {
+        guard !isStopping else { return }
         guard panelDismissalPolicy.shouldDismiss(
             at: Date().timeIntervalSinceReferenceDate,
             bypassingGrace: bypassingPanelGrace
@@ -894,6 +950,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
     }
 
     private func forceDismissSelectionActions(reason: String = "force") {
+        guard !isStopping else { return }
         SelectionActionDiagnostics.log("force dismiss selection actions reason=\(reason)")
         handleSelectionActionEffects(selectionActionCoordinator.handle(.dismiss))
     }
@@ -916,7 +973,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
     }
 
     private func completeScheduledSelectionRead(_ pendingSelectionRead: PendingSelectionRead) async {
-        guard !isMigrationMaintenanceActive else { return }
+        guard !isStopping, !isMigrationMaintenanceActive else { return }
         let config = (try? configStore.load()) ?? AppConfig.defaultConfig()
         let configuredForceSelectionMode = config.selectionActions.forceSelectionMode
         let forceSelectionMode: SelectionForceSelectionMode = if configuredForceSelectionMode == .menuCopyOnly,
@@ -932,7 +989,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
             )
         }
         let result = await readSelectedTextForAutomaticSelection()
-        guard !Task.isCancelled, !isMigrationMaintenanceActive else { return }
+        guard !Task.isCancelled, !isStopping, !isMigrationMaintenanceActive else { return }
         SelectionActionDiagnostics.logRateLimited("read result \(diagnosticSummary(for: result))")
         handleSelectionActionEffects(selectionActionCoordinator.handle(.readCompleted(result)))
     }
@@ -956,7 +1013,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
     }
 
     private func translateCurrentSelection() {
-        guard !isMigrationMaintenanceActive else { return }
+        guard !isStopping, !isMigrationMaintenanceActive else { return }
         let sourceText = currentSelectionText
         guard !sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return
@@ -966,9 +1023,10 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
         let taskID = UUID()
         selectionTranslationTaskID = taskID
         selectionActionWindowController.showTranslating()
-        selectionTranslationTask = Task { [weak self] in
+        let task = Task { [weak self] in
             guard let self else { return }
             defer {
+                self.selectionTaskRegistry.remove(id: taskID)
                 if self.selectionTranslationTaskID == taskID {
                     self.selectionTranslationTask = nil
                     self.selectionTranslationTaskID = nil
@@ -1006,7 +1064,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
                     providerID: providerID,
                     timeoutSeconds: config.timeoutSeconds
                 )
-                guard !Task.isCancelled, !isMigrationMaintenanceActive else { return }
+                guard !Task.isCancelled, !isStopping, !isMigrationMaintenanceActive else { return }
                 try? self.historyStore.append(HistoryItem(
                     source: .selection,
                     inputText: sourceText,
@@ -1017,18 +1075,21 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
                     metadata: ["providerID": providerID]
                 ))
                 await MainActor.run {
+                    guard !self.isStopping else { return }
                     self.currentTranslationText = translated
                     self.selectionActionWindowController.showTranslation(translated)
                 }
             } catch is CancellationError {
             } catch {
-                if !self.isMigrationMaintenanceActive {
+                if !self.isStopping, !self.isMigrationMaintenanceActive {
                     self.selectionActionWindowController.showTranslationError(
                         L10n.text("selection.action.translationFailed")
                     )
                 }
             }
         }
+        selectionTranslationTask = task
+        selectionTaskRegistry.register(task, id: taskID)
         refreshMigrationImportEligibility()
     }
 
@@ -1060,7 +1121,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
         loadingFeedback: SelectionActionFeedback? = nil,
         playingFeedback: SelectionActionFeedback? = nil
     ) {
-        guard !isMigrationMaintenanceActive else { return }
+        guard !isStopping, !isMigrationMaintenanceActive else { return }
         let sourceText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !sourceText.isEmpty else { return }
 
@@ -1073,9 +1134,10 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
         } else {
             selectionActionWindowController.showPreparingPronunciation()
         }
-        selectionTTSTask = Task { [weak self] in
+        let task = Task { [weak self] in
             guard let self else { return }
             defer {
+                self.selectionTaskRegistry.remove(id: taskID)
                 if self.selectionTTSTaskID == taskID {
                     self.selectionTTSTask = nil
                     self.selectionTTSTaskID = nil
@@ -1098,8 +1160,9 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
                     speed: config.selectionActions.pronunciationSpeed,
                     timeoutSeconds: config.timeoutSeconds
                 ))
-                guard !Task.isCancelled, !isMigrationMaintenanceActive else { return }
+                guard !Task.isCancelled, !isStopping, !isMigrationMaintenanceActive else { return }
                 await MainActor.run {
+                    guard !self.isStopping else { return }
                     do {
                         try self.speechPlaybackService.play(audioData: audioData)
                         self.isSelectionSpeechPlaying = true
@@ -1119,16 +1182,18 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
                 }
             } catch is CancellationError {
             } catch {
-                if !self.isMigrationMaintenanceActive {
+                if !self.isStopping, !self.isMigrationMaintenanceActive {
                     self.showSelectionPronunciationError(returnState: returnState)
                 }
             }
         }
+        selectionTTSTask = task
+        selectionTaskRegistry.register(task, id: taskID)
         refreshMigrationImportEligibility()
     }
 
     private func restoreSelectionPronunciationReturnState() {
-        guard !isMigrationMaintenanceActive else { return }
+        guard !isStopping, !isMigrationMaintenanceActive else { return }
         switch selectionPronunciationReturnState {
         case .menu:
             selectionActionWindowController.restoreMenu()
@@ -1142,6 +1207,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
     }
 
     private func showSelectionPronunciationError(returnState: SelectionPronunciationReturnState) {
+        guard !isStopping else { return }
         let message = L10n.text("selection.action.pronunciationFailed")
         switch returnState {
         case .menu:
@@ -1156,7 +1222,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
     }
 
     private func copyCurrentTranslation() {
-        guard !isMigrationMaintenanceActive, !currentTranslationText.isEmpty else {
+        guard !isStopping, !isMigrationMaintenanceActive, !currentTranslationText.isEmpty else {
             return
         }
 
@@ -1164,17 +1230,35 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
         NSPasteboard.general.setString(currentTranslationText, forType: .string)
         selectionCopyFeedbackTask?.cancel()
         selectionActionWindowController.showTranslation(currentTranslationText, feedback: .copiedTranslation)
-        selectionCopyFeedbackTask = Task { [weak self, copiedText = currentTranslationText] in
+        let taskID = UUID()
+        selectionCopyFeedbackTaskID = taskID
+        let task = Task { [weak self, copiedText = currentTranslationText] in
+            defer {
+                if let self {
+                    self.selectionTaskRegistry.remove(id: taskID)
+                    if self.selectionCopyFeedbackTaskID == taskID {
+                        self.selectionCopyFeedbackTask = nil
+                        self.selectionCopyFeedbackTaskID = nil
+                    }
+                }
+            }
             try? await Task.sleep(for: .milliseconds(900))
             await MainActor.run {
-                guard let self, self.currentTranslationText == copiedText else { return }
+                guard let self,
+                      !self.isStopping,
+                      self.currentTranslationText == copiedText
+                else {
+                    return
+                }
                 self.selectionActionWindowController.showTranslation(self.currentTranslationText)
             }
         }
+        selectionCopyFeedbackTask = task
+        selectionTaskRegistry.register(task, id: taskID)
     }
 
     private func setHotkeyRecording(_ isRecording: Bool) {
-        guard isRecordingHotkey != isRecording else {
+        guard !isStopping, isRecordingHotkey != isRecording else {
             return
         }
 
@@ -1331,12 +1415,13 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
     }
 
     @objc func openSettings() {
+        guard !isStopping else { return }
         forceDismissSelectionActions(reason: "openSettings")
         showSettings(section: .general)
     }
 
     @objc func openAbout() {
-        guard !isMigrationMaintenanceActive else { return }
+        guard !isStopping, !isMigrationMaintenanceActive else { return }
         forceDismissSelectionActions(reason: "openAbout")
         aboutController.show()
     }

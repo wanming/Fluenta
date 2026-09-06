@@ -5,8 +5,10 @@ struct AutomaticUpdatePresentationState {
     var isSelectingMigrationSource: Bool
     var hasModalWindow: Bool
     var isSelectionPanelVisible: Bool
+    var isSelectionInteractionActive: Bool
     var isMenuTracking: Bool
     var isUpdateAlertPresenting: Bool
+    var isStopping: Bool
 
     var canPresent: Bool {
         !isMigrationMaintenanceActive
@@ -15,7 +17,9 @@ struct AutomaticUpdatePresentationState {
             && !isSelectingMigrationSource
             && !hasModalWindow
             && !isSelectionPanelVisible
+            && !isSelectionInteractionActive
             && !isMenuTracking
             && !isUpdateAlertPresenting
+            && !isStopping
     }
 }

@@ -35,6 +35,8 @@ public final class SelectionClipboardReader {
     public typealias DelayProvider = @MainActor (UInt64) async -> Void
     public typealias ShortcutReadWrapper = @MainActor (@escaping @MainActor () async -> String?) async -> String?
     public typealias SourceProcessValidator = @MainActor @Sendable (pid_t) -> Bool
+    typealias AlertVolumeGetter = @MainActor () -> Int?
+    typealias AlertVolumeSetter = @MainActor (Int) -> Void
 
     public static let syntheticCopyEventUserData: Int64 = 0x494E_4B4C_4554
 
@@ -56,6 +58,12 @@ public final class SelectionClipboardReader {
         var observedCopyChangeCount: Int?
     }
 
+    private struct PendingAlertVolumeRestore {
+        let token: UUID
+        let originalVolume: Int
+        let task: Task<Void, Never>
+    }
+
     private enum PasteboardReadResult {
         case text(String)
         case empty
@@ -72,13 +80,17 @@ public final class SelectionClipboardReader {
     private let copyMenuActionPerformer: CopyMenuActionPerformer
     private let copyShortcutSender: CopyShortcutSender
     private let delayProvider: DelayProvider
-    private let shortcutReadWrapper: ShortcutReadWrapper
+    private let shortcutReadWrapper: ShortcutReadWrapper?
+    private let alertVolumeGetter: AlertVolumeGetter
+    private let alertVolumeSetter: AlertVolumeSetter
+    private let alertVolumeRestoreDelayProvider: DelayProvider
     private var activeRead: ActiveRead?
     private var pasteboardTransaction: PasteboardTransaction?
     private var latestReadRequestToken: UUID?
     private var relinquishedTransactionTokens: Set<UUID> = []
+    private var pendingAlertVolumeRestore: PendingAlertVolumeRestore?
 
-    public init(
+    public convenience init(
         pasteboard: NSPasteboard = .general,
         eventSource: CGEventSource? = CGEventSource(stateID: .hidSystemState),
         pollIntervalNanoseconds: UInt64 = 5_000_000,
@@ -96,9 +108,49 @@ public final class SelectionClipboardReader {
         delayProvider: @escaping DelayProvider = { nanoseconds in
             try? await Task.sleep(nanoseconds: nanoseconds)
         },
-        shortcutReadWrapper: @escaping ShortcutReadWrapper = { operation in
-            await SelectionClipboardReader.systemWithMutedAlertVolume(operation)
-        }
+        shortcutReadWrapper: ShortcutReadWrapper? = nil
+    ) {
+        self.init(
+            pasteboard: pasteboard,
+            eventSource: eventSource,
+            pollIntervalNanoseconds: pollIntervalNanoseconds,
+            pollTimeoutNanoseconds: pollTimeoutNanoseconds,
+            sourceProcessValidator: sourceProcessValidator,
+            isTrusted: isTrusted,
+            copyMenuActionPerformer: copyMenuActionPerformer,
+            copyShortcutSender: copyShortcutSender,
+            delayProvider: delayProvider,
+            shortcutReadWrapper: shortcutReadWrapper,
+            alertVolumeGetter: { SelectionClipboardReader.currentAlertVolume() },
+            alertVolumeSetter: { SelectionClipboardReader.setAlertVolume($0) },
+            alertVolumeRestoreDelayProvider: { nanoseconds in
+                try? await Task.sleep(nanoseconds: nanoseconds)
+            }
+        )
+    }
+
+    init(
+        pasteboard: NSPasteboard = .general,
+        eventSource: CGEventSource? = CGEventSource(stateID: .hidSystemState),
+        pollIntervalNanoseconds: UInt64 = 5_000_000,
+        pollTimeoutNanoseconds: UInt64 = 400_000_000,
+        sourceProcessValidator: @escaping SourceProcessValidator = {
+            SelectionSourceValidator().isCurrent($0)
+        },
+        isTrusted: @escaping TrustChecker = { AXIsProcessTrusted() },
+        copyMenuActionPerformer: @escaping CopyMenuActionPerformer = {
+            SelectionClipboardReader.systemPerformCopyMenuAction(sourceProcessIdentifier: $0)
+        },
+        copyShortcutSender: @escaping CopyShortcutSender = {
+            try SelectionClipboardReader.systemSendCopyShortcut(eventSource: $0)
+        },
+        delayProvider: @escaping DelayProvider = { nanoseconds in
+            try? await Task.sleep(nanoseconds: nanoseconds)
+        },
+        shortcutReadWrapper: ShortcutReadWrapper? = nil,
+        alertVolumeGetter: @escaping AlertVolumeGetter,
+        alertVolumeSetter: @escaping AlertVolumeSetter,
+        alertVolumeRestoreDelayProvider: @escaping DelayProvider
     ) {
         self.pasteboard = pasteboard
         self.clipboardService = ClipboardService(pasteboard: pasteboard)
@@ -111,6 +163,9 @@ public final class SelectionClipboardReader {
         self.copyShortcutSender = copyShortcutSender
         self.delayProvider = delayProvider
         self.shortcutReadWrapper = shortcutReadWrapper
+        self.alertVolumeGetter = alertVolumeGetter
+        self.alertVolumeSetter = alertVolumeSetter
+        self.alertVolumeRestoreDelayProvider = alertVolumeRestoreDelayProvider
     }
 
     public func readSelectedText(
@@ -231,14 +286,14 @@ public final class SelectionClipboardReader {
 
     public func cancelActiveRead() async {
         latestReadRequestToken = nil
-        guard let activeRead else {
-            return
+        if let activeRead {
+            activeRead.task.cancel()
+            _ = await activeRead.task.value
+            if self.activeRead?.token == activeRead.token {
+                self.activeRead = nil
+            }
         }
-        activeRead.task.cancel()
-        _ = await activeRead.task.value
-        if self.activeRead?.token == activeRead.token {
-            self.activeRead = nil
-        }
+        await restorePendingAlertVolumeAndWait()
     }
 
     public func beginUserCopyHandoff() -> SelectionClipboardUserCopyHandoff {
@@ -404,7 +459,7 @@ public final class SelectionClipboardReader {
         }
 
         var pasteboardResult = PasteboardReadResult.empty
-        let wrappedText = await shortcutReadWrapper {
+        let readOperation: @MainActor () async -> String? = {
             pasteboardResult = await self.readPasteboardText(
                 token: token,
                 sourceProcessIdentifier: sourceProcessIdentifier
@@ -416,6 +471,12 @@ public final class SelectionClipboardReader {
                 return text
             }
             return nil
+        }
+        let wrappedText: String?
+        if let shortcutReadWrapper {
+            wrappedText = await shortcutReadWrapper(readOperation)
+        } else {
+            wrappedText = await withMutedAlertVolume(readOperation)
         }
 
         guard !Task.isCancelled else {
@@ -565,6 +626,11 @@ public final class SelectionClipboardReader {
         _ = clipboardService.restore(transaction.snapshot)
     }
 
+    @available(
+        *,
+        deprecated,
+        message: "Use reader-owned selection reads so shutdown can await alert-volume restoration."
+    )
     public static func systemWithMutedAlertVolume(
         _ operation: @escaping @MainActor () async -> String?
     ) async -> String? {
@@ -576,13 +642,57 @@ public final class SelectionClipboardReader {
         let result = await operation()
 
         if let originalVolume, originalVolume > 0 {
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                setAlertVolume(originalVolume)
-            }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            setAlertVolume(originalVolume)
         }
 
         return result
+    }
+
+    private func withMutedAlertVolume(
+        _ operation: @escaping @MainActor () async -> String?
+    ) async -> String? {
+        await restorePendingAlertVolumeAndWait()
+        let originalVolume = alertVolumeGetter()
+        if originalVolume != nil {
+            alertVolumeSetter(0)
+        }
+
+        let result = await operation()
+
+        if let originalVolume, originalVolume > 0 {
+            scheduleAlertVolumeRestore(originalVolume)
+        }
+
+        return result
+    }
+
+    private func scheduleAlertVolumeRestore(_ originalVolume: Int) {
+        let token = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.alertVolumeRestoreDelayProvider(1_000_000_000)
+            guard !Task.isCancelled,
+                  self.pendingAlertVolumeRestore?.token == token
+            else {
+                return
+            }
+            self.alertVolumeSetter(originalVolume)
+            self.pendingAlertVolumeRestore = nil
+        }
+        pendingAlertVolumeRestore = PendingAlertVolumeRestore(
+            token: token,
+            originalVolume: originalVolume,
+            task: task
+        )
+    }
+
+    private func restorePendingAlertVolumeAndWait() async {
+        guard let pendingAlertVolumeRestore else { return }
+        self.pendingAlertVolumeRestore = nil
+        pendingAlertVolumeRestore.task.cancel()
+        alertVolumeSetter(pendingAlertVolumeRestore.originalVolume)
+        await pendingAlertVolumeRestore.task.value
     }
 
     private static func currentAlertVolume() -> Int? {

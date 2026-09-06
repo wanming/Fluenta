@@ -1,1 +1,1 @@
-"NSMicrophoneUsageDescription" = "Inklet 僅在你啟動語音輸入時使用麥克風，並將錄音傳送到你設定的語音服務商進行轉寫。";
+"NSMicrophoneUsageDescription" = "有效長按聽寫快速鍵時，Inklet 會將麥克風音訊串流傳送至 OpenAI，並為該次工作階段保留一份暫時復原錄音。";

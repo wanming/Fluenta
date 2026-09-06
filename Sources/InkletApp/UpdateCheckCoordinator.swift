@@ -86,6 +86,7 @@ final class UpdateCheckCoordinator {
 
     private(set) var isChecking = false
     var onCheckingStateChange: (@MainActor (Bool) -> Void)?
+    var onPendingAutomaticUpdate: (@MainActor () -> Void)?
 
     private let automaticChecksEnabled: Bool
     private let currentVersion: String
@@ -93,7 +94,6 @@ final class UpdateCheckCoordinator {
     private let scheduler: any UpdateCheckOneShotScheduling
     private let presenter: any UpdateCheckPresenting
     private let now: @MainActor () -> Date
-    private let canPresentAutomatically: @MainActor () -> Bool
     private let check: Check
 
     private var isStarted = false
@@ -108,7 +108,6 @@ final class UpdateCheckCoordinator {
         scheduler: any UpdateCheckOneShotScheduling,
         presenter: any UpdateCheckPresenting,
         now: @escaping @MainActor () -> Date = Date.init,
-        canPresentAutomatically: @escaping @MainActor () -> Bool,
         check: @escaping Check
     ) {
         self.automaticChecksEnabled = automaticChecksEnabled
@@ -117,7 +116,6 @@ final class UpdateCheckCoordinator {
         self.scheduler = scheduler
         self.presenter = presenter
         self.now = now
-        self.canPresentAutomatically = canPresentAutomatically
         self.check = check
     }
 
@@ -161,17 +159,6 @@ final class UpdateCheckCoordinator {
         guard isStarted,
               activeRequest == nil,
               let pendingUpdate = pendingAutomaticUpdate
-        else {
-            return
-        }
-
-        let generation = lifecycleGeneration
-        let canPresent = canPresentAutomatically()
-        guard canPresent,
-              isStarted,
-              lifecycleGeneration == generation,
-              activeRequest == nil,
-              pendingAutomaticUpdate?.id == pendingUpdate.id
         else {
             return
         }
@@ -243,7 +230,7 @@ final class UpdateCheckCoordinator {
         if request.intents.contains(.manual) {
             presentManualOutcome(outcome, generation: generation)
         } else {
-            presentAutomaticOutcome(outcome, generation: generation)
+            presentAutomaticOutcome(outcome)
         }
     }
 
@@ -268,29 +255,16 @@ final class UpdateCheckCoordinator {
         }
     }
 
-    private func presentAutomaticOutcome(_ outcome: Outcome, generation: UInt64) {
+    private func presentAutomaticOutcome(_ outcome: Outcome) {
         switch outcome {
         case let .success(.updateAvailable(release)):
-            let pendingUpdateID = pendingAutomaticUpdate?.id
-            let canPresent = canPresentAutomatically()
-            guard isStarted,
-                  lifecycleGeneration == generation,
-                  activeRequest == nil,
-                  pendingAutomaticUpdate?.id == pendingUpdateID
-            else {
-                return
-            }
-
-            if canPresent {
-                pendingAutomaticUpdate = nil
-                presenter.presentUpdate(release, currentVersion: currentVersion)
-            } else {
-                pendingAutomaticUpdate = PendingAutomaticUpdate(release: release)
-            }
+            pendingAutomaticUpdate = PendingAutomaticUpdate(release: release)
+            onPendingAutomaticUpdate?()
         case .success(.upToDate):
             pendingAutomaticUpdate = nil
         case .failure:
-            presentPendingAutomaticUpdateIfPossible()
+            guard pendingAutomaticUpdate != nil else { return }
+            onPendingAutomaticUpdate?()
         }
     }
 

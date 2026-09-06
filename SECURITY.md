@@ -30,6 +30,8 @@ Inklet handles text that users type, select, transform, and paste. It also store
 - Accessibility and Microphone permission usage.
 - Selected text capture, local History retention, provider request construction, and realtime dictation audio.
 - Realtime transport authentication, including keeping the OpenAI API key in the Authorization header and out of URLs and diagnostics.
+- Legacy stored endpoint values are normalized to the fixed canonical endpoint. Recovery constructs a request only for the fixed canonical HTTPS URL `https://api.openai.com/v1/audio/transcriptions` and uses the same OpenAI API key as realtime dictation.
+- Recovery rejects both same-host and cross-host redirects before forwarding the Authorization header or audio.
 - The bounded in-memory PCM queue used while realtime dictation connects and streams.
 - Dictation terminal-session arbitration so completion, cancellation, failure, and late events cannot win more than once.
 - Realtime dictation requires temporary recovery-file deletion after success, no speech, fallback success or failure, Escape, focus loss, popover closure, supersession, migration maintenance, and app termination.

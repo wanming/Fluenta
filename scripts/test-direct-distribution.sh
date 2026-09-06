@@ -75,6 +75,28 @@ record_documentation_failure() {
   documentation_contract_failures+=("$1")
 }
 
+require_microphone_usage_description() {
+  local plist_path="$1"
+  local expected_description="$2"
+  local actual_description
+
+  if ! actual_description="$(
+    plutil -extract NSMicrophoneUsageDescription raw -o - "$plist_path" 2>/dev/null
+  )"; then
+    record_documentation_failure \
+      "${plist_path#"$repo_root"/} must contain an NSMicrophoneUsageDescription string."
+    return
+  fi
+  if [[ "$actual_description" != "$expected_description" ]]; then
+    record_documentation_failure \
+      "${plist_path#"$repo_root"/} must contain the exact approved microphone usage description."
+  fi
+  if plutil -extract NSAppleEventsUsageDescription raw -o - "$plist_path" >/dev/null 2>&1; then
+    record_documentation_failure \
+      "${plist_path#"$repo_root"/} must not contain Apple Events privacy copy."
+  fi
+}
+
 reject_active_guidance_text() {
   local stale_text="$1"
   local description="$2"
@@ -109,6 +131,18 @@ reject_active_guidance_text "语音写作助手" "已移除的独立语音写作
 reject_active_guidance_text "单击开始/停止" "已移除的单击切换录音"
 reject_active_guidance_text "双击开始/停止" "已移除的双击切换录音"
 reject_active_guidance_text \
+  "configured recovery endpoint" \
+  "the retired configurable recovery endpoint"
+reject_active_guidance_text \
+  "recovery endpoint and model" \
+  "the retired recovery endpoint and model settings"
+reject_active_guidance_text \
+  "恢复转写端点和模型" \
+  "已移除的恢复转写端点和模型设置"
+reject_active_guidance_pattern \
+  'voice[[:space:]-]+recording' \
+  "active voice recording wording"
+reject_active_guidance_text \
   "Selected text is kept in memory while the floating action is active" \
   "the obsolete selection-memory lifetime claim"
 reject_active_guidance_pattern \
@@ -118,6 +152,47 @@ reject_active_guidance_text "swift run Inklet" "swift run Inklet as a QA workflo
 for retired_script in "${retired_scripts[@]}"; do
   reject_active_guidance_text "$retired_script" "obsolete script ${retired_script}"
 done
+
+require_microphone_usage_description \
+  "${repo_root}/StoreSupport/Info.plist" \
+  "Inklet streams microphone audio to OpenAI during a valid Dictation hold and keeps a temporary recovery recording for that session."
+require_microphone_usage_description \
+  "${repo_root}/StoreSupport/InfoPlistStrings/en.lproj/InfoPlist.strings" \
+  "Inklet streams microphone audio to OpenAI during a valid Dictation hold and keeps a temporary recovery recording for that session."
+require_microphone_usage_description \
+  "${repo_root}/StoreSupport/InfoPlistStrings/zh-Hans.lproj/InfoPlist.strings" \
+  "有效长按听写快捷键时，Inklet 会将麦克风音频流式发送到 OpenAI，并为该次会话保留一份临时恢复录音。"
+require_microphone_usage_description \
+  "${repo_root}/StoreSupport/InfoPlistStrings/zh-Hant.lproj/InfoPlist.strings" \
+  "有效長按聽寫快速鍵時，Inklet 會將麥克風音訊串流傳送至 OpenAI，並為該次工作階段保留一份暫時復原錄音。"
+require_microphone_usage_description \
+  "${repo_root}/StoreSupport/InfoPlistStrings/ja.lproj/InfoPlist.strings" \
+  "有効な音声入力の長押し中、Inklet はマイク音声を OpenAI にストリーミングし、そのセッション用の一時的な復旧録音を保持します。"
+require_microphone_usage_description \
+  "${repo_root}/StoreSupport/InfoPlistStrings/ko.lproj/InfoPlist.strings" \
+  "유효한 받아쓰기 길게 누르기 동안 Inklet은 마이크 오디오를 OpenAI로 스트리밍하고 해당 세션의 임시 복구 녹음을 보관합니다."
+require_microphone_usage_description \
+  "${repo_root}/StoreSupport/InfoPlistStrings/es.lproj/InfoPlist.strings" \
+  "Durante una pulsación válida para Dictado, Inklet transmite el audio del micrófono a OpenAI y conserva una grabación temporal de recuperación para esa sesión."
+require_microphone_usage_description \
+  "${repo_root}/StoreSupport/InfoPlistStrings/fr.lproj/InfoPlist.strings" \
+  "Lors d’un appui valide pour la dictée, Inklet diffuse l’audio du microphone vers OpenAI et conserve un enregistrement temporaire de récupération pour cette session."
+require_microphone_usage_description \
+  "${repo_root}/StoreSupport/InfoPlistStrings/de.lproj/InfoPlist.strings" \
+  "Während du die Diktierfunktion gültig gedrückt hältst, streamt Inklet Mikrofonaudio an OpenAI und speichert für diese Sitzung eine temporäre Wiederherstellungsaufnahme."
+require_microphone_usage_description \
+  "${repo_root}/StoreSupport/InfoPlistStrings/pt.lproj/InfoPlist.strings" \
+  "Durante um pressionamento válido para Ditado, o Inklet transmite o áudio do microfone para a OpenAI e mantém uma gravação temporária de recuperação para essa sessão."
+require_microphone_usage_description \
+  "${repo_root}/StoreSupport/InfoPlistStrings/it.lproj/InfoPlist.strings" \
+  "Durante una pressione valida per la dettatura, Inklet trasmette l’audio del microfono a OpenAI e conserva una registrazione temporanea di recupero per la sessione."
+localized_info_plist_strings=(
+  "${repo_root}"/StoreSupport/InfoPlistStrings/*.lproj/InfoPlist.strings
+)
+if ((${#localized_info_plist_strings[@]} != 10)); then
+  record_documentation_failure \
+    "StoreSupport/InfoPlistStrings must contain exactly ten localized InfoPlist.strings files."
+fi
 
 markdown_prose_path() {
   local document_path="$1"
@@ -428,6 +503,14 @@ require_documentation_prose "$english_readme" \
 require_documentation_prose "$english_readme" \
   "Import Old Data" \
   "the Settings assisted-import fallback"
+for recovery_text in \
+  "Advanced Dictation exposes only the recovery model; the recovery endpoint is not editable." \
+  "https://api.openai.com/v1/audio/transcriptions" \
+  "same existing OpenAI API key used by realtime dictation" \
+  "remains local until the fallback request actually begins" \
+  "uploaded at most once"; do
+  require_documentation_prose "$english_readme" "$recovery_text" "$recovery_text"
+done
 for dictation_text in \
   "Open Writing Assistant" \
   "Confirm a Prompt Mode" \
@@ -496,6 +579,14 @@ require_documentation_prose "$chinese_readme" \
 require_documentation_prose "$chinese_readme" \
   "导入旧数据" \
   "Settings 中的辅助导入备用流程"
+for recovery_text in \
+  "高级听写只提供恢复模型，不提供端点设置；恢复端点不可编辑。" \
+  "https://api.openai.com/v1/audio/transcriptions" \
+  "实时听写所用的同一把现有 OpenAI API key" \
+  "在备用请求真正开始前始终只保存在本机" \
+  "最多上传一次"; do
+  require_documentation_prose "$chinese_readme" "$recovery_text" "$recovery_text"
+done
 for dictation_text in \
   "打开写作助手" \
   "确认一个 Prompt 模式" \
@@ -537,9 +628,9 @@ require_documentation_prose "$contributing" \
 
 privacy_policy="${repo_root}/docs/privacy-policy.md"
 privacy_update_lines="$(grep -E '^Last updated:' "$privacy_policy" || true)"
-if [[ "$privacy_update_lines" != "Last updated: August 30, 2026" ]]; then
+if [[ "$privacy_update_lines" != "Last updated: September 5, 2026" ]]; then
   record_documentation_failure \
-    "privacy-policy.md must contain exactly one current policy date: Last updated: August 30, 2026."
+    "privacy-policy.md must contain exactly one current policy date: Last updated: September 5, 2026."
 fi
 for privacy_text in \
   "~/Library/Application Support/com.tomwan.inklet/" \
@@ -561,8 +652,13 @@ for privacy_text in \
   "Accessibility" \
   "Microphone" \
   "Active microphone audio is streamed to OpenAI's Realtime transcription service as it is captured." \
+  "Dictation audio is sent only to OpenAI." \
   'one temporary local `.m4a` recovery recording' \
-  "only to the one file-transcription recovery attempt" \
+  "https://api.openai.com/v1/audio/transcriptions" \
+  "The recovery model is configurable, but the endpoint is not editable." \
+  "same existing OpenAI API key used by realtime dictation" \
+  "remains local until the fallback request actually begins" \
+  "uploaded at most once" \
   "does not log audio or transcript content, Authorization headers, microphone identifiers, or temporary file paths" \
   "Audio is never placed on the clipboard or stored in History." \
   "An unprocessed dictated draft creates no History entry." \
@@ -585,6 +681,11 @@ for security_text in \
   "bounded in-memory PCM" \
   "terminal-session arbitration" \
   "temporary recovery-file deletion" \
+  "Legacy stored endpoint values are normalized to the fixed canonical endpoint" \
+  "https://api.openai.com/v1/audio/transcriptions" \
+  "same OpenAI API key as realtime dictation" \
+  "same-host and cross-host redirects" \
+  "before forwarding the Authorization header or audio" \
   "audio payloads, transcript contents, Authorization headers, microphone identifiers, or temporary file paths" \
   "signed and notarized direct releases" \
   "release verifier"; do
@@ -639,6 +740,11 @@ for checklist_text in \
   "no draft-only History" \
   "legacy Voice History" \
   "phase-only announcements" \
+  "Advanced Dictation exposes only the recovery model" \
+  "recovery endpoint is not editable" \
+  "compare responsiveness with the prior local build" \
+  "speak immediately after holding" \
+  "the beginning of the utterance is preserved" \
   "rebuild and reinstall the local app twice"; do
   require_documentation_prose "$manual_checklist" "$checklist_text" "${checklist_text}"
 done

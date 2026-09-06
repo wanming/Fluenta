@@ -54,8 +54,9 @@ final class DirectDistributionContractTests: XCTestCase {
             infoPlist["NSMicrophoneUsageDescription"] as? String
         )
 
-        XCTAssertFalse(
-            microphoneUsageDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        XCTAssertEqual(
+            microphoneUsageDescription,
+            "Inklet streams microphone audio to OpenAI during a valid Dictation hold and keeps a temporary recovery recording for that session."
         )
         XCTAssertNil(infoPlist["NSAppleEventsUsageDescription"])
     }
@@ -63,18 +64,19 @@ final class DirectDistributionContractTests: XCTestCase {
     func testAllLocalizedInfoPlistStringsDeclareOnlyMicrophonePrivacyUsage() throws {
         let localizationsRoot = repositoryRoot
             .appendingPathComponent("StoreSupport/InfoPlistStrings", isDirectory: true)
-        let expectedLocalizationPaths: Set<String> = [
-            "de.lproj/InfoPlist.strings",
-            "en.lproj/InfoPlist.strings",
-            "es.lproj/InfoPlist.strings",
-            "fr.lproj/InfoPlist.strings",
-            "it.lproj/InfoPlist.strings",
-            "ja.lproj/InfoPlist.strings",
-            "ko.lproj/InfoPlist.strings",
-            "pt.lproj/InfoPlist.strings",
-            "zh-Hans.lproj/InfoPlist.strings",
-            "zh-Hant.lproj/InfoPlist.strings"
+        let expectedMicrophoneUsageDescriptions = [
+            "de.lproj/InfoPlist.strings": "Während du die Diktierfunktion gültig gedrückt hältst, streamt Inklet Mikrofonaudio an OpenAI und speichert für diese Sitzung eine temporäre Wiederherstellungsaufnahme.",
+            "en.lproj/InfoPlist.strings": "Inklet streams microphone audio to OpenAI during a valid Dictation hold and keeps a temporary recovery recording for that session.",
+            "es.lproj/InfoPlist.strings": "Durante una pulsación válida para Dictado, Inklet transmite el audio del micrófono a OpenAI y conserva una grabación temporal de recuperación para esa sesión.",
+            "fr.lproj/InfoPlist.strings": "Lors d’un appui valide pour la dictée, Inklet diffuse l’audio du microphone vers OpenAI et conserve un enregistrement temporaire de récupération pour cette session.",
+            "it.lproj/InfoPlist.strings": "Durante una pressione valida per la dettatura, Inklet trasmette l’audio del microfono a OpenAI e conserva una registrazione temporanea di recupero per la sessione.",
+            "ja.lproj/InfoPlist.strings": "有効な音声入力の長押し中、Inklet はマイク音声を OpenAI にストリーミングし、そのセッション用の一時的な復旧録音を保持します。",
+            "ko.lproj/InfoPlist.strings": "유효한 받아쓰기 길게 누르기 동안 Inklet은 마이크 오디오를 OpenAI로 스트리밍하고 해당 세션의 임시 복구 녹음을 보관합니다.",
+            "pt.lproj/InfoPlist.strings": "Durante um pressionamento válido para Ditado, o Inklet transmite o áudio do microfone para a OpenAI e mantém uma gravação temporária de recuperação para essa sessão.",
+            "zh-Hans.lproj/InfoPlist.strings": "有效长按听写快捷键时，Inklet 会将麦克风音频流式发送到 OpenAI，并为该次会话保留一份临时恢复录音。",
+            "zh-Hant.lproj/InfoPlist.strings": "有效長按聽寫快速鍵時，Inklet 會將麥克風音訊串流傳送至 OpenAI，並為該次工作階段保留一份暫時復原錄音。"
         ]
+        let expectedLocalizationPaths = Set(expectedMicrophoneUsageDescriptions.keys)
         let resourceKeys: Set<URLResourceKey> = [.isRegularFileKey]
         let enumerator = try XCTUnwrap(FileManager.default.enumerator(
             at: localizationsRoot,
@@ -120,9 +122,13 @@ final class DirectDistributionContractTests: XCTestCase {
                 "Missing microphone privacy copy in \(localizationURL.path)"
             )
 
-            XCTAssertFalse(
-                microphoneUsageDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                "Empty microphone privacy copy in \(localizationURL.path)"
+            let relativePath = localizationURL.pathComponents
+                .dropFirst(localizationsRoot.pathComponents.count)
+                .joined(separator: "/")
+            XCTAssertEqual(
+                microphoneUsageDescription,
+                expectedMicrophoneUsageDescriptions[relativePath],
+                "Unexpected microphone privacy copy in \(localizationURL.path)"
             )
             XCTAssertNil(
                 localizedStrings["NSAppleEventsUsageDescription"],
@@ -137,11 +143,16 @@ final class DirectDistributionContractTests: XCTestCase {
             $0.hasPrefix("Last updated:")
         }
 
-        XCTAssertEqual(updateLines, ["Last updated: August 30, 2026"])
+        XCTAssertEqual(updateLines, ["Last updated: September 5, 2026"])
         for required in [
             "Active microphone audio is streamed to OpenAI's Realtime transcription service as it is captured.",
+            "Dictation audio is sent only to OpenAI.",
             "one temporary local `.m4a` recovery recording",
-            "only to the one file-transcription recovery attempt",
+            "https://api.openai.com/v1/audio/transcriptions",
+            "The recovery model is configurable, but the endpoint is not editable.",
+            "same existing OpenAI API key used by realtime dictation",
+            "remains local until the fallback request actually begins",
+            "uploaded at most once",
             "success, no speech, fallback success or failure, Escape, focus loss, popover closure, supersession, migration maintenance, and app termination",
             "does not log audio or transcript content, Authorization headers, microphone identifiers, or temporary file paths",
             "Audio is never placed on the clipboard or stored in History.",
@@ -154,8 +165,33 @@ final class DirectDistributionContractTests: XCTestCase {
         }
 
         let distributionContract = try text(at: "scripts/test-direct-distribution.sh")
-        XCTAssertTrue(distributionContract.contains("Last updated: August 30, 2026"))
+        XCTAssertTrue(distributionContract.contains("Last updated: September 5, 2026"))
+        XCTAssertFalse(distributionContract.contains("Last updated: August 30, 2026"))
         XCTAssertFalse(distributionContract.contains("Last updated: August 12, 2026"))
+    }
+
+    func testReadmesDescribeFixedSingleRequestDictationRecovery() throws {
+        let english = try text(at: "README.md")
+        let chinese = try text(at: "README.zh-CN.md")
+
+        for required in [
+            "Advanced Dictation exposes only the recovery model; the recovery endpoint is not editable.",
+            "https://api.openai.com/v1/audio/transcriptions",
+            "same existing OpenAI API key used by realtime dictation",
+            "remains local until the fallback request actually begins",
+            "uploaded at most once",
+        ] {
+            XCTAssertTrue(english.contains(required), required)
+        }
+        for required in [
+            "高级听写只提供恢复模型，不提供端点设置；恢复端点不可编辑。",
+            "https://api.openai.com/v1/audio/transcriptions",
+            "实时听写所用的同一把现有 OpenAI API key",
+            "在备用请求真正开始前始终只保存在本机",
+            "最多上传一次",
+        ] {
+            XCTAssertTrue(chinese.contains(required), required)
+        }
     }
 
     func testReadmesDescribeMergedHoldOnlyWritingDictationAndRejectStandaloneWorkflow() throws {
@@ -230,6 +266,11 @@ final class DirectDistributionContractTests: XCTestCase {
             "bounded in-memory PCM",
             "terminal-session arbitration",
             "temporary recovery-file deletion",
+            "Legacy stored endpoint values are normalized to the fixed canonical endpoint",
+            "https://api.openai.com/v1/audio/transcriptions",
+            "same OpenAI API key as realtime dictation",
+            "same-host and cross-host redirects",
+            "before forwarding the Authorization header or audio",
             "audio payloads, transcript contents, Authorization headers, microphone identifiers, or temporary file paths",
         ] {
             XCTAssertTrue(security.contains(required), required)
@@ -249,6 +290,11 @@ final class DirectDistributionContractTests: XCTestCase {
             "no draft-only History",
             "legacy Voice History",
             "phase-only announcements",
+            "Advanced Dictation exposes only the recovery model",
+            "recovery endpoint is not editable",
+            "compare responsiveness with the prior local build",
+            "speak immediately after holding",
+            "the beginning of the utterance is preserved",
         ] {
             XCTAssertTrue(checklist.contains(required), required)
         }

@@ -21,7 +21,13 @@ final class SelectionCopyEventTap {
 
     typealias MouseLocationProvider = @MainActor () -> SelectionPoint
     typealias TapEnableHandler = @MainActor (CFMachPort?, Bool) -> Void
+    typealias InteractionHandler = @MainActor () -> Void
     typealias CopyTriggerHandler = @MainActor (Trigger) -> Void
+    typealias ExpiryCancellation = @MainActor () -> Void
+    typealias ExpiryScheduler = @MainActor (
+        _ delay: TimeInterval,
+        _ action: @escaping @MainActor () -> Void
+    ) -> ExpiryCancellation
 
     static let tapLocation: CGEventTapLocation = .cgAnnotatedSessionEventTap
     static let tapPlacement: CGEventTapPlacement = .headInsertEventTap
@@ -31,8 +37,14 @@ final class SelectionCopyEventTap {
 
     private let mouseLocationProvider: MouseLocationProvider
     private let tapEnableHandler: TapEnableHandler
+    private let expiryScheduler: ExpiryScheduler
+    private var onInteractionBegin: InteractionHandler?
+    private var onInteractionEnd: InteractionHandler?
     private var onCopyTrigger: CopyTriggerHandler?
     private var copyTriggerPolicy = SelectionCopyTriggerPolicy()
+    private var expiryCancellation: ExpiryCancellation?
+    private var expiryGeneration = 0
+    private var isCopyInteractionActive = false
     private var eventTap: CFMachPort?
     private var eventTapSource: CFRunLoopSource?
 
@@ -44,20 +56,34 @@ final class SelectionCopyEventTap {
             guard let eventTap else { return }
             CGEvent.tapEnable(tap: eventTap, enable: enabled)
         },
+        expiryScheduler: @escaping ExpiryScheduler = SelectionCopyEventTap.scheduleExpiry,
+        onInteractionBegin: InteractionHandler? = nil,
+        onInteractionEnd: InteractionHandler? = nil,
         onCopyTrigger: CopyTriggerHandler? = nil
     ) {
         self.mouseLocationProvider = mouseLocationProvider
         self.tapEnableHandler = tapEnableHandler
+        self.expiryScheduler = expiryScheduler
+        self.onInteractionBegin = onInteractionBegin
+        self.onInteractionEnd = onInteractionEnd
         self.onCopyTrigger = onCopyTrigger
     }
 
     @discardableResult
-    func start(onCopyTrigger: @escaping CopyTriggerHandler) -> Bool {
+    func start(
+        onInteractionBegin: @escaping InteractionHandler,
+        onInteractionEnd: @escaping InteractionHandler,
+        onCopyTrigger: @escaping CopyTriggerHandler
+    ) -> Bool {
         guard eventTap == nil else {
+            self.onInteractionBegin = onInteractionBegin
+            self.onInteractionEnd = onInteractionEnd
             self.onCopyTrigger = onCopyTrigger
             return true
         }
 
+        self.onInteractionBegin = onInteractionBegin
+        self.onInteractionEnd = onInteractionEnd
         self.onCopyTrigger = onCopyTrigger
         let userInfo = Unmanaged.passUnretained(self).toOpaque()
         guard let eventTap = CGEvent.tapCreate(
@@ -68,6 +94,8 @@ final class SelectionCopyEventTap {
             callback: Self.eventTapCallback,
             userInfo: userInfo
         ) else {
+            self.onInteractionBegin = nil
+            self.onInteractionEnd = nil
             self.onCopyTrigger = nil
             SelectionActionDiagnostics.log("copy event tap unavailable")
             return false
@@ -76,6 +104,8 @@ final class SelectionCopyEventTap {
         guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0) else {
             tapEnableHandler(eventTap, false)
             CFMachPortInvalidate(eventTap)
+            self.onInteractionBegin = nil
+            self.onInteractionEnd = nil
             self.onCopyTrigger = nil
             SelectionActionDiagnostics.log("copy event tap source unavailable")
             return false
@@ -89,6 +119,9 @@ final class SelectionCopyEventTap {
     }
 
     func stop() {
+        cancelExpiry()
+        copyTriggerPolicy.reset()
+        endCopyInteractionIfNeeded()
         if let eventTapSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), eventTapSource, .commonModes)
         }
@@ -98,8 +131,9 @@ final class SelectionCopyEventTap {
         }
         eventTapSource = nil
         eventTap = nil
+        onInteractionBegin = nil
+        onInteractionEnd = nil
         onCopyTrigger = nil
-        copyTriggerPolicy = SelectionCopyTriggerPolicy()
     }
 
     func handleEvent(
@@ -147,13 +181,69 @@ final class SelectionCopyEventTap {
             isRepeat: fields.isRepeat,
             isInkletGenerated: isSynthetic
         )
-        guard case .triggered = decision else { return }
+        switch decision {
+        case .armed:
+            beginCopyInteractionIfNeeded()
+            scheduleExpiry()
+        case .triggered:
+            cancelExpiry()
+            defer { endCopyInteractionIfNeeded() }
+            onCopyTrigger?(Trigger(
+                sourceProcessIdentifier: fields.targetProcessIdentifier,
+                point: mouseLocationProvider(),
+                timestamp: fields.timestamp
+            ))
+        case .ignoredRepeat, .ignoredGenerated, .awaitingKeyUp:
+            break
+        }
+    }
 
-        onCopyTrigger?(Trigger(
-            sourceProcessIdentifier: fields.targetProcessIdentifier,
-            point: mouseLocationProvider(),
-            timestamp: fields.timestamp
-        ))
+    private func beginCopyInteractionIfNeeded() {
+        guard !isCopyInteractionActive else { return }
+        isCopyInteractionActive = true
+        onInteractionBegin?()
+    }
+
+    private func endCopyInteractionIfNeeded() {
+        guard isCopyInteractionActive else { return }
+        isCopyInteractionActive = false
+        onInteractionEnd?()
+    }
+
+    private func scheduleExpiry() {
+        cancelExpiry()
+        let generation = expiryGeneration
+        expiryCancellation = expiryScheduler(0.8) { [weak self] in
+            guard let self, self.expiryGeneration == generation else { return }
+            self.expiryGeneration &+= 1
+            self.expiryCancellation = nil
+            self.copyTriggerPolicy.reset()
+            self.endCopyInteractionIfNeeded()
+        }
+    }
+
+    private func cancelExpiry() {
+        expiryGeneration &+= 1
+        expiryCancellation?()
+        expiryCancellation = nil
+    }
+
+    private static func scheduleExpiry(
+        after delay: TimeInterval,
+        action: @escaping @MainActor () -> Void
+    ) -> ExpiryCancellation {
+        let task = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(delay))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            action()
+        }
+        return {
+            task.cancel()
+        }
     }
 
     private nonisolated static func eventFields(

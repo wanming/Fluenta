@@ -482,13 +482,6 @@ final class SettingsViewModel: ObservableObject {
                     return false
                 }
                 config.providerID = LLMProviderPreset.openAI.id
-                guard let speechEndpoint = URL(string: config.voiceInput.speechEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
-                      speechEndpoint.scheme?.hasPrefix("http") == true,
-                      speechEndpoint.host != nil
-                else {
-                    message = L10n.text("settings.error.invalidFallbackSpeechEndpoint")
-                    return false
-                }
 
                 _ = try Hotkey.parse(config.hotkey)
                 try configStore.save(config)
@@ -1222,17 +1215,6 @@ struct SettingsView: View {
 
             DisclosureGroup {
                 VStack(alignment: .leading, spacing: 12) {
-                    settingsRow(
-                        L10n.text("settings.row.fallbackSpeechEndpoint"),
-                        help: L10n.text("settings.help.fallbackSpeechEndpoint")
-                    ) {
-                        TextField(
-                            VoiceInputConfig.defaultSpeechEndpoint,
-                            text: $model.config.voiceInput.speechEndpoint
-                        )
-                        .textFieldStyle(.roundedBorder)
-                    }
-
                     settingsRow(
                         L10n.text("settings.row.fallbackSpeechModel"),
                         help: L10n.text("settings.help.fallbackSpeechModel")

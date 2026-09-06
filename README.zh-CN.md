@@ -28,7 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/wanming/Inklet/main/scripts/install
 
 Inklet 仅通过 GitHub Releases 检查更新。正式版大约每 24 小时从 GitHub 获取一次最新稳定版的公开元数据。只有该 release 已上传 `Inklet.dmg` 时才会提示更新；选择**在 GitHub 上查看**会打开这个 release 的准确页面。Inklet 不会自动下载或安装更新。
 
-正式版和 Inklet Local 都可以从 App 菜单选择**检查更新…**手动检查；Inklet Local 不会安排自动检查。自动检查失败时保持静默，手动检查失败时可选择**重试**。写作、语音、选区动作、迁移、模态窗口或已打开的菜单使 Inklet 忙碌时，自动更新提示会等到 App 空闲后再显示。
+正式版和 Inklet Local 都可以从 App 菜单选择**检查更新…**手动检查；Inklet Local 不会安排自动检查。自动检查失败时保持静默，手动检查失败时可选择**重试**。写作、听写、选区动作、迁移、模态窗口或已打开的菜单使 Inklet 忙碌时，自动更新提示会等到 App 空闲后再显示。
 
 ## 首次设置
 
@@ -36,7 +36,7 @@ Inklet 仅通过 GitHub Releases 检查更新。正式版大约每 24 小时从 
 2. 点击菜单栏里的 Inklet 图标，打开 Settings。
 3. 按 macOS 提示授予 Accessibility 权限。Inklet 用这一个通用权限读取选区、执行已配置的复制备用流程、回到上一个应用并粘贴确认后的结果。系统设置打开期间 Inklet 会留在后台；关闭系统设置后 Inklet 会返回 General 设置页。
 4. 在 General 中填写 OpenAI API key。Inklet 会用这一把 key 处理写作、实时听写、选区翻译和发音。
-5. 在 Writing Assistant 中配置模型、写作快捷键、生成参数、Prompt 模式、听写长按快捷键和麦克风。高级听写只提供一次恢复所用的端点和模型；实时模型由 Inklet 固定。
+5. 在 Writing Assistant 中配置模型、写作快捷键、生成参数、Prompt 模式、听写长按快捷键和麦克风。高级听写只提供恢复模型，不提供端点设置；恢复端点不可编辑。实时模型由 Inklet 固定。
 6. 可选：在 Selection Assistant 中配置翻译语言、强制取词模式、AI 发音声音和发音速度，并在设置中试听该声音。
 7. 第一次有效长按听写快捷键时授予 Microphone 权限。只打开 Inklet、查看 Settings，或在原文编辑器之外按快捷键都不会请求权限。
 
@@ -57,7 +57,7 @@ Inklet 仅通过 GitHub Releases 检查更新。正式版大约每 24 小时从 
 2. **确认一个 Prompt 模式**。模式选择器和结果编辑器中不能开始听写。
 3. **把光标放入原文草稿，或选中要替换的文本。** 听写会在光标处插入，或替换选区。
 4. **长按已配置的听写快捷键**（默认 Right Option）并正常说话，转写草稿会原位更新。短按不会执行任何操作。如果实时连接失败，继续长按并说话，Inklet 会保留一份临时恢复录音。
-5. **松开以完成转写**。Inklet 最多进行一次文件转写恢复尝试，并在听写会话结束时删除临时录音。
+5. **松开以完成转写**。需要恢复时，Inklet 会使用实时听写所用的同一把现有 OpenAI API key，只向 `https://api.openai.com/v1/audio/transcriptions` 发出一个请求。临时录音在备用请求真正开始前始终只保存在本机，最多上传一次，并在听写会话结束时删除。
 6. 检查并编辑听写草稿。听写本身不会运行 Prompt 模式，也不会把文本插入其他 App。
 7. **准备好后再按 Return** 运行已确认的 Prompt 模式；只有要插入结果时才再按一次 Return。
 
@@ -79,7 +79,7 @@ Inklet 仅通过 GitHub Releases 检查更新。正式版大约每 24 小时从 
 - 默认关闭模拟 `Command+C`。菜单复制仍是安全的强制取词备用方式；对于没有可用复制菜单的 App，可以显式开启模拟复制这一高级备用选项，但它可能干扰游戏、远程桌面或虚拟机。
 - 临时剪贴板读取会串行执行。只有同一次读取仍持有已观察到的复制结果时，Inklet 才恢复之前的快照；较新的剪贴板内容优先。双击复制触发是被动流程：它只读取用户已经完成的复制，不会再发一次合成复制，也不会恢复更旧的剪贴板数据。右键点击保留原生行为，不会开始选区读取。
 - 不包含浏览器专用的选区代码，也不会请求浏览器 Automation。Chrome、Safari、Edge 和原生 App 使用同一条通用流程。
-- 可以编辑 Prompt 模式、OpenAI 模型、timeout、写作快捷键、听写长按快捷键、麦克风、恢复转写端点和模型、选区翻译语言、选区 Translate prompt、强制取词模式、模拟复制权限、AI 发音声音和 AI 发音速度。
+- 可以编辑 Prompt 模式、OpenAI 模型、timeout、写作快捷键、听写长按快捷键、麦克风、恢复模型、选区翻译语言、选区 Translate prompt、强制取词模式、模拟复制权限、AI 发音声音和 AI 发音速度。
 - 在本地 History 中查看成功的写作和选区结果，连续重复项会自动合并，原文/结果文本可选择，可一键复制结果或清空全部历史；旧版 Voice History 仍可读取。
 - 使用一把共享的 OpenAI API key 处理写作、实时听写、选区翻译和发音。
 - 提供英文、简体中文、繁体中文、日文、韩文、西班牙文、法文、德文、葡萄牙文和意大利文应用界面。
@@ -173,7 +173,7 @@ docs/                    手动测试说明和隐私政策
 ## 隐私
 
 - Inklet 使用你配置的 OpenAI API key 调用 OpenAI，处理写作、实时听写、选区翻译和发音。
-- 长按听写快捷键期间，活动麦克风音频会直接流式发送到 OpenAI Realtime 转写服务。Inklet 还会保存一份临时本地恢复录音，仅在需要时用于一次恢复尝试，并在会话结束时删除。
+- 长按听写快捷键期间，活动麦克风音频会直接流式发送到 OpenAI Realtime 转写服务。Inklet 还会保存一份临时本地恢复录音；它在备用请求真正开始前始终只保存在本机，最多上传一次到 `https://api.openai.com/v1/audio/transcriptions`，使用实时听写所用的同一把现有 OpenAI API key，并在每个会话终止路径中删除。
 - OpenAI API key 存储在你的 Mac 本地。
 - Inklet 使用 Accessibility 权限完成通用选区读取、按设置启用的复制备用流程、回到上一个应用并粘贴文本。
 - Inklet 只在写作助手原文编辑器内有效长按听写快捷键时使用 Microphone 权限。听写完成后仍停留在可编辑草稿，不会插入其他 App。

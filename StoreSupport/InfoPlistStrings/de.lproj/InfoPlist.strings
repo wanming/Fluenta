@@ -1,1 +1,1 @@
-"NSMicrophoneUsageDescription" = "Inklet verwendet das Mikrofon nur, wenn du die Spracheingabe startest, und sendet die Aufnahme zur Transkription an den konfigurierten Sprachanbieter.";
+"NSMicrophoneUsageDescription" = "Während du die Diktierfunktion gültig gedrückt hältst, streamt Inklet Mikrofonaudio an OpenAI und speichert für diese Sitzung eine temporäre Wiederherstellungsaufnahme.";
