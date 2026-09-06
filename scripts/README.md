@@ -7,6 +7,18 @@ This directory is split by workflow. Prefer the smallest script that matches the
 - `build-macos-app-bundle.sh` builds and signs an Inklet `.app` in `dist/direct/` by default. Pass `INKLET_OUTPUT_DIR` to select another output directory.
 - `verify-direct-app.sh` checks a direct-distribution bundle's identifier, signature, Hardened Runtime, entitlements, privacy metadata, and release signing policy.
 
+## Release Version Checks
+
+Before each app bundle build, increase both values in the root `VERSION` file. Keep `INKLET_BUILD_NUMBER` a positive integer greater than every previously used build number; never reset it when `INKLET_VERSION` changes. Fetch the latest `main` and tags, inspect all GitHub releases including drafts and prereleases, and coordinate with active worktrees before choosing the next number.
+
+`check-release-build-number.py` validates `VERSION` and rejects a candidate build number that is less than or equal to any existing `vX.Y.Z-N` tag's build number. Provide a text file with one tag per line, containing all Git tags and all GitHub release tag names, including drafts and prereleases:
+
+```bash
+python3 scripts/check-release-build-number.py VERSION /path/to/release-tags.txt
+```
+
+The script does not fetch tags or modify `VERSION`. The serialized DMG workflow gathers Git tags and all release tags, then runs this check before building. After packaging, verify the app's `CFBundleShortVersionString` and `CFBundleVersion` match `VERSION`, the release tag/title, and the versioned DMG filename. Correct embedded metadata by rebuilding, signing, notarizing, and regenerating checksums; renaming a release or artifact alone is insufficient.
+
 ## Public Install
 
 - `install.sh` downloads the latest notarized GitHub Releases DMG, verifies its checksum, Gatekeeper acceptance, and app signature, then installs Inklet.

@@ -106,6 +106,10 @@ Inklet is an early MVP. The repository currently includes:
 
 ## Build And Run
 
+Before each app bundle build, increase both `INKLET_VERSION` and `INKLET_BUILD_NUMBER` in the root `VERSION` file. Normally increment the patch version; use minor or major increments for larger changes. The build number must remain a positive integer greater than every previously used build number, including across marketing versions. Check the latest `main`, Git tags, all GitHub releases (including drafts), and active worktrees before choosing it. Inklet uses this build number alone to decide whether an update is newer.
+
+The DMG workflow checks for reused or lower build numbers before building; it does not increment either value automatically. See [release version checks](scripts/README.md#release-version-checks) for manual validation. Changing a packaged app's version requires rebuilding, signing, notarizing, and regenerating checksums; changing only the release title or filename does not update the app.
+
 From the repository root:
 
 ```bash

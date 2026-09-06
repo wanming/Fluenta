@@ -17,6 +17,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: inklet-dmg-release
+  cancel-in-progress: false
+
 jobs:
   build-dmg:
     name: Build and publish DMG
@@ -25,6 +29,22 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
+
+      - name: Test release build number checks
+        run: python3 scripts/test-release-build-number.py
+
+      - name: Check release build number
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_tags="$RUNNER_TEMP/inklet-release-tags.txt"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[].tag_name' > "$release_tags"
+          git ls-remote --tags --refs origin | \
+            awk '{ sub(/^refs\/tags\//, "", $2); print $2 }' >> "$release_tags"
+          python3 scripts/check-release-build-number.py VERSION "$release_tags"
 
       - name: Resolve release metadata
         id: release
