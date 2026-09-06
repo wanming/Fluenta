@@ -148,7 +148,8 @@ final class LegacyMigrationAppSourceTests: XCTestCase {
         )
 
         XCTAssertTrue(initializer.contains("windowController.onBusyChange = { [weak self] _ in"))
-        XCTAssertTrue(initializer.contains("self?.refreshMigrationImportEligibility()"))
+        XCTAssertTrue(initializer.contains("guard let self, !self.isStopping else { return }"))
+        XCTAssertTrue(initializer.contains("self.refreshMigrationImportEligibility()"))
     }
 
     func testCoordinatorFreezesAllMutationSurfacesAndRechecksBusyState() throws {
@@ -210,8 +211,9 @@ final class LegacyMigrationAppSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("selectionTranslationTask?.cancel()"))
         XCTAssertTrue(source.contains("selectionTTSTask?.cancel()"))
         XCTAssertTrue(source.contains("speechPlaybackService.stop()"))
-        XCTAssertTrue(source.contains("guard !isMigrationMaintenanceActive"))
-        XCTAssertTrue(copyTrigger.contains("selectionReadTask = Task"))
+        XCTAssertTrue(source.contains("guard !isStopping, !isMigrationMaintenanceActive"))
+        XCTAssertTrue(copyTrigger.contains("let task = Task"))
+        XCTAssertTrue(copyTrigger.contains("selectionTaskRegistry.register(task, id: taskID)"))
         try assertTokensAppearInOrder(
             [
                 "settingsController.setMigrationMaintenanceActive(true)",
@@ -231,7 +233,7 @@ final class LegacyMigrationAppSourceTests: XCTestCase {
         try assertTokensAppearInOrder(
             [
                 "readSelectedTextForAutomaticSelection()",
-                "guard !Task.isCancelled, !isMigrationMaintenanceActive else { return }",
+                "guard !Task.isCancelled, !isStopping, !isMigrationMaintenanceActive else { return }",
                 "handleSelectionActionEffects",
             ],
             in: String(scheduledRead)
@@ -239,7 +241,7 @@ final class LegacyMigrationAppSourceTests: XCTestCase {
         try assertTokensAppearInOrder(
             [
                 "let translated = try await service.translate",
-                "guard !Task.isCancelled, !isMigrationMaintenanceActive else { return }",
+                "guard !Task.isCancelled, !isStopping, !isMigrationMaintenanceActive else { return }",
                 "historyStore.append",
             ],
             in: String(translation)
@@ -247,13 +249,13 @@ final class LegacyMigrationAppSourceTests: XCTestCase {
         try assertTokensAppearInOrder(
             [
                 "let audioData = try await provider.speechAudio",
-                "guard !Task.isCancelled, !isMigrationMaintenanceActive else { return }",
+                "guard !Task.isCancelled, !isStopping, !isMigrationMaintenanceActive else { return }",
                 "speechPlaybackService.play",
             ],
             in: String(pronunciation)
         )
         XCTAssertTrue(
-            pronunciationRestore.contains("guard !isMigrationMaintenanceActive else { return }")
+            pronunciationRestore.contains("guard !isStopping, !isMigrationMaintenanceActive else { return }")
         )
     }
 

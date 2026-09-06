@@ -3,6 +3,15 @@ import XCTest
 @testable import InkletCore
 
 final class SelectionClipboardReaderTests: XCTestCase {
+    @available(*, deprecated, message: "Exercises the deprecated compatibility API.")
+    @MainActor
+    func testLegacySystemMutedAlertVolumeWrapperRemainsSourceCompatible() {
+        let wrapper: @MainActor (@escaping @MainActor () async -> String?) async -> String? =
+            SelectionClipboardReader.systemWithMutedAlertVolume
+
+        _ = wrapper
+    }
+
     @MainActor
     func testMenuActionReadsChangedPasteboardAndRestoresOriginalItems() async throws {
         let pasteboard = NSPasteboard.withUniqueName()
@@ -312,6 +321,197 @@ final class SelectionClipboardReaderTests: XCTestCase {
 
         XCTAssertEqual(result, .emptySelection)
         XCTAssertEqual(pasteboard.string(forType: .string), "Original clipboard")
+    }
+
+    @MainActor
+    func testCancelActiveReadRestoresOwnedClipboardBeforeReturning() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("Original clipboard", forType: .string)
+        let pollingStarted = expectation(description: "owned copy entered polling")
+        var didStartPolling = false
+
+        let reader = SelectionClipboardReader(
+            pasteboard: pasteboard,
+            pollIntervalNanoseconds: 1_000_000_000,
+            pollTimeoutNanoseconds: 60_000_000_000,
+            sourceProcessValidator: { _ in true },
+            isTrusted: { true },
+            copyMenuActionPerformer: { _ in
+                pasteboard.clearContents()
+                return .performed
+            },
+            delayProvider: { _ in
+                guard !didStartPolling else { return }
+                didStartPolling = true
+                pollingStarted.fulfill()
+                while !Task.isCancelled {
+                    await Task.yield()
+                }
+            },
+            shortcutReadWrapper: { operation in await operation() }
+        )
+        let readTask = Task { @MainActor in
+            await reader.readSelectedText(
+                sourceProcessIdentifier: 42,
+                forceSelectionMode: .menuCopyOnly
+            )
+        }
+        await fulfillment(of: [pollingStarted], timeout: 1)
+
+        await reader.cancelActiveRead()
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "Original clipboard")
+        let readResult = await readTask.value
+        XCTAssertEqual(readResult, .emptySelection)
+    }
+
+    @MainActor
+    func testCancelActiveReadPreservesExternalClipboardChangeBeforeReturning() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("Original clipboard", forType: .string)
+        let pollingStarted = expectation(description: "owned copy entered polling")
+        var didStartPolling = false
+
+        let reader = SelectionClipboardReader(
+            pasteboard: pasteboard,
+            pollIntervalNanoseconds: 1_000_000_000,
+            pollTimeoutNanoseconds: 60_000_000_000,
+            sourceProcessValidator: { _ in true },
+            isTrusted: { true },
+            copyMenuActionPerformer: { _ in
+                pasteboard.clearContents()
+                return .performed
+            },
+            delayProvider: { _ in
+                guard !didStartPolling else { return }
+                didStartPolling = true
+                pollingStarted.fulfill()
+                while !Task.isCancelled {
+                    await Task.yield()
+                }
+            },
+            shortcutReadWrapper: { operation in await operation() }
+        )
+        let readTask = Task { @MainActor in
+            await reader.readSelectedText(
+                sourceProcessIdentifier: 42,
+                forceSelectionMode: .menuCopyOnly
+            )
+        }
+        await fulfillment(of: [pollingStarted], timeout: 1)
+        pasteboard.clearContents()
+        pasteboard.setString("External clipboard", forType: .string)
+
+        await reader.cancelActiveRead()
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "External clipboard")
+        let readResult = await readTask.value
+        XCTAssertEqual(readResult, .emptySelection)
+    }
+
+    @MainActor
+    func testCancelActiveReadRestoresMutedVolumeWhileReadIsActive() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("Original clipboard", forType: .string)
+        let pollingStarted = expectation(description: "shortcut copy entered polling")
+        var didStartPolling = false
+        var alertVolume = 40
+        var assignedVolumes: [Int] = []
+        let reader = SelectionClipboardReader(
+            pasteboard: pasteboard,
+            pollIntervalNanoseconds: 1_000_000_000,
+            pollTimeoutNanoseconds: 60_000_000_000,
+            sourceProcessValidator: { _ in true },
+            isTrusted: { true },
+            copyShortcutSender: { _ in
+                pasteboard.clearContents()
+            },
+            delayProvider: { _ in
+                guard !didStartPolling else { return }
+                didStartPolling = true
+                pollingStarted.fulfill()
+                while !Task.isCancelled {
+                    await Task.yield()
+                }
+            },
+            shortcutReadWrapper: nil,
+            alertVolumeGetter: { alertVolume },
+            alertVolumeSetter: { volume in
+                alertVolume = volume
+                assignedVolumes.append(volume)
+            },
+            alertVolumeRestoreDelayProvider: { _ in
+                while !Task.isCancelled {
+                    await Task.yield()
+                }
+            }
+        )
+        let readTask = Task { @MainActor in
+            await reader.readSelectedText(
+                sourceProcessIdentifier: 42,
+                forceSelectionMode: .shortcutThenMenuCopy
+            )
+        }
+        await fulfillment(of: [pollingStarted], timeout: 1)
+        XCTAssertEqual(alertVolume, 0)
+
+        await reader.cancelActiveRead()
+
+        let result = await readTask.value
+        XCTAssertEqual(result, .emptySelection)
+        XCTAssertEqual(alertVolume, 40)
+        XCTAssertEqual(assignedVolumes, [0, 40])
+    }
+
+    @MainActor
+    func testCancelActiveReadJoinsPendingVolumeRestoreAfterReadHasFinished() async {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("Original clipboard", forType: .string)
+        let restoreDelayStarted = expectation(description: "delayed volume restore started")
+        var alertVolume = 35
+        var assignedVolumes: [Int] = []
+        let reader = SelectionClipboardReader(
+            pasteboard: pasteboard,
+            sourceProcessValidator: { _ in true },
+            isTrusted: { true },
+            copyShortcutSender: { _ in
+                pasteboard.clearContents()
+                pasteboard.setString("Shortcut selection", forType: .string)
+            },
+            delayProvider: { _ in },
+            shortcutReadWrapper: nil,
+            alertVolumeGetter: { alertVolume },
+            alertVolumeSetter: { volume in
+                alertVolume = volume
+                assignedVolumes.append(volume)
+            },
+            alertVolumeRestoreDelayProvider: { _ in
+                restoreDelayStarted.fulfill()
+                while !Task.isCancelled {
+                    await Task.yield()
+                }
+            }
+        )
+
+        let result = await reader.readSelectedText(
+            sourceProcessIdentifier: 42,
+            forceSelectionMode: .shortcutThenMenuCopy
+        )
+        XCTAssertEqual(result, .success("Shortcut selection"))
+        XCTAssertEqual(alertVolume, 0)
+        await fulfillment(of: [restoreDelayStarted], timeout: 1)
+
+        await reader.cancelActiveRead()
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(alertVolume, 35)
+        XCTAssertEqual(assignedVolumes, [0, 35])
     }
 
     @MainActor
