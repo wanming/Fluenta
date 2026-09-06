@@ -312,7 +312,10 @@ final class ConfigStoreTests: XCTestCase {
             XCTAssertEqual(AppConfig.currentVersion, 4)
             XCTAssertEqual(config.version, 4)
             XCTAssertEqual(config.voiceInput.shortcut, .rightCommand)
-            XCTAssertEqual(config.voiceInput.speechEndpoint, "https://fallback.example/transcribe")
+            XCTAssertEqual(
+                config.voiceInput.speechEndpoint,
+                VoiceInputConfig.defaultSpeechEndpoint
+            )
             XCTAssertEqual(config.voiceInput.speechModel, "legacy-model")
             XCTAssertEqual(config.voiceInput.microphoneDeviceID, "legacy-mic")
         }

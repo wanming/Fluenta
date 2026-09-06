@@ -15,18 +15,17 @@ public struct VoiceInputConfig: Codable, Equatable, Sendable {
     }
 
     public var shortcut: Shortcut
-    public var speechEndpoint: String
+    public private(set) var speechEndpoint: String
     public var speechModel: String
     public var microphoneDeviceID: String?
 
     public init(
         shortcut: Shortcut,
-        speechEndpoint: String,
         speechModel: String,
         microphoneDeviceID: String?
     ) {
         self.shortcut = shortcut
-        self.speechEndpoint = speechEndpoint
+        self.speechEndpoint = Self.defaultSpeechEndpoint
         self.speechModel = speechModel
         self.microphoneDeviceID = microphoneDeviceID
     }
@@ -34,7 +33,6 @@ public struct VoiceInputConfig: Codable, Equatable, Sendable {
     public static func defaultConfig() -> VoiceInputConfig {
         VoiceInputConfig(
             shortcut: .rightOption,
-            speechEndpoint: defaultSpeechEndpoint,
             speechModel: defaultSpeechModel,
             microphoneDeviceID: nil
         )
@@ -51,10 +49,18 @@ public struct VoiceInputConfig: Codable, Equatable, Sendable {
         let defaults = Self.defaultConfig()
         let container = try decoder.container(keyedBy: CodingKeys.self)
         shortcut = try container.decodeIfPresent(Shortcut.self, forKey: .shortcut) ?? defaults.shortcut
-        speechEndpoint = try container.decodeIfPresent(String.self, forKey: .speechEndpoint)
-            ?? defaults.speechEndpoint
+        _ = try container.decodeIfPresent(String.self, forKey: .speechEndpoint)
+        speechEndpoint = Self.defaultSpeechEndpoint
         speechModel = try container.decodeIfPresent(String.self, forKey: .speechModel)
             ?? defaults.speechModel
         microphoneDeviceID = try container.decodeIfPresent(String.self, forKey: .microphoneDeviceID)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(shortcut, forKey: .shortcut)
+        try container.encode(Self.defaultSpeechEndpoint, forKey: .speechEndpoint)
+        try container.encode(speechModel, forKey: .speechModel)
+        try container.encodeIfPresent(microphoneDeviceID, forKey: .microphoneDeviceID)
     }
 }

@@ -1223,17 +1223,6 @@ struct SettingsView: View {
             DisclosureGroup {
                 VStack(alignment: .leading, spacing: 12) {
                     settingsRow(
-                        L10n.text("settings.row.fallbackSpeechEndpoint"),
-                        help: L10n.text("settings.help.fallbackSpeechEndpoint")
-                    ) {
-                        TextField(
-                            VoiceInputConfig.defaultSpeechEndpoint,
-                            text: $model.config.voiceInput.speechEndpoint
-                        )
-                        .textFieldStyle(.roundedBorder)
-                    }
-
-                    settingsRow(
                         L10n.text("settings.row.fallbackSpeechModel"),
                         help: L10n.text("settings.help.fallbackSpeechModel")
                     ) {

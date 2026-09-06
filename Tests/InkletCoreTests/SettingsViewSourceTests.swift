@@ -50,7 +50,7 @@ final class SettingsViewSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("settings.group.dictation"))
         XCTAssertTrue(source.contains("$model.config.voiceInput.shortcut"))
         XCTAssertTrue(source.contains("selectedMicrophoneBinding"))
-        XCTAssertTrue(source.contains("$model.config.voiceInput.speechEndpoint"))
+        XCTAssertFalse(source.contains("$model.config.voiceInput.speechEndpoint"))
         XCTAssertTrue(source.contains("$model.config.voiceInput.speechModel"))
         XCTAssertTrue(source.contains("settings.error.invalidFallbackSpeechEndpoint"))
         XCTAssertFalse(source.contains("voice.error.invalidSpeechEndpoint"))
