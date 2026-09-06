@@ -225,6 +225,48 @@ final class DictationEditorTransactionTests: XCTestCase {
         XCTAssertEqual(committed, ["avoicec"])
     }
 
+    func testUndoRedoRemainSynchronousAfterTransactionIsReleased() throws {
+        let textView = makeTextView("abc", selection: NSRange(location: 1, length: 1))
+        let undoManager = textView.testUndoManager
+        var callbackStates: [String] = []
+        var subject = DictationEditorTransaction(
+            textView: textView,
+            synchronizeProvisional: { _ in },
+            synchronizePersistent: { [weak undoManager] _ in
+                if undoManager?.isUndoing == true {
+                    callbackStates.append("undo")
+                } else if undoManager?.isRedoing == true {
+                    callbackStates.append("redo")
+                } else {
+                    XCTFail("Synchronization must run inside the undo or redo callback")
+                }
+            },
+            commitSourceChange: { _ in },
+            restoreModelSnapshot: {}
+        )
+        let transactionReference = WeakObjectReference(try XCTUnwrap(subject))
+        try XCTUnwrap(subject).commitFinal("voice")
+        subject = nil
+        XCTAssertNil(transactionReference.value)
+
+        for cycle in 1...2 {
+            undoManager.undo()
+            XCTAssertEqual(textView.string, "abc")
+            XCTAssertEqual(textView.selectedRange(), NSRange(location: 1, length: 1))
+            XCTAssertFalse(undoManager.canUndo)
+            XCTAssertTrue(undoManager.canRedo)
+            XCTAssertEqual(callbackStates.count, cycle * 2 - 1)
+
+            undoManager.redo()
+            XCTAssertEqual(textView.string, "avoicec")
+            XCTAssertEqual(textView.selectedRange(), NSRange(location: 6, length: 0))
+            XCTAssertTrue(undoManager.canUndo)
+            XCTAssertFalse(undoManager.canRedo)
+            XCTAssertEqual(callbackStates.count, cycle * 2)
+        }
+        XCTAssertEqual(callbackStates, ["undo", "redo", "undo", "redo"])
+    }
+
     func testCommitPreservesPriorUndoAndRedoOrderWithDefaultGrouping() throws {
         let textView = makeTextView("abc", selection: NSRange(location: 1, length: 1))
         let undoManager = textView.testUndoManager
@@ -422,9 +464,12 @@ final class DictationEditorTransactionTests: XCTestCase {
         let undoProbe = UndoProbe()
         let undoManager = try XCTUnwrap(textView.undoManager)
         undoManager.beginUndoGrouping()
-        undoManager.registerUndo(withTarget: undoProbe) { probe in
-            probe.invocationCount += 1
+        let handler: @Sendable (UndoProbe) -> Void = { probe in
+            MainActor.assumeIsolated {
+                probe.invocationCount += 1
+            }
         }
+        undoManager.registerUndo(withTarget: undoProbe, handler: handler)
         undoManager.endUndoGrouping()
         let subject = try XCTUnwrap(makeTransaction(textView))
 
@@ -879,9 +924,12 @@ private final class UndoableCounter: NSObject {
 
     func change(to newValue: Int) {
         let previousValue = value
-        undoManager.registerUndo(withTarget: self) { counter in
-            counter.change(to: previousValue)
+        let handler: @Sendable (UndoableCounter) -> Void = { counter in
+            MainActor.assumeIsolated {
+                counter.change(to: previousValue)
+            }
         }
+        undoManager.registerUndo(withTarget: self, handler: handler)
         value = newValue
     }
 }
