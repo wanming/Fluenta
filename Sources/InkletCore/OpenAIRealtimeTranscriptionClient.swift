@@ -201,6 +201,9 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
                 if let serverError = try Self.serverError(from: message) {
                     throw serverError
                 }
+                if let transcriptionFailure = try Self.inputAudioTranscriptionFailure(from: message) {
+                    throw transcriptionFailure
+                }
                 if let event = try Self.transcriptionEvent(from: message) {
                     isReceiving = false
                     return event
@@ -318,6 +321,24 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
         return .server(code: try optionalString(details, key: "code"), message: errorMessage)
     }
 
+    private static func inputAudioTranscriptionFailure(
+        from message: [String: Any]
+    ) throws -> RealtimeTranscriptionError? {
+        let type = try requiredString(message["type"])
+        guard type == "conversation.item.input_audio_transcription.failed" else { return nil }
+        _ = try optionalString(message, key: "event_id")
+        _ = try requiredString(message["item_id"])
+        _ = try requiredInteger(message["content_index"])
+        guard let details = message["error"] as? [String: Any] else {
+            throw RealtimeTranscriptionError.invalidMessage
+        }
+        _ = try requiredString(details["type"])
+        let code = try optionalString(details, key: "code")
+        let errorMessage = try requiredString(details["message"])
+        _ = try optionalString(details, key: "param")
+        return .server(code: code, message: errorMessage)
+    }
+
     private static func transcriptionEvent(from message: [String: Any]) throws -> RealtimeTranscriptionEvent? {
         let type = try requiredString(message["type"])
 
@@ -361,7 +382,7 @@ public actor OpenAIRealtimeTranscriptionClient: RealtimeTranscriptionClient {
     }
 
     private static func optionalString(_ message: [String: Any], key: String) throws -> String? {
-        guard let value = message[key] else { return nil }
+        guard let value = message[key], !(value is NSNull) else { return nil }
         return try requiredString(value)
     }
 

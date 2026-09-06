@@ -367,6 +367,81 @@ final class OpenAIRealtimeTranscriptionClientTests: XCTestCase {
         }
     }
 
+    func testNextEventMapsInputAudioTranscriptionFailureAndClosesTransport() async throws {
+        let transport = FakeRealtimeTransport()
+        let client = makeClient(transport: transport)
+        await connect(client, transport: transport)
+        await transport.enqueue(
+            #"{"type":"conversation.item.input_audio_transcription.failed","event_id":"evt-failure","item_id":"item","content_index":2,"error":{"type":"transcription_error","code":"audio_unintelligible","message":"raw provider detail","param":"audio"}}"#
+        )
+        await transport.enqueue(
+            #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"sentinel","content_index":0,"delta":"should not be returned"}"#
+        )
+
+        await assertThrowsRealtime(
+            .server(code: "audio_unintelligible", message: "raw provider detail")
+        ) {
+            _ = try await client.nextEvent()
+        }
+
+        let snapshot = await transport.snapshot()
+        XCTAssertEqual(snapshot.closeCount, 1)
+    }
+
+    func testNextEventAcceptsAbsentAndNullOptionalInputAudioTranscriptionFailureFields() async throws {
+        let messages = [
+            #"{"type":"conversation.item.input_audio_transcription.failed","item_id":"item","content_index":0,"error":{"type":"transcription_error","message":"unavailable"}}"#,
+            #"{"type":"conversation.item.input_audio_transcription.failed","event_id":null,"item_id":"item","content_index":0,"error":{"type":"transcription_error","code":null,"message":"unavailable","param":null}}"#
+        ]
+
+        for message in messages {
+            let transport = FakeRealtimeTransport()
+            let client = makeClient(transport: transport)
+            await connect(client, transport: transport)
+            await transport.enqueue(message)
+            await transport.enqueue(
+                #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"sentinel","content_index":0,"delta":"should not be returned"}"#
+            )
+
+            await assertThrowsRealtime(.server(code: nil, message: "unavailable")) {
+                _ = try await client.nextEvent()
+            }
+        }
+    }
+
+    func testNextEventRejectsMalformedInputAudioTranscriptionFailures() async throws {
+        let invalidMessages = [
+            #"{"type":"conversation.item.input_audio_transcription.failed","item_id":"item","content_index":0}"#,
+            #"{"type":"conversation.item.input_audio_transcription.failed","item_id":"item","content_index":0,"error":"failure"}"#,
+            #"{"type":"conversation.item.input_audio_transcription.failed","item_id":"item","content_index":0,"error":{"message":"unavailable"}}"#,
+            #"{"type":"conversation.item.input_audio_transcription.failed","item_id":"item","content_index":0,"error":{"type":1,"message":"unavailable"}}"#,
+            #"{"type":"conversation.item.input_audio_transcription.failed","item_id":"item","content_index":0,"error":{"type":"transcription_error"}}"#,
+            #"{"type":"conversation.item.input_audio_transcription.failed","item_id":"item","content_index":0,"error":{"type":"transcription_error","message":1}}"#,
+            #"{"type":"conversation.item.input_audio_transcription.failed","event_id":1,"item_id":"item","content_index":0,"error":{"type":"transcription_error","message":"unavailable"}}"#,
+            #"{"type":"conversation.item.input_audio_transcription.failed","content_index":0,"error":{"type":"transcription_error","message":"unavailable"}}"#,
+            #"{"type":"conversation.item.input_audio_transcription.failed","item_id":1,"content_index":0,"error":{"type":"transcription_error","message":"unavailable"}}"#,
+            #"{"type":"conversation.item.input_audio_transcription.failed","item_id":"item","error":{"type":"transcription_error","message":"unavailable"}}"#,
+            #"{"type":"conversation.item.input_audio_transcription.failed","item_id":"item","content_index":true,"error":{"type":"transcription_error","message":"unavailable"}}"#,
+            #"{"type":"conversation.item.input_audio_transcription.failed","item_id":"item","content_index":1.5,"error":{"type":"transcription_error","message":"unavailable"}}"#,
+            #"{"type":"conversation.item.input_audio_transcription.failed","item_id":"item","content_index":0,"error":{"type":"transcription_error","code":1,"message":"unavailable"}}"#,
+            #"{"type":"conversation.item.input_audio_transcription.failed","item_id":"item","content_index":0,"error":{"type":"transcription_error","message":"unavailable","param":1}}"#
+        ]
+
+        for message in invalidMessages {
+            let transport = FakeRealtimeTransport()
+            let client = makeClient(transport: transport)
+            await connect(client, transport: transport)
+            await transport.enqueue(message)
+            await transport.enqueue(
+                #"{"type":"conversation.item.input_audio_transcription.delta","item_id":"sentinel","content_index":0,"delta":"should not be returned"}"#
+            )
+
+            await assertThrowsRealtime(.invalidMessage) {
+                _ = try await client.nextEvent()
+            }
+        }
+    }
+
     func testNextEventRejectsMalformedJSONAndRelevantMissingFields() async throws {
         let malformedTransport = FakeRealtimeTransport()
         let malformedClient = makeClient(transport: malformedTransport)

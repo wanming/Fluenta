@@ -415,20 +415,54 @@ final class WritingDictationCoordinatorTests: XCTestCase {
         XCTAssertEqual(harness.subject.phase, .failed("dictation.error.noSpeech"))
     }
 
-    func testReceiveFailureWhileHeldFallsBackOnlyAfterRelease() async {
+    func testItemTranscriptionFailureWhileHeldRecordsForFallbackThenUploadsOnceAfterRelease() async {
         let harness = DictationHarness(fallbackText: "fallback final")
         await harness.startListening()
-        harness.client.failReceive(with: RealtimeTranscriptionError.connectionClosed)
+        harness.client.failReceive(
+            with: RealtimeTranscriptionError.server(
+                code: "audio_unintelligible",
+                message: "raw provider detail"
+            )
+        )
         await harness.client.waitUntilClosed()
         XCTAssertEqual(harness.subject.phase, .recordingForFallback)
         XCTAssertTrue(harness.fallbackRequests.isEmpty)
 
         await harness.subject.endHold()
         await harness.waitUntilFallbackStarts()
+        XCTAssertEqual(harness.fallbackRequests, [harness.capture.recordingURL])
         harness.resumeFallback()
         await harness.transaction.waitUntilCommitted()
         await harness.subject.cancelAndWait()
         XCTAssertEqual(harness.transaction.committed, ["fallback final"])
+        XCTAssertEqual(harness.deletedURLs, [harness.capture.recordingURL])
+    }
+
+    func testItemTranscriptionFailureAfterReleaseStartsFallbackWithoutAdvancingFinalTimeout() async {
+        let harness = DictationHarness(manualTimeout: true)
+        await harness.startListening()
+        await harness.subject.endHold()
+        await harness.client.waitUntilCommitted()
+        await harness.waitUntilTimeoutStarts()
+
+        harness.client.failReceive(
+            with: RealtimeTranscriptionError.server(
+                code: "audio_unintelligible",
+                message: "raw provider detail"
+            )
+        )
+        await harness.waitUntilFallbackStarts()
+
+        XCTAssertEqual(harness.subject.phase, .recovering)
+        XCTAssertEqual(harness.fallbackRequests, [harness.capture.recordingURL])
+        XCTAssertEqual(harness.timeoutAdvanceCount, 0)
+
+        harness.resumeFallback()
+        await harness.transaction.waitUntilCommitted()
+        harness.advanceTimeout()
+        await harness.subject.cancelAndWait()
+
+        XCTAssertEqual(harness.transaction.committed, ["fallback"])
         XCTAssertEqual(harness.deletedURLs, [harness.capture.recordingURL])
     }
 
@@ -1270,7 +1304,15 @@ private final class DictationHarness {
     }
 
     func resumeTimeout() {
-        timeoutWaiter.resume()
+        advanceTimeout()
+    }
+
+    var timeoutAdvanceCount: Int {
+        timeoutWaiter.advanceCount
+    }
+
+    func advanceTimeout() {
+        timeoutWaiter.advance()
     }
 
     func resumeTerminalHandoff() {
@@ -1339,6 +1381,7 @@ private final class FakeFinalTimeoutWaiter: WritingDictationFinalTimeoutWaiting 
     private let manual: Bool
     private let gate = ManualGate()
     private var pendingWait: PendingWait?
+    private(set) var advanceCount = 0
 
     init(manual: Bool) {
         self.manual = manual
@@ -1374,7 +1417,8 @@ private final class FakeFinalTimeoutWaiter: WritingDictationFinalTimeoutWaiting 
         await gate.waitUntilEntered()
     }
 
-    func resume() {
+    func advance() {
+        advanceCount += 1
         gate.open()
     }
 
