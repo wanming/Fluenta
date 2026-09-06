@@ -1,0 +1,17 @@
+name: Check localization
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  localization:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check every supported UI language
+        run: scripts/check-localization.sh

@@ -138,7 +138,7 @@ final class AppCoordinatorSourceTests: XCTestCase {
         ))
         let mainMenuBlock = source[mainMenuStart.lowerBound..<settingsShortcutStart.lowerBound]
         XCTAssertTrue(mainMenuBlock.contains("UpdateCheckMenuConfiguration.apply(to: appMenu)"))
-        XCTAssertTrue(mainMenuBlock.contains("let editMenu = NSMenu(title: \"Edit\")"))
+        XCTAssertTrue(mainMenuBlock.contains("let editMenu = NSMenu(title: L10n.text(\"app.menu.edit\"))"))
         XCTAssertFalse(mainMenuBlock.contains("UpdateCheckMenuConfiguration.apply(to: editMenu)"))
         XCTAssertFalse(mainMenuBlock.contains("editMenu.autoenablesItems"))
         let aboutAdd = try XCTUnwrap(mainMenuBlock.range(of: "appMenu.addItem(aboutItem)"))

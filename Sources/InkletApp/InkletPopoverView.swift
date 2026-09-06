@@ -118,6 +118,8 @@ final class InkletPopoverViewModel: ObservableObject {
     private var sourceFocusGeneration = FocusRequestGeneration()
     private var sourceDictationPresentationSnapshot: SourceDictationPresentationSnapshot?
     private var isRestoringSourceDictationPresentation = false
+    private var languageCancellable: AnyCancellable?
+    private var dictationErrorMessage: String?
 
     init(
         stateMachine: PopoverStateMachine = PopoverStateMachine(),
@@ -151,6 +153,23 @@ final class InkletPopoverViewModel: ObservableObject {
         self.popoverSession = WritingPopoverSessionState(selectedModeID: selectedModeID)
         self.appearance = loadedConfig.appearance
         self.voiceShortcutHint = nil
+        languageCancellable = NotificationCenter.default.publisher(for: .inkletLanguageDidChange)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.refreshLocalizedContent()
+            }
+    }
+
+    private func refreshLocalizedContent() {
+        modePickerState = WritingModePickerState(
+            items: Self.modePickerItems(for: modes),
+            preferredModeID: modePickerState.highlightedModeID,
+            query: modePickerState.query
+        )
+        if case .failed(let errorKey) = dictationPhase, errorMessage == dictationErrorMessage {
+            errorMessage = L10n.text(errorKey)
+            dictationErrorMessage = errorMessage
+        }
     }
 
     func resetForOpen(previousApplication: NSRunningApplication?) {
@@ -294,6 +313,7 @@ final class InkletPopoverViewModel: ObservableObject {
         dictationPhase = phase
         if case .failed(let errorKey) = phase {
             errorMessage = L10n.text(errorKey)
+            dictationErrorMessage = errorMessage
         }
     }
 
@@ -835,6 +855,8 @@ struct InkletPopoverView: View {
     @FocusState private var isResultFocused: Bool
     @State private var sourceMeasuredHeight: CGFloat = 0
     @State private var resultMeasuredHeight: CGFloat = 0
+    @State private var statusMeasuredHeight: CGFloat = 34
+    @State private var actionBarMeasuredHeight: CGFloat = 36
 
     init(
         model: InkletPopoverViewModel,
@@ -853,7 +875,6 @@ struct InkletPopoverView: View {
     private let headerHeight: CGFloat = 46
     private let actionBarHeight: CGFloat = 36
     private let dividerHeight: CGFloat = 1
-    private let statusHeight: CGFloat = 34
     private let staleResultBannerHeight: CGFloat = 24
     private var isBusy: Bool {
         model.isBusy
@@ -903,9 +924,9 @@ struct InkletPopoverView: View {
             + dividerHeight
             + inputHeight
             + (model.resultText.isEmpty ? 0 : dividerHeight + resultPanelHeight)
-            + (model.errorMessage == nil ? 0 : dividerHeight + statusHeight)
+            + (model.errorMessage == nil ? 0 : dividerHeight + min(statusMeasuredHeight, 120))
             + dividerHeight
-            + actionBarHeight
+            + max(actionBarHeight, actionBarMeasuredHeight)
     }
 
     private var inputHeight: CGFloat {
@@ -966,6 +987,9 @@ struct InkletPopoverView: View {
         }
         .onChange(of: popoverHeight) {
             publishPopoverHeight()
+        }
+        .onPreferenceChange(ActionBarHeightPreferenceKey.self) { height in
+            actionBarMeasuredHeight = height
         }
     }
 
@@ -1070,13 +1094,25 @@ struct InkletPopoverView: View {
     private var statusStrip: some View {
         if let errorMessage = model.errorMessage {
             Divider().opacity(0.45)
-            Text(errorMessage)
-                .font(.system(size: 12))
-                .foregroundStyle(.red.opacity(0.9))
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.red.opacity(0.13))
+            ScrollView(.vertical) {
+                Text(errorMessage)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.red.opacity(0.9))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background {
+                        GeometryReader { proxy in
+                            Color.clear.preference(key: StatusHeightPreferenceKey.self, value: proxy.size.height)
+                        }
+                    }
+                    .onPreferenceChange(StatusHeightPreferenceKey.self) { height in
+                        statusMeasuredHeight = height
+                    }
+            }
+            .frame(height: min(statusMeasuredHeight, 120))
+            .background(Color.red.opacity(0.13))
         }
     }
 
@@ -1138,41 +1174,51 @@ struct InkletPopoverView: View {
     }
 
     private var actionBar: some View {
-        HStack(alignment: .center, spacing: 3) {
+        Group {
             if model.isTransforming || model.isInserting {
                 loadingIndicator
+                    .frame(minHeight: max(actionBarHeight, actionBarMeasuredHeight))
             } else {
-                shortcutHint(keys: ["↵"], label: primaryActionTitle, primary: !model.sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.resultText.isEmpty) {
-                    model.submit()
+                WritingActionBarLayout {
+                    shortcutHint(keys: ["↵"], label: primaryActionTitle, primary: !model.sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.resultText.isEmpty) {
+                        model.submit()
+                    }
+                    .disabled(model.dictationPhase.isActive)
+                    shortcutHint(keys: ["⌘", "↵"], label: L10n.text("popover.action.insertOriginal")) {
+                        model.insertOriginal()
+                    }
+                    .disabled(model.dictationPhase.isActive)
+                    shortcutHint(keys: ["⇧", "↵"], label: L10n.text("popover.hint.newLine")) {
+                        insertNewLine()
+                    }
+                    .disabled(model.dictationPhase.isActive)
+                    shortcutHint(keys: ["⌘", "↑/↓"], label: L10n.text("popover.hint.mode")) {
+                        model.cyclePromptMode(direction: 1)
+                    }
+                    .disabled(model.dictationPhase.isActive)
+                    HStack(spacing: 3) {
+                        if model.shouldShowDictationStatus {
+                            dictationStatus
+                        }
+                        shortcutHint(keys: ["esc"], label: L10n.text("popover.hint.back")) {
+                            model.escape()
+                        }
+                    }
+                    .fixedSize()
                 }
-                .disabled(model.dictationPhase.isActive)
-                shortcutHint(keys: ["⌘", "↵"], label: L10n.text("popover.action.insertOriginal")) {
-                    model.insertOriginal()
-                }
-                .disabled(model.dictationPhase.isActive)
-                shortcutHint(keys: ["⇧", "↵"], label: L10n.text("popover.hint.newLine")) {
-                    insertNewLine()
-                }
-                .disabled(model.dictationPhase.isActive)
-                shortcutHint(keys: ["⌘", "↑/↓"], label: L10n.text("popover.hint.mode")) {
-                    model.cyclePromptMode(direction: 1)
-                }
-                .disabled(model.dictationPhase.isActive)
-
-                Spacer()
-
-                if model.shouldShowDictationStatus {
-                    dictationStatus
-                }
-
-                shortcutHint(keys: ["esc"], label: L10n.text("popover.hint.back")) {
-                    model.escape()
-                }
+                .frame(width: 586)
+                .padding(.vertical, 8)
             }
         }
         .padding(.horizontal, 7)
-        .frame(height: actionBarHeight)
+        .frame(maxWidth: .infinity, minHeight: actionBarHeight)
+        .fixedSize(horizontal: false, vertical: true)
         .background(InkletTheme.toolbarBackground)
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: ActionBarHeightPreferenceKey.self, value: proxy.size.height)
+            }
+        }
         .accessibilityLabel(L10n.text("popover.hint.accessibility"))
     }
 
@@ -1199,6 +1245,7 @@ struct InkletPopoverView: View {
                 .lineLimit(1)
         }
         .foregroundStyle(InkletTheme.textSecondary.opacity(0.78))
+        .fixedSize()
         .padding(.horizontal, 2)
         .help(model.dictationStatusAccessibilityLabel)
         .accessibilityLabel(model.dictationStatusAccessibilityLabel)
@@ -1232,16 +1279,18 @@ struct InkletPopoverView: View {
                     .font(.system(size: 8, weight: .medium))
                     .foregroundStyle(primary ? Color.white : InkletTheme.textSecondary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.75)
             }
+            .fixedSize()
             .padding(.horizontal, primary ? 5 : 2)
             .padding(.vertical, 2)
             .background(primary ? InkletTheme.primary : Color.white.opacity(0.001), in: RoundedRectangle(cornerRadius: 7))
             .shadow(color: primary ? InkletTheme.primary.opacity(0.35) : .clear, radius: 8, x: 0, y: 1)
         }
         .buttonStyle(.plain)
+        .fixedSize()
         .contentShape(Rectangle())
         .help(label)
+        .accessibilityLabel(label)
     }
 
     private func insertNewLine() {
@@ -1319,11 +1368,80 @@ struct InkletPopoverView: View {
     }
 }
 
+private struct WritingActionBarLayout: Layout {
+    private let spacing: CGFloat = 3
+    private let rowSpacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let width = proposal.width ?? sizes.reduce(0) { $0 + $1.width } + spacing * CGFloat(max(0, sizes.count - 1))
+        let rows = rows(for: sizes, width: width)
+        let height = rows.reduce(CGFloat(0)) { total, row in
+            total + row.map { sizes[$0].height }.max()!
+        } + rowSpacing * CGFloat(max(0, rows.count - 1))
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        var y = bounds.minY
+        for row in rows(for: sizes, width: bounds.width) {
+            let height = row.map { sizes[$0].height }.max()!
+            var x = bounds.minX
+            for index in row {
+                if index == subviews.count - 1 {
+                    x = max(x, bounds.maxX - sizes[index].width)
+                }
+                subviews[index].place(
+                    at: CGPoint(x: x, y: y + (height - sizes[index].height) / 2),
+                    proposal: ProposedViewSize(sizes[index])
+                )
+                x += sizes[index].width + spacing
+            }
+            y += height + rowSpacing
+        }
+    }
+
+    private func rows(for sizes: [CGSize], width: CGFloat) -> [[Int]] {
+        var rows: [[Int]] = []
+        var row: [Int] = []
+        var rowWidth: CGFloat = 0
+        for index in sizes.indices {
+            let nextWidth = rowWidth + (row.isEmpty ? 0 : spacing) + sizes[index].width
+            if !row.isEmpty, nextWidth > width {
+                rows.append(row)
+                row = []
+                rowWidth = 0
+            }
+            rowWidth += (row.isEmpty ? 0 : spacing) + sizes[index].width
+            row.append(index)
+        }
+        if !row.isEmpty { rows.append(row) }
+        return rows
+    }
+}
+
 private struct SourceEditorHeightPreferenceKey: PreferenceKey {
     static let defaultValue: CGFloat = 60
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+private struct StatusHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct ActionBarHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 

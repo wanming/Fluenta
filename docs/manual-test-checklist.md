@@ -143,6 +143,16 @@ Run every item below in Chrome, Safari, Edge, and a native AppKit text view. Rep
 - History: filter by Write and Selection, then confirm imported legacy Voice entries and the Voice filter remain readable. Select source/result text, copy result text, clear History, and confirm the empty state.
 - Save behavior: quit and reopen Inklet and confirm changes persist in the matching bundle's defaults.
 
+## Language Switching And Layout
+
+- Run `scripts/check-localization.sh --snapshots` and inspect the printed HTML gallery. Run `swift test` as well; record automated results separately from live checks below.
+- Cycle through all ten interface languages at the actual window size. At minimum, compare English, both Chinese variants, German, French and Portuguese for width expansion; include Japanese and Korean font rendering.
+- Keep Settings open while switching. Inspect every sidebar section, long shortcut names, permission instructions, migration actions, History timestamps, prompt editing/deletion, and About links. Check Light and Dark appearance for overlap, truncation and reachable controls.
+- Keep a writing draft and result, change language, and return. Both must survive; inspect launcher search/highlight, actions, long dictation status and multiline errors. Verify keyboard shortcuts and focus still work.
+- Inspect Translate/Pronounce in every language: compact padding, complete labels, stable button sizes during loading/playing, dismissal and retry. In a translation result, check copy/original audio/translated audio states and retained text while resizing.
+- Reopen menus, About, update and migration dialogs after switching. Check localized title/action/help/VoiceOver labels, errors, confirmations and cancellation. Check system-language preference order, including English ahead of another supported language.
+- Mark any unavailable permission, migration, update, playback or error state as unverified. Synthetic snapshots do not verify these live flows or translation quality.
+
 ## Exact Signed Release Matrix
 
 Run the fresh-install and signed-upgrade sections using the exact final DMG and supported hardware on macOS 14.x, macOS 15.x, and macOS 26.x. Record automatic versus assisted migration results separately for every OS version.

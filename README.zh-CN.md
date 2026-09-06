@@ -83,6 +83,7 @@ Inklet 仅通过 GitHub Releases 检查更新。正式版大约每 24 小时从 
 - 在本地 History 中查看成功的写作和选区结果，连续重复项会自动合并，原文/结果文本可选择，可一键复制结果或清空全部历史；旧版 Voice History 仍可读取。
 - 使用一把共享的 OpenAI API key 处理写作、实时听写、选区翻译和发音。
 - 提供英文、简体中文、繁体中文、日文、韩文、西班牙文、法文、德文、葡萄牙文和意大利文应用界面。
+- 紧凑选区菜单以及设置、写作界面中的受限控件会根据译文调整布局；切换语言时刷新已打开的界面并保留写作内容。
 
 ## 当前状态
 
@@ -121,6 +122,8 @@ swift test
 ```
 
 如果测试因为 `XCTest` 不可用而失败，请安装完整 Xcode，而不是只安装 Command Line Tools。
+
+使用 `scripts/check-localization.sh` 检查所有界面语言。加上 `--snapshots` 可在 `.build/localization-audit/` 下生成使用模拟数据的原生界面 HTML 截图集，命令会输出文件路径。Pull request 会自动运行本地化检查。检查范围和仍需手动验证的项目见[本地化检查说明](docs/localization-audit.md)。
 
 ## 快捷键
 

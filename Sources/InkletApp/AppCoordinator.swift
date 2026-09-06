@@ -490,30 +490,30 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
         mainMenu.addItem(appMenuItem)
 
         let editMenuItem = NSMenuItem()
-        let editMenu = NSMenu(title: "Edit")
+        let editMenu = NSMenu(title: L10n.text("app.menu.edit"))
         editMenu.delegate = self
-        editMenu.addItem(NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"))
+        editMenu.addItem(NSMenuItem(title: L10n.text("app.menu.undo"), action: Selector(("undo:")), keyEquivalent: "z"))
 
-        let redoItem = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        let redoItem = NSMenuItem(title: L10n.text("app.menu.redo"), action: Selector(("redo:")), keyEquivalent: "Z")
         redoItem.keyEquivalentModifierMask = [.command, .shift]
         editMenu.addItem(redoItem)
 
         editMenu.addItem(NSMenuItem.separator())
-        editMenu.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
-        editMenu.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
-        editMenu.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+        editMenu.addItem(NSMenuItem(title: L10n.text("app.menu.cut"), action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
+        editMenu.addItem(NSMenuItem(title: L10n.text("app.menu.copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: L10n.text("app.menu.paste"), action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
 
         let pasteAndMatchStyleItem = NSMenuItem(
-            title: "Paste and Match Style",
+            title: L10n.text("app.menu.pasteAndMatchStyle"),
             action: #selector(NSTextView.pasteAsPlainText(_:)),
             keyEquivalent: "v"
         )
         pasteAndMatchStyleItem.keyEquivalentModifierMask = [.command, .option, .shift]
         editMenu.addItem(pasteAndMatchStyleItem)
 
-        editMenu.addItem(NSMenuItem(title: "Delete", action: #selector(NSText.delete(_:)), keyEquivalent: ""))
+        editMenu.addItem(NSMenuItem(title: L10n.text("app.menu.delete"), action: #selector(NSText.delete(_:)), keyEquivalent: ""))
         editMenu.addItem(NSMenuItem.separator())
-        editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        editMenu.addItem(NSMenuItem(title: L10n.text("app.menu.selectAll"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
 

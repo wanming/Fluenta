@@ -50,6 +50,7 @@ struct SelectionActionView: View {
                         action: onPronounce
                     )
                 }
+                .fixedSize(horizontal: true, vertical: false)
                 if let errorMessage {
                     Text(errorMessage)
                         .font(.system(size: 11))
@@ -115,14 +116,14 @@ struct SelectionActionView: View {
         .background(InkletTheme.panelBackground)
     }
 
-    var preferredWidth: CGFloat {
+    var preferredWidth: CGFloat? {
         switch state {
-        case .menu:
-            224
+        case .menu(let errorMessage, _):
+            errorMessage == nil ? nil : 300
         case .preparingPronunciation, .playingPronunciation, .translating:
             210
-        case .translationResult(let text, _, _):
-            text.count >= 240 ? 420 : 300
+        case .translationResult:
+            300
         default:
             300
         }
@@ -242,6 +243,7 @@ struct SelectionActionView: View {
                 Text(title)
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .frame(height: 30)
             .padding(.horizontal, 9)

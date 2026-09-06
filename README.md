@@ -83,6 +83,7 @@ The Dictation shortcut is source-local and hold-only. You can change its modifie
 - Shows local History for successful Write and Selection results, with consecutive duplicate entries collapsed, selectable source/result text, a result copy control, and a clear-all action. Existing legacy Voice entries remain readable.
 - Uses one shared OpenAI API key for writing, realtime dictation, selection translation, and pronunciation.
 - Provides English, Simplified Chinese, Traditional Chinese, Japanese, Korean, Spanish, French, German, Portuguese, and Italian app UI localization.
+- Adapts compact selection menus and constrained settings/writing controls to translated labels; language changes refresh open UI while preserving writing content.
 
 ## Current Status
 
@@ -121,6 +122,8 @@ swift test
 ```
 
 If tests fail because `XCTest` is unavailable, install the full Xcode app instead of using only Command Line Tools.
+
+Check all UI languages with `scripts/check-localization.sh`. Add `--snapshots` to generate a local HTML gallery of synthetic native UI fixtures under `.build/localization-audit/`; the command prints its path. Pull requests run the localization checks automatically. See [localization coverage and remaining manual checks](docs/localization-audit.md).
 
 ## Keyboard Flow
 

@@ -19,6 +19,7 @@ This directory is split by workflow. Prefer the smallest script that matches the
 
 ## Checks
 
+- `check-localization.sh` validates permission string files and runs localization coverage, language switching, and native layout regression tests. Add `--snapshots` for a synthetic offscreen UI gallery; it prints the generated HTML path. It does not launch Inklet or read saved writing/history. Settings fixtures can read microphone names and the current permission status.
 - `test-direct-distribution.sh` checks the direct-distribution bundle and verifier contracts.
 - `test-install-security.sh` checks safety invariants in `install.sh`.
 - `test-run-local-app.sh` checks that local app runs use stable signing, local bundle settings, and redacted signing logs.

@@ -585,15 +585,30 @@ final class InkletPopoverWindowController: NSWindowController, NSWindowDelegate 
         let height = max(1, height)
         var frame = window.frame
 
-        let topY = frame.maxY
         frame.size.width = popoverWidth
-        frame.size.height = height
-        frame.origin.y = topY - height
+        frame = Self.resizedFrame(
+            from: frame,
+            toHeight: height,
+            visibleFrame: (window.screen ?? NSScreen.main)?.visibleFrame.insetBy(dx: 8, dy: 8)
+        )
         window.setContentSize(NSSize(width: popoverWidth, height: height))
         window.setFrame(frame, display: true, animate: false)
         window.contentView?.frame = NSRect(x: 0, y: 0, width: popoverWidth, height: height)
         window.contentView?.needsLayout = true
         window.contentView?.layoutSubtreeIfNeeded()
+    }
+
+    static func resizedFrame(from currentFrame: NSRect, toHeight height: CGFloat, visibleFrame: NSRect?) -> NSRect {
+        var frame = currentFrame
+        frame.size.height = max(1, height)
+        frame.origin.y = currentFrame.maxY - frame.height
+        if let visibleFrame {
+            frame.origin.y = min(
+                max(frame.origin.y, visibleFrame.minY),
+                visibleFrame.maxY - frame.height
+            )
+        }
+        return frame
     }
 }
 

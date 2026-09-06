@@ -685,6 +685,7 @@ struct SettingsView: View {
     @State private var isConfirmingClearHistory = false
     @State private var copiedHistoryControlID: String?
     @State private var historyCopyFeedbackTask: Task<Void, Never>?
+    @State private var localeIdentifier = L10n.resolvedLanguage.localeIdentifier
     private let onAppearanceChange: (AppAppearance) -> Void
     private let onRequestMigrationImport: () -> Void
     private let onRetryMigrationRelaunch: () -> Void
@@ -731,6 +732,7 @@ struct SettingsView: View {
             detail
         }
         .frame(width: 860, height: 560)
+        .environment(\.locale, Locale(identifier: localeIdentifier))
         .background(InkletTheme.panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .overlay {
@@ -750,6 +752,9 @@ struct SettingsView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             model.refreshPermissions()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .inkletLanguageDidChange).receive(on: RunLoop.main)) { _ in
+            localeIdentifier = L10n.resolvedLanguage.localeIdentifier
         }
         .alert(
             L10n.text("settings.mode.deleteConfirmTitle"),
@@ -821,24 +826,13 @@ struct SettingsView: View {
                     Button {
                         selectedSection = section
                     } label: {
-                        HStack(spacing: 9) {
-                            Image(systemName: section.icon)
-                                .frame(width: 18)
-                            Text(section.title)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                            Spacer()
-                        }
-                        .font(.system(size: 13, weight: selectedSection == section ? .semibold : .regular))
-                        .foregroundStyle(selectedSection == section ? InkletTheme.primary.opacity(0.95) : InkletTheme.textSecondary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(
-                            selectedSection == section ? InkletTheme.primary.opacity(0.12) : Color.clear,
-                            in: RoundedRectangle(cornerRadius: 12)
+                        SettingsSidebarLabel(
+                            section: section,
+                            isSelected: selectedSection == section
                         )
                     }
                     .buttonStyle(.plain)
+                    .help(section.title)
                 }
             }
             .padding(.horizontal, 8)
@@ -918,6 +912,8 @@ struct SettingsView: View {
                     .background(Color.white.opacity(0.001), in: RoundedRectangle(cornerRadius: 8))
             }
             .buttonStyle(.plain)
+            .help(L10n.text("popover.hint.close"))
+            .accessibilityLabel(L10n.text("popover.hint.close"))
         }
         .padding(.horizontal, 24)
         .padding(.top, 18)
@@ -1095,7 +1091,7 @@ struct SettingsView: View {
                 .frame(width: 14, height: 14)
             }
             .font(.system(size: 12, weight: .semibold))
-            .frame(width: 168, height: 28)
+            .frame(width: SettingsLayoutMetrics.migrationActionWidth, height: 28)
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.small)
@@ -1668,7 +1664,8 @@ struct SettingsView: View {
     private func shortcutLine(keys: [String], title: String, keyWidth: CGFloat, keyAlignment: Alignment, textSpacing: CGFloat = 14) -> some View {
         HStack(spacing: textSpacing) {
             shortcutKeys(keys)
-                .frame(width: keyWidth, alignment: keyAlignment)
+                .fixedSize()
+                .frame(minWidth: keyWidth, alignment: keyAlignment)
 
             shortcutTitle(title)
         }
@@ -1687,7 +1684,6 @@ struct SettingsView: View {
         Text(title)
             .font(.system(size: 12))
             .foregroundStyle(InkletTheme.textSecondary)
-            .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -1716,7 +1712,6 @@ struct SettingsView: View {
                 Text(description)
                     .font(.system(size: 12))
                     .foregroundStyle(InkletTheme.textTertiary)
-                    .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1763,7 +1758,10 @@ struct SettingsView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(InkletTheme.textPrimary)
 
-                Text(item.createdAt.formatted(date: .abbreviated, time: .shortened))
+                Text(item.createdAt.formatted(
+                    Date.FormatStyle(date: .abbreviated, time: .shortened)
+                        .locale(Locale(identifier: localeIdentifier))
+                ))
                     .font(.system(size: 11))
                     .foregroundStyle(InkletTheme.textTertiary)
 
@@ -1949,6 +1947,45 @@ struct SettingsView: View {
                 .labelsHidden()
                 .toggleStyle(.switch)
         }
+    }
+}
+
+struct SettingsSidebarLabel: View {
+    let section: SettingsSection
+    let isSelected: Bool
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: section.icon)
+                .frame(width: 18)
+            Text(section.title)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+        .foregroundStyle(isSelected ? InkletTheme.primary.opacity(0.95) : InkletTheme.textSecondary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            isSelected ? InkletTheme.primary.opacity(0.12) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 12)
+        )
+    }
+}
+
+enum SettingsLayoutMetrics {
+    static var migrationActionWidth: CGFloat {
+        let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        let titles = [
+            "legacyMigration.action.importOldData",
+            "legacyMigration.import.progress",
+            "legacyMigration.import.relaunchProgress",
+            "legacyMigration.action.retryRelaunch"
+        ]
+        let textWidth = titles.map {
+            (L10n.text($0) as NSString).size(withAttributes: [.font: font]).width
+        }.max() ?? 0
+        return max(168, ceil(textWidth) + 22)
     }
 }
 

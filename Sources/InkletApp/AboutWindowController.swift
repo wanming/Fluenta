@@ -1,8 +1,11 @@
 import AppKit
+import Combine
 import SwiftUI
 
 @MainActor
 final class AboutWindowController: NSWindowController {
+    private var languageChangeCancellable: AnyCancellable?
+
     init() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 380, height: 320),
@@ -16,6 +19,12 @@ final class AboutWindowController: NSWindowController {
 
         super.init(window: window)
         shouldCascadeWindows = false
+        refreshLocalizedContent()
+        languageChangeCancellable = NotificationCenter.default.publisher(for: .inkletLanguageDidChange)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.refreshLocalizedContent()
+            }
     }
 
     @available(*, unavailable)
@@ -24,15 +33,21 @@ final class AboutWindowController: NSWindowController {
     }
 
     func show() {
-        window?.title = L10n.text("app.menu.about")
-        window?.contentView = NSHostingView(rootView: AboutView())
+        refreshLocalizedContent()
         window?.center()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
     }
+
+    private func refreshLocalizedContent() {
+        window?.title = L10n.text("app.menu.about")
+        guard let hostingView = window?.contentView as? NSHostingView<AboutView> else { return }
+        hostingView.rootView = AboutView()
+        window?.setContentSize(hostingView.fittingSize)
+    }
 }
 
-private struct AboutView: View {
+struct AboutView: View {
     var body: some View {
         VStack(spacing: 16) {
             PenNibShape()
@@ -57,13 +72,13 @@ private struct AboutView: View {
 
             Text(L10n.text("about.tagline"))
                 .font(.headline)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: 320)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 320)
 
-            HStack(spacing: 16) {
-                Link(L10n.text("about.website"), destination: URL(string: "https://getinklet.app")!)
-                Link(L10n.text("about.privacyPolicy"), destination: URL(string: "https://getinklet.app/privacy")!)
-                Link(L10n.text("about.support"), destination: URL(string: "mailto:support@getinklet.app")!)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 16) { links }
+                VStack(spacing: 8) { links }
             }
             .font(.callout)
 
@@ -72,6 +87,16 @@ private struct AboutView: View {
                 .foregroundStyle(.tertiary)
         }
         .padding(28)
-        .frame(width: 380, height: 292)
+        .frame(width: 380)
+        .frame(minHeight: 292)
+        .environment(\.locale, Locale(identifier: L10n.resolvedLanguage.localeIdentifier))
+    }
+
+    private var links: some View {
+        Group {
+            Link(L10n.text("about.website"), destination: URL(string: "https://getinklet.app")!)
+            Link(L10n.text("about.privacyPolicy"), destination: URL(string: "https://getinklet.app/privacy")!)
+            Link(L10n.text("about.support"), destination: URL(string: "mailto:support@getinklet.app")!)
+        }
     }
 }

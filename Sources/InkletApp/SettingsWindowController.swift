@@ -151,6 +151,13 @@ final class SettingsWindowController: NSWindowController {
         super.init(window: window)
         shouldCascadeWindows = false
 
+        NotificationCenter.default.publisher(for: .inkletLanguageDidChange)
+            .receive(on: RunLoop.main)
+            .sink { [weak window] _ in
+                window?.title = L10n.text("settings.window.title")
+            }
+            .store(in: &cancellables)
+
         model.$isMigrationWorkflowIdle
             .removeDuplicates()
             .sink { [weak self] isIdle in

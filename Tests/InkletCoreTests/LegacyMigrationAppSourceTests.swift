@@ -75,7 +75,7 @@ final class LegacyMigrationAppSourceTests: XCTestCase {
         XCTAssertTrue(migrationAction.contains("Label {"))
         XCTAssertTrue(migrationAction.contains("if showsProgress"))
         XCTAssertTrue(migrationAction.contains("ProgressView()"))
-        XCTAssertTrue(migrationAction.contains(".frame(width: 168, height: 28)"))
+        XCTAssertTrue(migrationAction.contains(".frame(width: SettingsLayoutMetrics.migrationActionWidth, height: 28)"))
         XCTAssertTrue(migrationAction.contains("isEnabled: false"))
         XCTAssertTrue(view.contains("legacyMigration.action.importOldData"))
         XCTAssertTrue(view.contains("legacyMigration.import.invalidSelection"))

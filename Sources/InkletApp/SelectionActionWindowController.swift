@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import InkletCore
 
@@ -110,6 +111,7 @@ final class SelectionActionWindowController: NSWindowController {
     private var hasUserResizedTranslationPanel = false
     private var isProgrammaticResize = false
     private var rememberedTranslationPanelSize: SelectionPanelSize?
+    private var languageSubscription: AnyCancellable?
 
     init() {
         let panel = SelectionActionPanel(
@@ -118,7 +120,7 @@ final class SelectionActionWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        panel.title = "Inklet Selection Actions"
+        panel.title = L10n.text("settings.section.selectionActions")
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = true
@@ -135,6 +137,12 @@ final class SelectionActionWindowController: NSWindowController {
             self?.onDismiss?()
         }
         render()
+        languageSubscription = NotificationCenter.default.publisher(for: .inkletLanguageDidChange)
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.render()
+                }
+            }
     }
 
     @available(*, unavailable)
@@ -216,6 +224,7 @@ final class SelectionActionWindowController: NSWindowController {
     }
 
     private func render() {
+        window?.title = L10n.text("settings.section.selectionActions")
         configureWindowInteraction(for: state)
 
         let hostingView = SelectionActionHostingView(rootView: SelectionActionView(
