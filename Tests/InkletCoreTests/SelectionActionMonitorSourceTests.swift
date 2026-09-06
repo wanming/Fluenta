@@ -1,6 +1,13 @@
 import XCTest
 
 final class SelectionActionMonitorSourceTests: XCTestCase {
+    func testLocalInteractionMonitorUsesAppKitPassthroughObservation() throws {
+        let source = try monitorSource()
+
+        XCTAssertTrue(source.contains("NSEvent.addLocalMonitorForEvents(matching: mask, handler: handler)"))
+        XCTAssertTrue(source.contains("localMonitorRegistrar("))
+    }
+
     func testCopyTapCallbackIsForwardedSynchronouslyWithoutTaskHop() throws {
         let source = try monitorSource()
         let startRange = try XCTUnwrap(source.range(of: "func start()"))

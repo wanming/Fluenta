@@ -6,7 +6,7 @@ import XCTest
 final class SelectionActionMonitorTests: XCTestCase {
     @MainActor
     func testEveryRequiredMonitorRegistrationFailureRollsBackAndCanRetry() {
-        for failureIndex in 0..<5 {
+        for failureIndex in 0..<6 {
             let tracker = SelectionInteractionTracker()
             _ = tracker.begin(.mouse)
             let installation = ControlledSelectionMonitorInstallation(failureIndex: failureIndex)
@@ -29,7 +29,7 @@ final class SelectionActionMonitorTests: XCTestCase {
 
             installation.failureIndex = nil
             XCTAssertTrue(monitor.start(), "retry after registration index \(failureIndex)")
-            XCTAssertEqual(installation.activeTokenCount, 5)
+            XCTAssertEqual(installation.activeTokenCount, 6)
             monitor.stop()
         }
     }
@@ -56,7 +56,7 @@ final class SelectionActionMonitorTests: XCTestCase {
         XCTAssertFalse(monitor.isInteractionActive)
 
         XCTAssertTrue(monitor.start())
-        XCTAssertEqual(installation.activeTokenCount, 5)
+        XCTAssertEqual(installation.activeTokenCount, 6)
         monitor.stop()
     }
 
@@ -166,21 +166,265 @@ final class SelectionActionMonitorTests: XCTestCase {
     }
 
     @MainActor
+    func testLocalShiftReleaseEndsInteractionStartedOutsideInklet() throws {
+        let tracker = SelectionInteractionTracker()
+        let installation = ControlledSelectionMonitorInstallation()
+        let scheduler = ControlledSelectionMonitorHandoffScheduler()
+        let monitor = makeMonitor(
+            tracker: tracker,
+            installation: installation,
+            copyTap: ControlledSelectionCopyTapLifecycle(startResults: [true]),
+            scheduler: scheduler
+        )
+        var interactionStates: [Bool] = []
+        monitor.onInteractionStateChange = { interactionStates.append($0) }
+        monitor.onCandidateSelection = { _ in XCTFail("Local events must not select text") }
+        monitor.onDismiss = { _ in XCTFail("Local events must not dismiss selection UI") }
+
+        XCTAssertTrue(monitor.start())
+        let globalFlags = try XCTUnwrap(installation.latestHandler(matching: [.flagsChanged]))
+        let local = try XCTUnwrap(installation.latestLocalHandler())
+        globalFlags(try makeKeyEvent(type: .flagsChanged, modifiers: [.shift], timestamp: 1))
+        scheduler.runAction(at: 0)
+        XCTAssertTrue(monitor.isInteractionActive)
+
+        let release = try makeKeyEvent(type: .flagsChanged, modifiers: [], timestamp: 2)
+        XCTAssertTrue(local(release) === release)
+        XCTAssertFalse(tracker.isActive)
+        scheduler.runAction(at: 1)
+        XCTAssertFalse(monitor.isInteractionActive)
+        XCTAssertEqual(interactionStates, [true, false])
+        monitor.stop()
+    }
+
+    @MainActor
+    func testLocalMouseReleaseEndsInteractionStartedOutsideInklet() throws {
+        let tracker = SelectionInteractionTracker()
+        let installation = ControlledSelectionMonitorInstallation()
+        let scheduler = ControlledSelectionMonitorHandoffScheduler()
+        let monitor = makeMonitor(
+            tracker: tracker,
+            installation: installation,
+            copyTap: ControlledSelectionCopyTapLifecycle(startResults: [true]),
+            scheduler: scheduler
+        )
+        var interactionStates: [Bool] = []
+        monitor.onInteractionStateChange = { interactionStates.append($0) }
+        monitor.onCandidateSelection = { _ in XCTFail("Local events must not select text") }
+        monitor.onDismiss = { _ in XCTFail("Local events must not dismiss selection UI") }
+
+        XCTAssertTrue(monitor.start())
+        let pointer = try XCTUnwrap(installation.latestHandler(
+            matching: [.scrollWheel, .leftMouseDown, .rightMouseDown]
+        ))
+        let local = try XCTUnwrap(installation.latestLocalHandler())
+        pointer(try makeMouseEvent(type: .leftMouseDown, timestamp: 1))
+        scheduler.runAction(at: 0)
+        XCTAssertTrue(monitor.isInteractionActive)
+
+        let release = try makeMouseEvent(type: .leftMouseUp, timestamp: 2)
+        XCTAssertTrue(local(release) === release)
+        XCTAssertFalse(tracker.isActive)
+        scheduler.runAction(at: 1)
+        XCTAssertFalse(monitor.isInteractionActive)
+        XCTAssertEqual(interactionStates, [true, false])
+        monitor.stop()
+    }
+
+    @MainActor
+    func testLocalReleasePreservesPendingGlobalSelectionHandoff() throws {
+        let tracker = SelectionInteractionTracker()
+        let installation = ControlledSelectionMonitorInstallation()
+        let scheduler = ControlledSelectionMonitorHandoffScheduler()
+        let monitor = makeMonitor(
+            tracker: tracker,
+            installation: installation,
+            copyTap: ControlledSelectionCopyTapLifecycle(startResults: [true]),
+            scheduler: scheduler
+        )
+        var candidateCount = 0
+        var interactionStates: [Bool] = []
+        monitor.onCandidateSelection = { _ in
+            XCTAssertTrue(tracker.isActive)
+            candidateCount += 1
+        }
+        monitor.onInteractionStateChange = { interactionStates.append($0) }
+
+        XCTAssertTrue(monitor.start())
+        let flags = try XCTUnwrap(installation.latestHandler(matching: [.flagsChanged]))
+        let keyUp = try XCTUnwrap(installation.latestHandler(matching: [.keyUp]))
+        let local = try XCTUnwrap(installation.latestLocalHandler())
+        flags(try makeKeyEvent(type: .flagsChanged, modifiers: [.shift], timestamp: 1))
+        scheduler.runAction(at: 0)
+        keyUp(try makeShiftKeyUpEvent(timestamp: 2))
+        let release = try makeKeyEvent(type: .flagsChanged, modifiers: [], timestamp: 3)
+        XCTAssertTrue(local(release) === release)
+        scheduler.runAction(at: 2)
+        XCTAssertTrue(monitor.isInteractionActive)
+        XCTAssertEqual(interactionStates, [true])
+
+        scheduler.runAction(at: 1)
+        XCTAssertEqual(candidateCount, 1)
+        XCTAssertFalse(monitor.isInteractionActive)
+        XCTAssertEqual(interactionStates, [true, false])
+        monitor.stop()
+    }
+
+    @MainActor
+    func testEntirelyLocalInteractionsRetryBlockedAutomaticUpdate() throws {
+        for kind in [SelectionInteractionTracker.Kind.keyboard, .mouse] {
+            let tracker = SelectionInteractionTracker()
+            let installation = ControlledSelectionMonitorInstallation()
+            let scheduler = ControlledSelectionMonitorHandoffScheduler()
+            let monitor = makeMonitor(
+                tracker: tracker,
+                installation: installation,
+                copyTap: ControlledSelectionCopyTapLifecycle(startResults: [true]),
+                scheduler: scheduler
+            )
+            let deferrer = ControlledSelectionMonitorUpdateDeferrer()
+            var presentationCount = 0
+            let gate = AutomaticUpdatePresentationGate(
+                canPresent: { !monitor.isInteractionActive },
+                present: { presentationCount += 1 },
+                deferAction: deferrer.enqueue
+            )
+            monitor.onInteractionStateChange = { active in
+                if !active { gate.schedule() }
+            }
+            monitor.onCandidateSelection = { _ in XCTFail("Local events must not select text") }
+            monitor.onDismiss = { _ in XCTFail("Local events must not dismiss selection UI") }
+
+            XCTAssertTrue(monitor.start())
+            let local = try XCTUnwrap(installation.latestLocalHandler())
+            let press = try kind == .keyboard
+                ? makeKeyEvent(type: .flagsChanged, modifiers: [.shift], timestamp: 1)
+                : makeMouseEvent(type: .leftMouseDown, timestamp: 1)
+            XCTAssertTrue(local(press) === press)
+            XCTAssertTrue(monitor.isInteractionActive)
+            scheduler.runAction(at: 0)
+
+            gate.schedule()
+            deferrer.runAction(at: 0)
+            XCTAssertEqual(presentationCount, 0)
+
+            let release = try kind == .keyboard
+                ? makeKeyEvent(type: .flagsChanged, modifiers: [], timestamp: 2)
+                : makeMouseEvent(type: .leftMouseUp, timestamp: 2)
+            XCTAssertTrue(local(release) === release)
+            XCTAssertFalse(monitor.isInteractionActive)
+            scheduler.runAction(at: 1)
+            XCTAssertEqual(deferrer.actions.count, 2)
+            deferrer.runAction(at: 1)
+            XCTAssertEqual(presentationCount, 1)
+            monitor.stop()
+        }
+    }
+
+    @MainActor
+    func testLocalCallbacksFromStoppedSessionCannotAffectQuickRestart() throws {
+        let tracker = SelectionInteractionTracker()
+        let installation = ControlledSelectionMonitorInstallation()
+        let scheduler = ControlledSelectionMonitorHandoffScheduler()
+        let monitor = makeMonitor(
+            tracker: tracker,
+            installation: installation,
+            copyTap: ControlledSelectionCopyTapLifecycle(startResults: [true, true]),
+            scheduler: scheduler
+        )
+        var interactionStates: [Bool] = []
+        monitor.onInteractionStateChange = { interactionStates.append($0) }
+
+        XCTAssertTrue(monitor.start())
+        let oldLocal = try XCTUnwrap(installation.latestLocalHandler())
+        let press = try makeKeyEvent(type: .flagsChanged, modifiers: [.shift], timestamp: 1)
+        XCTAssertTrue(oldLocal(press) === press)
+        XCTAssertTrue(tracker.isActive)
+        monitor.stop()
+        XCTAssertEqual(installation.activeTokenCount, 0)
+        XCTAssertTrue(monitor.start())
+        interactionStates.removeAll()
+
+        let local = try XCTUnwrap(installation.latestLocalHandler())
+        XCTAssertTrue(local(press) === press)
+        let release = try makeKeyEvent(type: .flagsChanged, modifiers: [], timestamp: 2)
+        XCTAssertTrue(oldLocal(release) === release)
+        scheduler.runAction(at: 0)
+        XCTAssertTrue(tracker.isActive)
+        XCTAssertTrue(interactionStates.isEmpty)
+
+        scheduler.runAction(at: 1)
+        XCTAssertEqual(interactionStates, [true])
+        XCTAssertTrue(local(release) === release)
+        scheduler.runAction(at: 2)
+        XCTAssertFalse(monitor.isInteractionActive)
+        XCTAssertEqual(interactionStates, [true, false])
+        monitor.stop()
+        XCTAssertEqual(installation.activeTokenCount, 0)
+        XCTAssertTrue(local(press) === press)
+        XCTAssertFalse(tracker.isActive)
+    }
+
+    @MainActor
+    func testLocalReleaseClearsPhysicalStateSeededAtStartup() throws {
+        for kind in [SelectionInteractionTracker.Kind.keyboard, .mouse] {
+            let tracker = SelectionInteractionTracker()
+            let installation = ControlledSelectionMonitorInstallation()
+            let scheduler = ControlledSelectionMonitorHandoffScheduler()
+            let physicalState = ControlledSelectionMonitorPhysicalState(
+                SelectionPhysicalInteractionState(
+                    isLeftMouseButtonPressed: kind == .mouse,
+                    isShiftPressed: kind == .keyboard
+                )
+            )
+            let monitor = makeMonitor(
+                tracker: tracker,
+                installation: installation,
+                copyTap: ControlledSelectionCopyTapLifecycle(startResults: [true]),
+                scheduler: scheduler,
+                physicalInteractionStateProvider: { physicalState.value }
+            )
+            var interactionStates: [Bool] = []
+            monitor.onInteractionStateChange = { interactionStates.append($0) }
+
+            XCTAssertTrue(monitor.start())
+            XCTAssertTrue(tracker.isActive)
+            XCTAssertTrue(monitor.isInteractionActive)
+            let local = try XCTUnwrap(installation.latestLocalHandler())
+            physicalState.value = SelectionPhysicalInteractionState(
+                isLeftMouseButtonPressed: false,
+                isShiftPressed: false
+            )
+            let release = try kind == .keyboard
+                ? makeKeyEvent(type: .flagsChanged, modifiers: [], timestamp: 1)
+                : makeMouseEvent(type: .leftMouseUp, timestamp: 1)
+            XCTAssertTrue(local(release) === release)
+            XCTAssertFalse(tracker.isActive)
+            scheduler.runAction(at: 0)
+            XCTAssertFalse(monitor.isInteractionActive)
+            XCTAssertEqual(interactionStates, [true, false])
+            monitor.stop()
+        }
+    }
+
+    @MainActor
     private func makeMonitor(
         tracker: SelectionInteractionTracker,
         installation: ControlledSelectionMonitorInstallation,
         copyTap: ControlledSelectionCopyTapLifecycle,
-        scheduler: ControlledSelectionMonitorHandoffScheduler
+        scheduler: ControlledSelectionMonitorHandoffScheduler,
+        physicalInteractionStateProvider: @escaping SelectionActionMonitor.PhysicalInteractionStateProvider = {
+            SelectionPhysicalInteractionState(
+                isLeftMouseButtonPressed: false,
+                isShiftPressed: false
+            )
+        }
     ) -> SelectionActionMonitor {
         SelectionActionMonitor(
             interactionTracker: tracker,
-            physicalInteractionStateProvider: {
-                SelectionPhysicalInteractionState(
-                    isLeftMouseButtonPressed: false,
-                    isShiftPressed: false
-                )
-            },
+            physicalInteractionStateProvider: physicalInteractionStateProvider,
             monitorRegistrar: installation.register,
+            localMonitorRegistrar: installation.registerLocal,
             monitorRemover: installation.remove,
             handoffScheduler: scheduler.enqueue,
             copyEventTapStarter: copyTap.start,
@@ -234,12 +478,19 @@ private final class ControlledSelectionMonitorInstallation {
         let token: Token
     }
 
+    struct LocalRegistration {
+        let mask: NSEvent.EventTypeMask
+        let handler: SelectionActionMonitor.LocalEventHandler
+        let token: Token
+    }
+
     final class Token {}
 
     var failureIndex: Int?
     private(set) var registrationCount = 0
     private(set) var removalCount = 0
     private(set) var registrations: [Registration] = []
+    private(set) var localRegistrations: [LocalRegistration] = []
     private var activeTokens: Set<ObjectIdentifier> = []
 
     var activeTokenCount: Int {
@@ -269,8 +520,52 @@ private final class ControlledSelectionMonitorInstallation {
         activeTokens.remove(ObjectIdentifier(token))
     }
 
+    func registerLocal(
+        _ mask: NSEvent.EventTypeMask,
+        _ handler: @escaping SelectionActionMonitor.LocalEventHandler
+    ) -> Any? {
+        let index = registrationCount
+        registrationCount += 1
+        guard failureIndex != index else { return nil }
+        let token = Token()
+        localRegistrations.append(LocalRegistration(mask: mask, handler: handler, token: token))
+        activeTokens.insert(ObjectIdentifier(token))
+        return token
+    }
+
     func latestHandler(matching mask: NSEvent.EventTypeMask) -> SelectionActionMonitor.EventHandler? {
         registrations.last(where: { $0.mask == mask })?.handler
+    }
+
+    func latestLocalHandler() -> SelectionActionMonitor.LocalEventHandler? {
+        localRegistrations.last(where: {
+            $0.mask == [.flagsChanged, .leftMouseDown, .leftMouseUp]
+        })?.handler
+    }
+}
+
+@MainActor
+private final class ControlledSelectionMonitorPhysicalState {
+    var value: SelectionPhysicalInteractionState
+
+    init(_ value: SelectionPhysicalInteractionState) {
+        self.value = value
+    }
+}
+
+@MainActor
+private final class ControlledSelectionMonitorUpdateDeferrer {
+    private(set) var actions: [AutomaticUpdatePresentationGate.DeferredAction] = []
+
+    func enqueue(
+        _ action: @escaping AutomaticUpdatePresentationGate.DeferredAction
+    ) -> @MainActor () -> Void {
+        actions.append(action)
+        return {}
+    }
+
+    func runAction(at index: Int) {
+        actions[index]()
     }
 }
 

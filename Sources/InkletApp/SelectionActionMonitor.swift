@@ -53,10 +53,15 @@ enum SelectionActionDismissReason {
 @MainActor
 final class SelectionActionMonitor {
     typealias EventHandler = @Sendable (NSEvent) -> Void
+    typealias LocalEventHandler = @Sendable (NSEvent) -> NSEvent?
     typealias PhysicalInteractionStateProvider = @MainActor () -> SelectionPhysicalInteractionState
     typealias MonitorRegistrar = @MainActor (
         _ mask: NSEvent.EventTypeMask,
         _ handler: @escaping EventHandler
+    ) -> Any?
+    typealias LocalMonitorRegistrar = @MainActor (
+        _ mask: NSEvent.EventTypeMask,
+        _ handler: @escaping LocalEventHandler
     ) -> Any?
     typealias MonitorRemover = @MainActor (_ monitor: Any) -> Void
     typealias HandoffAction = @MainActor @Sendable () -> Void
@@ -81,6 +86,7 @@ final class SelectionActionMonitor {
     private let interactionTracker: SelectionInteractionTracker
     private let physicalInteractionStateProvider: PhysicalInteractionStateProvider
     private let monitorRegistrar: MonitorRegistrar
+    private let localMonitorRegistrar: LocalMonitorRegistrar
     private let monitorRemover: MonitorRemover
     private let handoffScheduler: HandoffScheduler
     private let copyEventTapStarter: CopyEventTapStarter
@@ -104,6 +110,9 @@ final class SelectionActionMonitor {
         monitorRegistrar: @escaping MonitorRegistrar = { mask, handler in
             NSEvent.addGlobalMonitorForEvents(matching: mask, handler: handler)
         },
+        localMonitorRegistrar: @escaping LocalMonitorRegistrar = { mask, handler in
+            NSEvent.addLocalMonitorForEvents(matching: mask, handler: handler)
+        },
         monitorRemover: @escaping MonitorRemover = { monitor in
             NSEvent.removeMonitor(monitor)
         },
@@ -119,6 +128,7 @@ final class SelectionActionMonitor {
         self.interactionTracker = interactionTracker
         self.physicalInteractionStateProvider = physicalInteractionStateProvider
         self.monitorRegistrar = monitorRegistrar
+        self.localMonitorRegistrar = localMonitorRegistrar
         self.monitorRemover = monitorRemover
         self.handoffScheduler = handoffScheduler
         self.copyEventTapStarter = copyEventTapStarter ?? { begin, end, trigger in
@@ -139,7 +149,7 @@ final class SelectionActionMonitor {
             return true
         }
 
-        SelectionActionDiagnostics.log("starting global monitors")
+        SelectionActionDiagnostics.log("starting selection monitors")
         let interactionTracker = self.interactionTracker
         let session = SelectionActionMonitorSession()
         let handoffScheduler = self.handoffScheduler
@@ -340,6 +350,38 @@ final class SelectionActionMonitor {
             return failMonitorInstallation(session: session, installedMonitors: installedMonitors)
         }
 
+        // Global monitors exclude Inklet's events. Track local boundaries as well so
+        // a gesture can end in either app without discarding queued selection work.
+        guard let localMonitor = localMonitorRegistrar(
+            [.flagsChanged, .leftMouseDown, .leftMouseUp],
+            { [weak self, session, interactionTracker] event in
+                guard let transition = session.withValidValue({
+                    switch event.type {
+                    case .flagsChanged:
+                        return event.modifierFlags.contains(.shift)
+                            ? interactionTracker.begin(.keyboard)
+                            : interactionTracker.release(.keyboard)
+                    case .leftMouseDown:
+                        return interactionTracker.begin(.mouse)
+                    case .leftMouseUp:
+                        return interactionTracker.release(.mouse)
+                    default:
+                        return .unchanged
+                    }
+                }) else {
+                    return event
+                }
+                handoffScheduler { @MainActor [weak self, session] in
+                    guard session.valid else { return }
+                    self?.handleInteractionTransition(transition)
+                }
+                return event
+            }
+        ) else {
+            return failMonitorInstallation(session: session, installedMonitors: installedMonitors)
+        }
+        installedMonitors.append(localMonitor)
+
         monitors = installedMonitors
         currentSession = session
         isStarted = true
@@ -371,7 +413,7 @@ final class SelectionActionMonitor {
         installedMonitors: [Any]
     ) -> Bool {
         rollbackFailedStart(session: session, installedMonitors: installedMonitors)
-        SelectionActionDiagnostics.log("global selection monitor installation failed")
+        SelectionActionDiagnostics.log("selection monitor installation failed")
         return false
     }
 
