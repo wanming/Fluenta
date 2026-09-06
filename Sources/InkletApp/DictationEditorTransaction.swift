@@ -551,9 +551,17 @@ final class DictationEditorTransaction: DictationEditorTransacting {
             if opensStandaloneGroup {
                 undoManager.beginUndoGrouping()
             }
-            undoManager.registerUndo(withTarget: self) { [self] _ in
+            let action: @MainActor @Sendable () -> Void = { [self] in
                 replace(current: current, with: replacement)
             }
+            // Older Foundation SDKs require a nonisolated, sendable handler.
+            // AppKit invokes this editor's undo actions synchronously on the main actor.
+            let handler: @Sendable (UndoTarget) -> Void = { _ in
+                MainActor.assumeIsolated {
+                    action()
+                }
+            }
+            undoManager.registerUndo(withTarget: self, handler: handler)
             undoManager.setActionName(L10n.text("dictation.undo.action"))
             if opensStandaloneGroup {
                 undoManager.endUndoGrouping()
@@ -578,9 +586,15 @@ final class DictationEditorTransaction: DictationEditorTransacting {
                 return
             }
             synchronizeSource(textView.string)
-            undoManager.registerUndo(withTarget: self) { [self] _ in
+            let action: @MainActor @Sendable () -> Void = { [self] in
                 replace(current: replacement, with: current)
             }
+            let handler: @Sendable (UndoTarget) -> Void = { _ in
+                MainActor.assumeIsolated {
+                    action()
+                }
+            }
+            undoManager.registerUndo(withTarget: self, handler: handler)
             undoManager.setActionName(L10n.text("dictation.undo.action"))
         }
     }
