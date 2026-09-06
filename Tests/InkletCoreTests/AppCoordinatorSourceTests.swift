@@ -31,8 +31,7 @@ final class AppCoordinatorSourceTests: XCTestCase {
         XCTAssertTrue(factoryBlock.contains("scheduler: FoundationUpdateCheckOneShotScheduler()"))
         XCTAssertTrue(source.contains("private lazy var updateCheckAlertPresenter"))
         XCTAssertTrue(factoryBlock.contains("presenter: updateCheckAlertPresenter"))
-        XCTAssertTrue(factoryBlock.contains("canPresentAutomatically: { [weak self] in"))
-        XCTAssertTrue(factoryBlock.contains("self?.canPresentAutomaticUpdate ?? false"))
+        XCTAssertFalse(factoryBlock.contains("canPresentAutomatically:"))
         XCTAssertTrue(factoryBlock.contains("checker.check(currentBuildNumber: currentBuildNumber)"))
         XCTAssertFalse(factoryBlock.contains("userDefaults:"))
         XCTAssertEqual(
@@ -41,6 +40,8 @@ final class AppCoordinatorSourceTests: XCTestCase {
         )
         XCTAssertTrue(factoryBlock.contains("coordinator.onCheckingStateChange = { [weak self] _ in"))
         XCTAssertTrue(factoryBlock.contains("self?.refreshUpdateCheckMenuItems()"))
+        XCTAssertTrue(factoryBlock.contains("coordinator.onPendingAutomaticUpdate = { [weak self] in"))
+        XCTAssertTrue(factoryBlock.contains("self?.automaticUpdatePresentationGate.schedule()"))
         XCTAssertFalse(factoryBlock.contains("self?.configureMainMenu()"))
         XCTAssertFalse(factoryBlock.contains("self?.configureStatusItemMenu()"))
 
@@ -76,6 +77,7 @@ final class AppCoordinatorSourceTests: XCTestCase {
         let updateStart = try XCTUnwrap(startBlock.range(of: "updateCheckCoordinator.start()"))
         let stoppingAssignment = try XCTUnwrap(stopBlock.range(of: "isStopping = true"))
         let updateStop = try XCTUnwrap(stopBlock.range(of: "updateCheckCoordinator.stop()"))
+        let gateCancel = try XCTUnwrap(stopBlock.range(of: "automaticUpdatePresentationGate.cancel()"))
         let dictationCancellation = try XCTUnwrap(stopBlock.range(
             of: "await windowController.cancelDictationAndWait()"
         ))
@@ -86,6 +88,8 @@ final class AppCoordinatorSourceTests: XCTestCase {
             startBlock[updateStart.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines) == "}"
         )
         XCTAssertLessThan(stoppingAssignment.lowerBound, updateStop.lowerBound)
+        XCTAssertLessThan(gateCancel.lowerBound, updateStop.lowerBound)
+        XCTAssertLessThan(gateCancel.lowerBound, dictationCancellation.lowerBound)
         XCTAssertLessThan(updateStop.lowerBound, dictationCancellation.lowerBound)
         XCTAssertLessThan(dictationCancellation.lowerBound, observerRemoval.lowerBound)
     }
@@ -272,7 +276,38 @@ final class AppCoordinatorSourceTests: XCTestCase {
         let refreshBlock = source[refreshStart.lowerBound..<requestMigrationStart.lowerBound]
         XCTAssertTrue(refreshBlock.contains("migrationPresentationModel.setWorkflowsIdle("))
         XCTAssertTrue(refreshBlock.contains(
-            "updateCheckCoordinator.presentPendingAutomaticUpdateIfPossible()"
+            "automaticUpdatePresentationGate.schedule()"
+        ))
+        XCTAssertFalse(refreshBlock.contains("presentPendingAutomaticUpdateIfPossible()"))
+
+        XCTAssertEqual(
+            source.components(separatedBy: "private lazy var automaticUpdatePresentationGate").count - 1,
+            1
+        )
+        XCTAssertEqual(
+            source.components(separatedBy: "AutomaticUpdatePresentationGate(").count - 1,
+            1
+        )
+        XCTAssertEqual(
+            source.components(separatedBy: "updateCheckCoordinator.presentPendingAutomaticUpdateIfPossible()").count - 1,
+            1
+        )
+        let presentationGateStart = try XCTUnwrap(source.range(
+            of: "private lazy var automaticUpdatePresentationGate"
+        ))
+        let updatePresenterStart = try XCTUnwrap(source.range(
+            of: "private lazy var updateCheckAlertPresenter",
+            range: presentationGateStart.upperBound..<source.endIndex
+        ))
+        let presentationGateBlock = source[
+            presentationGateStart.lowerBound..<updatePresenterStart.lowerBound
+        ]
+        XCTAssertTrue(presentationGateBlock.contains("AutomaticUpdatePresentationGate("))
+        XCTAssertTrue(presentationGateBlock.contains("canPresent: { [weak self] in"))
+        XCTAssertTrue(presentationGateBlock.contains("self?.canPresentAutomaticUpdate ?? false"))
+        XCTAssertTrue(presentationGateBlock.contains("present: { [weak self] in"))
+        XCTAssertTrue(presentationGateBlock.contains(
+            "self?.updateCheckCoordinator.presentPendingAutomaticUpdateIfPossible()"
         ))
 
         let hotkeyStart = try XCTUnwrap(source.range(of: "private func setHotkeyRecording"))

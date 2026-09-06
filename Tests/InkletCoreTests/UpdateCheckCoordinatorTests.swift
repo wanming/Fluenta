@@ -241,7 +241,6 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
     func testAutomaticThenManualUsesOneRequestAndManualPresentation() async {
         let fixture = makeFixture(automaticChecksEnabled: true)
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
-        fixture.gate.value = false
         let start = fixture.checker.expectStart(description: "automatic check starts")
         let finished = expectation(description: "upgraded check finishes")
         fixture.coordinator.onCheckingStateChange = { if !$0 { finished.fulfill() } }
@@ -366,10 +365,9 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
         XCTAssertEqual(fixture.presenter.events, [.failure])
     }
 
-    func testDeferredAutomaticUpdateFlushesOnlyOnceWhenGateBecomesAvailable() async {
+    func testAutomaticUpdateStoresPendingInvokesCallbackAndDoesNotPresentInline() async {
         let fixture = makeFixture(automaticChecksEnabled: true)
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
-        fixture.gate.value = false
         let start = fixture.checker.expectStart(description: "automatic update check starts")
         let finished = expectation(description: "automatic update check finishes")
         fixture.coordinator.onCheckingStateChange = { if !$0 { finished.fulfill() } }
@@ -378,20 +376,22 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
         fixture.checker.succeed(.updateAvailable(makeRelease(buildNumber: 2)), at: 0)
         await fulfillment(of: [finished], timeout: 1)
 
-        fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
-        fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
+        XCTAssertEqual(fixture.pendingCallback.count, 1)
         XCTAssertTrue(fixture.presenter.events.isEmpty)
 
-        fixture.gate.value = true
         fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
         fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
         XCTAssertEqual(fixture.presenter.events, [.update(2, "1.0.0")])
     }
 
-    func testPendingFlushStopInsideGateDoesNotPresentOrSurviveRestart() async {
+    func testCallbackStoppingCoordinatorDropsPendingUpdate() async {
         let fixture = makeFixture(automaticChecksEnabled: true)
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
-        fixture.gate.value = false
+        fixture.coordinator.onPendingAutomaticUpdate = {
+            fixture.pendingCallback.record()
+            fixture.coordinator.stop()
+        }
+
         await completeAutomaticCheck(
             fixture,
             result: .success(.updateAvailable(makeRelease(buildNumber: 2))),
@@ -399,113 +399,10 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
             startCoordinator: true
         )
 
-        fixture.gate.value = true
-        fixture.gate.onRead = { fixture.coordinator.stop() }
-        fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
-
         XCTAssertFalse(fixture.coordinator.isChecking)
+        XCTAssertEqual(fixture.pendingCallback.count, 1)
         XCTAssertTrue(fixture.presenter.events.isEmpty)
         fixture.coordinator.start()
-        fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
-        XCTAssertTrue(fixture.presenter.events.isEmpty)
-    }
-
-    func testPendingFlushStopRestartInsideGateDoesNotPresentOldLifecycleRelease() async {
-        let fixture = makeFixture(automaticChecksEnabled: true)
-        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
-        fixture.gate.value = false
-        await completeAutomaticCheck(
-            fixture,
-            result: .success(.updateAvailable(makeRelease(buildNumber: 2))),
-            callIndex: 0,
-            startCoordinator: true
-        )
-
-        fixture.gate.value = true
-        fixture.gate.onRead = {
-            fixture.coordinator.stop()
-            fixture.coordinator.start()
-        }
-        fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
-
-        XCTAssertFalse(fixture.coordinator.isChecking)
-        XCTAssertTrue(fixture.presenter.events.isEmpty)
-        fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
-        XCTAssertTrue(fixture.presenter.events.isEmpty)
-    }
-
-    func testAutomaticUpdateGateStopReturningTrueSuppressesPresentation() async {
-        let fixture = makeFixture(automaticChecksEnabled: true)
-        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
-        let started = fixture.checker.expectStart(description: "automatic check starts")
-        let finished = expectation(description: "automatic check finishes")
-        var checkingEdges: [Bool] = []
-        fixture.coordinator.onCheckingStateChange = { state in
-            checkingEdges.append(state)
-            if !state { finished.fulfill() }
-        }
-        fixture.coordinator.start()
-        await fulfillment(of: [started], timeout: 1)
-        fixture.gate.value = true
-        fixture.gate.onRead = { fixture.coordinator.stop() }
-
-        fixture.checker.succeed(.updateAvailable(makeRelease(buildNumber: 2)), at: 0)
-        await fulfillment(of: [finished], timeout: 1)
-
-        XCTAssertEqual(checkingEdges, [true, false])
-        XCTAssertFalse(fixture.coordinator.isChecking)
-        XCTAssertTrue(fixture.presenter.events.isEmpty)
-        fixture.coordinator.start()
-        fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
-        XCTAssertTrue(fixture.presenter.events.isEmpty)
-    }
-
-    func testAutomaticUpdateGateStopReturningFalseDoesNotRestorePendingAfterRestart() async {
-        let fixture = makeFixture(automaticChecksEnabled: true)
-        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
-        let started = fixture.checker.expectStart(description: "automatic check starts")
-        let finished = expectation(description: "automatic check finishes")
-        fixture.coordinator.onCheckingStateChange = { if !$0 { finished.fulfill() } }
-        fixture.coordinator.start()
-        await fulfillment(of: [started], timeout: 1)
-        fixture.gate.value = false
-        fixture.gate.onRead = { fixture.coordinator.stop() }
-
-        fixture.checker.succeed(.updateAvailable(makeRelease(buildNumber: 2)), at: 0)
-        await fulfillment(of: [finished], timeout: 1)
-
-        XCTAssertFalse(fixture.coordinator.isChecking)
-        XCTAssertTrue(fixture.presenter.events.isEmpty)
-        fixture.coordinator.start()
-        fixture.gate.value = true
-        fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
-        XCTAssertTrue(fixture.presenter.events.isEmpty)
-    }
-
-    func testAutomaticUpdateGateStopRestartDoesNotPresentIntoNewLifecycle() async {
-        let fixture = makeFixture(automaticChecksEnabled: true)
-        defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
-        let started = fixture.checker.expectStart(description: "automatic check starts")
-        let finished = expectation(description: "automatic check finishes")
-        var checkingEdges: [Bool] = []
-        fixture.coordinator.onCheckingStateChange = { state in
-            checkingEdges.append(state)
-            if !state { finished.fulfill() }
-        }
-        fixture.coordinator.start()
-        await fulfillment(of: [started], timeout: 1)
-        fixture.gate.value = true
-        fixture.gate.onRead = {
-            fixture.coordinator.stop()
-            fixture.coordinator.start()
-        }
-
-        fixture.checker.succeed(.updateAvailable(makeRelease(buildNumber: 2)), at: 0)
-        await fulfillment(of: [finished], timeout: 1)
-
-        XCTAssertEqual(checkingEdges, [true, false])
-        XCTAssertFalse(fixture.coordinator.isChecking)
-        XCTAssertTrue(fixture.presenter.events.isEmpty)
         fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
         XCTAssertTrue(fixture.presenter.events.isEmpty)
     }
@@ -513,7 +410,6 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
     func testPendingAutomaticUpdateDoesNotFlushWhileAnotherCheckIsActive() async {
         let fixture = makeFixture(automaticChecksEnabled: true)
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
-        fixture.gate.value = false
         let automaticStart = fixture.checker.expectStart(description: "automatic check starts")
         let automaticFinished = expectation(description: "automatic check finishes")
         fixture.coordinator.onCheckingStateChange = { if !$0 { automaticFinished.fulfill() } }
@@ -525,7 +421,6 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
         let manualStart = fixture.checker.expectStart(description: "manual check starts")
         fixture.coordinator.checkManually()
         await fulfillment(of: [manualStart], timeout: 1)
-        fixture.gate.value = true
         fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
         XCTAssertTrue(fixture.presenter.events.isEmpty)
 
@@ -539,10 +434,9 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
         XCTAssertEqual(fixture.presenter.events, [.failure, .update(2, "1.0.0")])
     }
 
-    func testManualUpdatePresentsWhileGateIsBusyAndClearsStalePendingUpdate() async {
+    func testManualUpdatePresentsImmediatelyAndClearsStalePendingUpdate() async {
         let fixture = makeFixture(automaticChecksEnabled: true)
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
-        fixture.gate.value = false
         let automaticStart = fixture.checker.expectStart(description: "automatic check starts")
         let automaticFinished = expectation(description: "automatic check finishes")
         fixture.coordinator.onCheckingStateChange = { if !$0 { automaticFinished.fulfill() } }
@@ -560,7 +454,6 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
         await fulfillment(of: [manualFinished], timeout: 1)
 
         XCTAssertEqual(fixture.presenter.events, [.update(3, "1.0.0")])
-        fixture.gate.value = true
         fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
         XCTAssertEqual(fixture.presenter.events, [.update(3, "1.0.0")])
     }
@@ -568,8 +461,6 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
     func testLatestDeferredAutomaticUpdateReplacesOlderAndUpToDateClearsIt() async {
         let fixture = makeFixture(automaticChecksEnabled: true)
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
-        fixture.gate.value = false
-
         await completeAutomaticCheck(
             fixture,
             result: .success(.updateAvailable(makeRelease(buildNumber: 2))),
@@ -584,11 +475,9 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
             startCoordinator: false
         )
 
-        fixture.gate.value = true
         fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
         XCTAssertEqual(fixture.presenter.events, [.update(3, "1.0.0")])
 
-        fixture.gate.value = false
         fixture.clock.date = fixture.clock.date.addingTimeInterval(UpdateCheckSchedulePolicy.interval)
         await completeAutomaticCheck(
             fixture,
@@ -603,7 +492,6 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
             callIndex: 3,
             startCoordinator: false
         )
-        fixture.gate.value = true
         fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
         XCTAssertEqual(fixture.presenter.events, [.update(3, "1.0.0")])
     }
@@ -611,7 +499,6 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
     func testAutomaticFailureRetainsPreviouslyDeferredUpdate() async {
         let fixture = makeFixture(automaticChecksEnabled: true)
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
-        fixture.gate.value = false
         await completeAutomaticCheck(
             fixture,
             result: .success(.updateAvailable(makeRelease(buildNumber: 2))),
@@ -626,15 +513,14 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
             startCoordinator: false
         )
 
-        fixture.gate.value = true
         fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
         XCTAssertEqual(fixture.presenter.events, [.update(2, "1.0.0")])
+        XCTAssertEqual(fixture.pendingCallback.count, 2)
     }
 
-    func testAutomaticFailureFlushesDeferredUpdateWhenGateBecomesAvailableMidCheck() async {
+    func testAutomaticFailureWithPendingUpdateReschedulesWithoutPresentingInline() async {
         let fixture = makeFixture(automaticChecksEnabled: true)
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
-        fixture.gate.value = false
         await completeAutomaticCheck(
             fixture,
             result: .success(.updateAvailable(makeRelease(buildNumber: 2))),
@@ -649,20 +535,21 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
         fixture.scheduler.fire()
         await fulfillment(of: [secondStart], timeout: 1)
 
-        fixture.gate.value = true
         fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
         XCTAssertTrue(fixture.presenter.events.isEmpty)
 
         fixture.checker.fail(TestError.failed, at: 1)
         await fulfillment(of: [secondFinished], timeout: 1)
 
+        XCTAssertTrue(fixture.presenter.events.isEmpty)
+        XCTAssertEqual(fixture.pendingCallback.count, 2)
+        fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
         XCTAssertEqual(fixture.presenter.events, [.update(2, "1.0.0")])
     }
 
     func testManualFailureRetainsPreviouslyDeferredUpdate() async {
         let fixture = makeFixture(automaticChecksEnabled: true)
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
-        fixture.gate.value = false
         await completeAutomaticCheck(
             fixture,
             result: .success(.updateAvailable(makeRelease(buildNumber: 2))),
@@ -679,7 +566,6 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
         await fulfillment(of: [manualFinished], timeout: 1)
         XCTAssertEqual(fixture.presenter.events, [.failure])
 
-        fixture.gate.value = true
         fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
         XCTAssertEqual(fixture.presenter.events, [.failure, .update(2, "1.0.0")])
     }
@@ -687,7 +573,6 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
     func testStopCancelsActiveCheckDropsPendingAndSuppressesStaleCompletion() async {
         let fixture = makeFixture(automaticChecksEnabled: true)
         defer { fixture.defaults.removePersistentDomain(forName: fixture.suiteName) }
-        fixture.gate.value = false
         await completeAutomaticCheck(
             fixture,
             result: .success(.updateAvailable(makeRelease(buildNumber: 2))),
@@ -695,21 +580,29 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
             startCoordinator: true
         )
 
-        let manualStart = fixture.checker.expectStart(description: "manual check starts")
+        fixture.clock.date = fixture.clock.date.addingTimeInterval(UpdateCheckSchedulePolicy.interval)
+        let automaticStart = fixture.checker.expectStart(description: "second automatic check starts")
         var checkingEdges: [Bool] = []
         fixture.coordinator.onCheckingStateChange = { checkingEdges.append($0) }
-        fixture.coordinator.checkManually()
-        await fulfillment(of: [manualStart], timeout: 1)
+        fixture.scheduler.fire()
+        await fulfillment(of: [automaticStart], timeout: 1)
         fixture.coordinator.stop()
 
         XCTAssertFalse(fixture.coordinator.isChecking)
         XCTAssertEqual(checkingEdges, [true, false])
         XCTAssertGreaterThanOrEqual(fixture.scheduler.cancellationCount, 1)
-        fixture.checker.fail(TestError.failed, at: 1)
+        fixture.checker.succeed(.updateAvailable(makeRelease(buildNumber: 3)), at: 1)
+        for _ in 0..<4 {
+            await Task.yield()
+        }
 
-        fixture.gate.value = true
         fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
         XCTAssertTrue(fixture.presenter.events.isEmpty)
+        XCTAssertEqual(fixture.pendingCallback.count, 1)
+        fixture.coordinator.start()
+        fixture.coordinator.presentPendingAutomaticUpdateIfPossible()
+        XCTAssertTrue(fixture.presenter.events.isEmpty)
+        XCTAssertEqual(fixture.pendingCallback.count, 1)
     }
 
     func testRetryClosureNoOpsAfterStop() async throws {
@@ -877,7 +770,7 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
         let presenter = RecordingUpdateCheckPresenter()
         let checker = ControlledUpdateChecker()
         let clock = MutableClock(date: Date(timeIntervalSinceReferenceDate: 1_000_000))
-        let gate = MutableGate(value: true)
+        let pendingCallback = CallbackRecorder()
         let coordinator = UpdateCheckCoordinator(
             automaticChecksEnabled: automaticChecksEnabled,
             currentVersion: "1.0.0",
@@ -885,9 +778,9 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
             scheduler: scheduler,
             presenter: presenter,
             now: { clock.date },
-            canPresentAutomatically: { gate.read() },
             check: { try await checker.check() }
         )
+        coordinator.onPendingAutomaticUpdate = { pendingCallback.record() }
         return Fixture(
             suiteName: suiteName,
             defaults: defaults,
@@ -895,7 +788,7 @@ final class UpdateCheckCoordinatorTests: XCTestCase {
             presenter: presenter,
             checker: checker,
             clock: clock,
-            gate: gate,
+            pendingCallback: pendingCallback,
             coordinator: coordinator
         )
     }
@@ -920,7 +813,7 @@ private struct Fixture {
     let presenter: RecordingUpdateCheckPresenter
     let checker: ControlledUpdateChecker
     let clock: MutableClock
-    let gate: MutableGate
+    let pendingCallback: CallbackRecorder
     let coordinator: UpdateCheckCoordinator
 }
 
@@ -1028,19 +921,11 @@ private final class MutableClock {
 }
 
 @MainActor
-private final class MutableGate {
-    var value: Bool
-    var onRead: (@MainActor () -> Void)?
+private final class CallbackRecorder {
+    private(set) var count = 0
 
-    init(value: Bool) {
-        self.value = value
-    }
-
-    func read() -> Bool {
-        let action = onRead
-        onRead = nil
-        action?()
-        return value
+    func record() {
+        count += 1
     }
 }
 

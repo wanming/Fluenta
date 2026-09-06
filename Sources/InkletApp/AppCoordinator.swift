@@ -110,6 +110,14 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
     private var mainUpdateCheckMenuItem: NSMenuItem?
     private var statusUpdateCheckMenuItem: NSMenuItem?
     private var trackedMenus: Set<ObjectIdentifier> = []
+    private lazy var automaticUpdatePresentationGate = AutomaticUpdatePresentationGate(
+        canPresent: { [weak self] in
+            self?.canPresentAutomaticUpdate ?? false
+        },
+        present: { [weak self] in
+            self?.updateCheckCoordinator.presentPendingAutomaticUpdateIfPossible()
+        }
+    )
     private lazy var updateCheckAlertPresenter: UpdateCheckAlertPresenter = {
         let presenter = UpdateCheckAlertPresenter()
         presenter.onPresentationStateChange = { [weak self] isPresenting in
@@ -294,15 +302,15 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
             currentVersion: BuildInfo.displayVersion,
             scheduler: FoundationUpdateCheckOneShotScheduler(),
             presenter: updateCheckAlertPresenter,
-            canPresentAutomatically: { [weak self] in
-                self?.canPresentAutomaticUpdate ?? false
-            },
             check: {
                 try await checker.check(currentBuildNumber: currentBuildNumber)
             }
         )
         coordinator.onCheckingStateChange = { [weak self] _ in
             self?.refreshUpdateCheckMenuItems()
+        }
+        coordinator.onPendingAutomaticUpdate = { [weak self] in
+            self?.automaticUpdatePresentationGate.schedule()
         }
         return coordinator
     }
@@ -393,6 +401,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
 
     func stop() async {
         isStopping = true
+        automaticUpdatePresentationGate.cancel()
         updateCheckCoordinator.stop()
         await windowController.cancelDictationAndWait()
         if let configObserver {
@@ -539,7 +548,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
         migrationPresentationModel.setWorkflowsIdle(
             canRequestAssistedMigration
         )
-        updateCheckCoordinator.presentPendingAutomaticUpdateIfPossible()
+        automaticUpdatePresentationGate.schedule()
     }
 
     private func requestAssistedMigrationImport() async {
