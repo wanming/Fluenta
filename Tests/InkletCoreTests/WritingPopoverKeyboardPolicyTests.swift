@@ -102,6 +102,104 @@ final class WritingPopoverKeyboardPolicyTests: XCTestCase {
         XCTAssertEqual(action(route: .editor, keyCode: 53), .passThrough)
     }
 
+    func testEditorIMEStillOwnsEscapeBeforeDictationCancellation() throws {
+        let source = try popoverSource()
+        let nativeStart = try XCTUnwrap(source.range(of: "private final class InkletNativeTextView"))
+        let representableStart = try XCTUnwrap(source.range(
+            of: "private struct InkletTextView",
+            range: nativeStart.upperBound..<source.endIndex
+        ))
+        let nativeBlock = source[nativeStart.lowerBound..<representableStart.lowerBound]
+        let markedTextCheck = try XCTUnwrap(nativeBlock.range(of: "!hasMarkedText()"))
+        let escapeCallback = try XCTUnwrap(nativeBlock.range(
+            of: "onEscapeKeyDown?()",
+            range: markedTextCheck.upperBound..<nativeBlock.endIndex
+        ))
+
+        XCTAssertLessThan(markedTextCheck.lowerBound, escapeCallback.lowerBound)
+        XCTAssertTrue(nativeBlock.contains("super.keyDown(with: event)"))
+    }
+
+    func testPanelIMEStillOwnsEscapeBeforeViewModelCancellation() throws {
+        let source = try windowControllerSource()
+        let cancelStart = try XCTUnwrap(source.range(of: "override func cancelOperation"))
+        let keyDownStart = try XCTUnwrap(source.range(
+            of: "override func keyDown(with event: NSEvent)",
+            range: cancelStart.upperBound..<source.endIndex
+        ))
+        let cancelBlock = source[cancelStart.lowerBound..<keyDownStart.lowerBound]
+        let compositionGuard = try XCTUnwrap(cancelBlock.range(of: "guard !isComposingText else"))
+        let escapeCallback = try XCTUnwrap(cancelBlock.range(
+            of: "onEscape?()",
+            range: compositionGuard.upperBound..<cancelBlock.endIndex
+        ))
+
+        XCTAssertLessThan(compositionGuard.lowerBound, escapeCallback.lowerBound)
+        XCTAssertTrue(cancelBlock.contains("super.cancelOperation(sender)"))
+    }
+
+    func testNewlineHelperUsesUnifiedBusyGuardDuringDictation() throws {
+        let source = try popoverSource()
+        let newlineStart = try XCTUnwrap(source.range(of: "private func insertNewLine()"))
+        let heightStart = try XCTUnwrap(source.range(
+            of: "private func editorHeight",
+            range: newlineStart.upperBound..<source.endIndex
+        ))
+        let newlineBlock = source[newlineStart.lowerBound..<heightStart.lowerBound]
+
+        XCTAssertTrue(newlineBlock.contains("guard !model.isBusy else"))
+        XCTAssertFalse(newlineBlock.contains("!model.isTransforming"))
+        XCTAssertFalse(newlineBlock.contains("!model.isInserting"))
+    }
+
+    func testNativeEditorAttachmentEventsAlwaysCarryConcreteIdentity() throws {
+        let source = try popoverSource()
+        let representableStart = try XCTUnwrap(source.range(of: "private struct InkletTextView"))
+        let handlerStart = try XCTUnwrap(source.range(
+            of: "private struct PopoverKeyEventHandler",
+            range: representableStart.upperBound..<source.endIndex
+        ))
+        let representable = source[representableStart.lowerBound..<handlerStart.lowerBound]
+
+        XCTAssertTrue(source.contains("enum InkletTextViewAttachmentEvent"))
+        XCTAssertTrue(source.contains("case attach(NSTextView)"))
+        XCTAssertTrue(source.contains("case detach(NSTextView)"))
+        XCTAssertTrue(representable.contains(".attach(textView)"))
+        XCTAssertTrue(representable.contains(".detach(textView)"))
+        XCTAssertFalse(representable.contains("((NSTextView?) -> Void)?"))
+        XCTAssertFalse(representable.contains("onResolveTextView?(nil)"))
+    }
+
+    func testActiveDictationDisablesLockedButtonsButLeavesEscapeEnabled() throws {
+        let source = try popoverSource()
+        let headerStart = try XCTUnwrap(source.range(of: "private var header"))
+        let actionStart = try XCTUnwrap(source.range(
+            of: "private var actionBar",
+            range: headerStart.upperBound..<source.endIndex
+        ))
+        let dictationStatusStart = try XCTUnwrap(source.range(
+            of: "private var dictationStatus",
+            range: actionStart.upperBound..<source.endIndex
+        ))
+        let headerBlock = source[headerStart.lowerBound..<actionStart.lowerBound]
+        let actionBlock = source[actionStart.lowerBound..<dictationStatusStart.lowerBound]
+        let escapeStart = try XCTUnwrap(actionBlock.range(of: "shortcutHint(keys: [\"esc\"]"))
+        let lockedActions = actionBlock[actionBlock.startIndex..<escapeStart.lowerBound]
+        let escapeAction = actionBlock[escapeStart.lowerBound...]
+
+        XCTAssertEqual(
+            headerBlock.components(separatedBy: ".disabled(isBusy)").count - 1,
+            2
+        )
+        XCTAssertEqual(
+            lockedActions.components(
+                separatedBy: ".disabled(model.dictationPhase.isActive)"
+            ).count - 1,
+            4
+        )
+        XCTAssertFalse(escapeAction.contains(".disabled(model.dictationPhase.isActive)"))
+    }
+
     func testEditorShortcutsPreserveExistingActions() {
         let cases: [(UInt16, WritingPopoverKeyboardModifiers, WritingPopoverKeyboardAction)] = [
             (126, [.command], .cycleMode(-1)),
@@ -158,6 +256,24 @@ final class WritingPopoverKeyboardPolicyTests: XCTestCase {
             keyCode: keyCode,
             modifiers: modifiers,
             isComposingText: isComposingText
+        )
+    }
+
+    private func popoverSource() throws -> String {
+        let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        return try String(
+            contentsOf: packageRoot.appendingPathComponent("Sources/InkletApp/InkletPopoverView.swift"),
+            encoding: .utf8
+        )
+    }
+
+    private func windowControllerSource() throws -> String {
+        let packageRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        return try String(
+            contentsOf: packageRoot.appendingPathComponent(
+                "Sources/InkletApp/InkletPopoverWindowController.swift"
+            ),
+            encoding: .utf8
         )
     }
 }

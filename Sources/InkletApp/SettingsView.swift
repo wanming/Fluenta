@@ -26,7 +26,6 @@ final class SettingsViewModel: ObservableObject {
     @Published var cachedProviderModels: [String: [String]]
     @Published var isRefreshingModelCatalog: Bool
     @Published var isEditingCustomModel: Bool
-    @Published var isEditingCustomSpeechEndpoint: Bool
     @Published var microphoneOptions: [MicrophoneDeviceOption]
     @Published fileprivate var pronunciationPreviewState: PronunciationPreviewState?
     @Published var permissionRefreshID: UUID
@@ -87,10 +86,6 @@ final class SettingsViewModel: ObservableObject {
         )
         self.isRefreshingModelCatalog = false
         self.isEditingCustomModel = false
-        self.isEditingCustomSpeechEndpoint = VoiceInputConfig.SpeechProfile.matching(
-            endpoint: loadedConfig.voiceInput.speechEndpoint,
-            model: loadedConfig.voiceInput.speechModel
-        ) == .custom
         self.microphoneOptions = microphoneDeviceCatalog.options()
         self.pronunciationPreviewState = nil
         self.permissionRefreshID = UUID()
@@ -205,21 +200,6 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
-    var selectedSpeechProfile: VoiceInputConfig.SpeechProfile {
-        if isEditingCustomSpeechEndpoint {
-            return .custom
-        }
-
-        return VoiceInputConfig.SpeechProfile.matching(
-            endpoint: config.voiceInput.speechEndpoint,
-            model: config.voiceInput.speechModel
-        )
-    }
-
-    var shouldShowCustomSpeechFields: Bool {
-        isEditingCustomSpeechEndpoint || selectedSpeechProfile == .custom
-    }
-
     var selectedMicrophoneMenuID: String {
         get {
             guard let microphoneDeviceID = config.voiceInput.microphoneDeviceID,
@@ -232,10 +212,6 @@ final class SettingsViewModel: ObservableObject {
         set {
             config.voiceInput.microphoneDeviceID = newValue == MicrophoneDeviceOption.systemDefaultID ? nil : newValue
         }
-    }
-
-    var voiceCleanupModes: [PromptMode] {
-        orderedPromptModes
     }
 
     func modelMenuTitle(for modelID: String) -> String {
@@ -253,21 +229,6 @@ final class SettingsViewModel: ObservableObject {
 
         isEditingCustomModel = false
         config.model = value
-        save()
-    }
-
-    func selectSpeechProfile(_ profile: VoiceInputConfig.SpeechProfile) {
-        guard profile != .custom else {
-            isEditingCustomSpeechEndpoint = true
-            return
-        }
-        guard let endpoint = profile.endpoint, let model = profile.model else {
-            return
-        }
-
-        isEditingCustomSpeechEndpoint = false
-        config.voiceInput.speechEndpoint = endpoint
-        config.voiceInput.speechModel = model
         save()
     }
 
@@ -525,12 +486,11 @@ final class SettingsViewModel: ObservableObject {
                       speechEndpoint.scheme?.hasPrefix("http") == true,
                       speechEndpoint.host != nil
                 else {
-                    message = L10n.text("voice.error.invalidSpeechEndpoint")
+                    message = L10n.text("settings.error.invalidFallbackSpeechEndpoint")
                     return false
                 }
 
                 _ = try Hotkey.parse(config.hotkey)
-                config.voiceInput.autoProcessTranscription = config.voiceInput.postTranscriptionAction != .insertRawTranscript
                 try configStore.save(config)
                 savedConfig = config
             }
@@ -694,7 +654,6 @@ private extension SelectionForceSelectionMode {
 enum SettingsSection: String, CaseIterable, Identifiable {
     case general = "General"
     case writeAssistant = "Write Assistant"
-    case voiceWriteAssistant = "Voice Write Assistant"
     case selectionAssistant = "Selection Assistant"
     case history = "History"
     case promptModes = "Prompt Modes"
@@ -706,7 +665,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: L10n.text("settings.section.general")
         case .writeAssistant: L10n.text("settings.section.writeAssistant")
-        case .voiceWriteAssistant: L10n.text("settings.section.voiceWriteAssistant")
         case .selectionAssistant: L10n.text("settings.section.selectionAssistant")
         case .history: L10n.text("settings.section.history")
         case .promptModes: L10n.text("settings.section.promptModes")
@@ -718,7 +676,6 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: "gearshape"
         case .writeAssistant: "pencil.and.scribble"
-        case .voiceWriteAssistant: "mic"
         case .selectionAssistant: "text.viewfinder"
         case .history: "clock.arrow.circlepath"
         case .promptModes: "slider.horizontal.3"
@@ -923,13 +880,6 @@ struct SettingsView: View {
                 case .writeAssistant:
                     writeAssistantPanel
                         .disabled(model.isMigrationMaintenanceActive)
-                case .voiceWriteAssistant:
-                    ScrollView {
-                        voicePanel
-                            .padding(.horizontal, 24)
-                            .padding(.vertical, 20)
-                    }
-                    .disabled(model.isMigrationMaintenanceActive)
                 case .selectionAssistant:
                     ScrollView {
                         selectionActionsPanel
@@ -987,8 +937,6 @@ struct SettingsView: View {
             L10n.text("settings.description.general")
         case .writeAssistant:
             L10n.text("settings.description.writeAssistant")
-        case .voiceWriteAssistant:
-            L10n.text("settings.description.voice")
         case .selectionAssistant:
             L10n.text("settings.description.selectionAssistant")
         case .history:
@@ -1218,26 +1166,41 @@ struct SettingsView: View {
         }
     }
 
+    private var writingSettingsPanel: some View {
+        writeAssistantControls
+    }
+
     private var writeAssistantPanel: some View {
         ScrollView {
-            writeAssistantControls
-                .padding(.horizontal, 24)
-                .padding(.vertical, 20)
+            VStack(alignment: .leading, spacing: 18) {
+                settingsGroupTitle(
+                    L10n.text("settings.group.writing"),
+                    help: L10n.text("settings.group.writing.help")
+                )
+                writingSettingsPanel
+
+                settingsGroupTitle(
+                    L10n.text("settings.group.dictation"),
+                    help: L10n.text("settings.group.dictation.help")
+                )
+                dictationSettingsPanel
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 20)
         }
     }
 
-    private var voicePanel: some View {
-        let selectedSpeechProfileBinding = Binding(
-            get: { model.selectedSpeechProfile },
-            set: { model.selectSpeechProfile($0) }
-        )
+    private var dictationSettingsPanel: some View {
         let selectedMicrophoneBinding = Binding(
             get: { model.selectedMicrophoneMenuID },
             set: { model.selectedMicrophoneMenuID = $0 }
         )
 
         return settingsPanel {
-            settingsRow(L10n.text("settings.row.voiceShortcut"), help: L10n.text("settings.help.voiceShortcut")) {
+            settingsRow(
+                L10n.text("settings.row.dictationShortcut"),
+                help: L10n.text("settings.help.dictationShortcut")
+            ) {
                 Picker("", selection: $model.config.voiceInput.shortcut) {
                     ForEach(VoiceInputConfig.Shortcut.allCases) { shortcut in
                         Text(shortcut.localizedName).tag(shortcut)
@@ -1245,20 +1208,6 @@ struct SettingsView: View {
                 }
                 .labelsHidden()
                 .frame(maxWidth: 320, alignment: .leading)
-            }
-
-            settingsRow(
-                L10n.text("settings.row.voiceRecordingMode"),
-                help: L10n.text("settings.help.voiceRecordingMode")
-            ) {
-                Picker("", selection: $model.config.voiceInput.recordingMode) {
-                    ForEach(VoiceInputConfig.RecordingMode.allCases) { mode in
-                        Text(mode.localizedName).tag(mode)
-                    }
-                }
-                .labelsHidden()
-                .frame(maxWidth: 320, alignment: .leading)
-                .disabled(model.config.voiceInput.shortcut == .disabled)
             }
 
             settingsRow(L10n.text("settings.row.microphone"), help: L10n.text("settings.help.microphone")) {
@@ -1271,54 +1220,37 @@ struct SettingsView: View {
                 .frame(maxWidth: 320, alignment: .leading)
             }
 
-            settingsRow(L10n.text("settings.row.speechProfile"), help: L10n.text("settings.help.speechProfile")) {
-                Picker("", selection: selectedSpeechProfileBinding) {
-                    ForEach(VoiceInputConfig.SpeechProfile.allCases) { profile in
-                        Text(profile.localizedName).tag(profile)
-                    }
-                }
-                .labelsHidden()
-                .frame(maxWidth: 320, alignment: .leading)
-            }
-
-            if model.shouldShowCustomSpeechFields {
-                settingsRow(L10n.text("settings.row.speechEndpoint"), help: L10n.text("settings.help.speechEndpoint")) {
-                    TextField(VoiceInputConfig.defaultSpeechEndpoint, text: $model.config.voiceInput.speechEndpoint)
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 12) {
+                    settingsRow(
+                        L10n.text("settings.row.fallbackSpeechEndpoint"),
+                        help: L10n.text("settings.help.fallbackSpeechEndpoint")
+                    ) {
+                        TextField(
+                            VoiceInputConfig.defaultSpeechEndpoint,
+                            text: $model.config.voiceInput.speechEndpoint
+                        )
                         .textFieldStyle(.roundedBorder)
-                }
+                    }
 
-                settingsRow(
-                    L10n.text("settings.row.speechModel"),
-                    help: L10n.format("settings.help.speechModel", VoiceInputConfig.defaultSpeechModel)
-                ) {
-                    TextField(VoiceInputConfig.defaultSpeechModel, text: $model.config.voiceInput.speechModel)
+                    settingsRow(
+                        L10n.text("settings.row.fallbackSpeechModel"),
+                        help: L10n.text("settings.help.fallbackSpeechModel")
+                    ) {
+                        TextField(
+                            VoiceInputConfig.defaultSpeechModel,
+                            text: $model.config.voiceInput.speechModel
+                        )
                         .textFieldStyle(.roundedBorder)
-                }
-            }
-
-            settingsRow(
-                L10n.text("settings.row.voicePostTranscriptionAction"),
-                help: L10n.text("settings.help.voicePostTranscriptionAction")
-            ) {
-                Picker("", selection: $model.config.voiceInput.postTranscriptionAction) {
-                    ForEach(VoiceInputConfig.PostTranscriptionAction.allCases) { action in
-                        Text(action.localizedName).tag(action)
                     }
                 }
-                .labelsHidden()
-                .frame(maxWidth: 320, alignment: .leading)
+                .padding(.top, 10)
+            } label: {
+                Text(L10n.text("settings.group.dictationAdvanced"))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(InkletTheme.textPrimary)
             }
-
-            settingsRow(L10n.text("settings.row.voiceCleanupMode"), help: L10n.text("settings.help.voiceCleanupMode")) {
-                Picker("", selection: $model.config.voiceInput.voiceCleanupPromptModeID) {
-                    ForEach(model.voiceCleanupModes) { mode in
-                        Text(mode.localizedName).tag(mode.id)
-                    }
-                }
-                .labelsHidden()
-                .frame(maxWidth: 320, alignment: .leading)
-                .disabled(model.config.voiceInput.postTranscriptionAction == .insertRawTranscript)
-            }
+            .tint(InkletTheme.textSecondary)
         }
     }
 
@@ -1713,7 +1645,7 @@ struct SettingsView: View {
                 if model.config.voiceInput.shortcut != .disabled {
                     shortcutLine(
                         keys: voiceShortcutKeys,
-                        title: model.config.voiceInput.recordingMode.quickStartTitle,
+                        title: L10n.text("settings.quickStart.voice.pressAndHold"),
                         keyWidth: 102,
                         keyAlignment: .trailing
                     )
@@ -1732,14 +1664,7 @@ struct SettingsView: View {
     }
 
     private var voiceShortcutKeys: [String] {
-        switch model.config.voiceInput.recordingMode {
-        case .tapToToggle:
-            [model.config.voiceInput.shortcut.localizedName]
-        case .pressAndHold:
-            [L10n.text("settings.voiceRecordingMode.holdKey"), model.config.voiceInput.shortcut.localizedName]
-        case .doubleTap:
-            [model.config.voiceInput.shortcut.localizedName, model.config.voiceInput.shortcut.localizedName]
-        }
+        [model.config.voiceInput.shortcut.localizedName]
     }
 
     private func permissionStatusColor(isTrusted: Bool) -> Color {
@@ -1986,6 +1911,20 @@ struct SettingsView: View {
             content()
         }
         .padding(0)
+        .frame(maxWidth: 580, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func settingsGroupTitle(_ title: String, help: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(InkletTheme.textPrimary)
+            Text(help)
+                .font(.system(size: 11))
+                .foregroundStyle(InkletTheme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
         .frame(maxWidth: 580, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
     }

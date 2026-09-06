@@ -9,7 +9,7 @@ public enum AppAppearance: String, Codable, Equatable, Sendable, CaseIterable, I
 }
 
 public struct AppConfig: Codable, Equatable, Sendable {
-    public static let currentVersion = 3
+    public static let currentVersion = 4
 
     private static let lunaDefaultMigrationVersion = 3
     private static let formerOpenAIDefaultModel = "gpt-5.4-mini"
@@ -127,10 +127,10 @@ public struct AppConfig: Codable, Equatable, Sendable {
             String.self,
             forKey: .customOpenAICompatibleEndpoint
         ) ?? defaults.customOpenAICompatibleEndpoint
-        voiceInput = AppConfig.migratedVoiceInput(
-            try container.decodeIfPresent(VoiceInputConfig.self, forKey: .voiceInput) ?? defaults.voiceInput,
-            fromVersion: decodedVersion
-        )
+        voiceInput = try container.decodeIfPresent(
+            VoiceInputConfig.self,
+            forKey: .voiceInput
+        ) ?? defaults.voiceInput
         selectionActions = try container.decodeIfPresent(
             SelectionActionsConfig.self,
             forKey: .selectionActions
@@ -190,19 +190,6 @@ public struct AppConfig: Codable, Equatable, Sendable {
                 migratedMode.sortOrder = index
                 return migratedMode
             }
-    }
-
-    private static func migratedVoiceInput(
-        _ voiceInput: VoiceInputConfig,
-        fromVersion version: Int
-    ) -> VoiceInputConfig {
-        guard version < 2, voiceInput.recordingMode == .tapToToggle else {
-            return voiceInput
-        }
-
-        var migratedVoiceInput = voiceInput
-        migratedVoiceInput.recordingMode = .pressAndHold
-        return migratedVoiceInput
     }
 
     private static var legacyVoiceCleanupSystemPrompt: String {

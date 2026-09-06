@@ -50,6 +50,53 @@ final class OpenAISpeechTranscriptionProviderTests: XCTestCase {
         XCTAssertEqual(result, "hello json")
     }
 
+    func testRejectsZeroByteAudioBeforeBuildingRequest() throws {
+        let audioURL = temporaryAudioFile(contents: Data())
+        defer { try? FileManager.default.removeItem(at: audioURL) }
+
+        XCTAssertThrowsError(try OpenAISpeechTranscriptionProvider.makeURLRequest(
+            SpeechTranscriptionRequest(
+                audioFileURL: audioURL,
+                model: "gpt-live-transcribe",
+                timeoutSeconds: 5
+            ),
+            endpoint: URL(string: "https://api.openai.test/v1/audio/transcriptions")!,
+            apiKey: "test-key",
+            boundary: "InkletBoundary"
+        )) { error in
+            XCTAssertEqual(error as? SpeechTranscriptionError, .emptyAudio)
+        }
+    }
+
+    func testUsesSuppliedEndpointModelAndM4AContentType() throws {
+        let audioURL = temporaryAudioFile(contents: Data([1, 2, 3]))
+        defer { try? FileManager.default.removeItem(at: audioURL) }
+        let endpoint = URL(string: "https://speech.example.test/custom")!
+
+        let request = try OpenAISpeechTranscriptionProvider.makeURLRequest(
+            SpeechTranscriptionRequest(
+                audioFileURL: audioURL,
+                model: "frozen-dictation-model",
+                timeoutSeconds: 9
+            ),
+            endpoint: endpoint,
+            apiKey: "test-key",
+            boundary: "InkletBoundary"
+        )
+        let body = try XCTUnwrap(String(data: XCTUnwrap(request.httpBody), encoding: .utf8))
+
+        XCTAssertEqual(request.url, endpoint)
+        XCTAssertEqual(request.timeoutInterval, 9)
+        XCTAssertTrue(body.contains("frozen-dictation-model"))
+        XCTAssertTrue(body.contains("Content-Type: audio/m4a"))
+    }
+
+    func testWhitespaceResponseIsEmptyResponse() {
+        XCTAssertThrowsError(try OpenAISpeechTranscriptionProvider.parseTranscriptionText(from: Data(" \n\t ".utf8))) { error in
+            XCTAssertEqual(error as? SpeechTranscriptionError, .emptyResponse)
+        }
+    }
+
     func testTranscribePostsAuthorizedRequestAndMapsProviderErrors() async throws {
         MockSpeechURLProtocol.handler = { request in
             XCTAssertEqual(request.httpMethod, "POST")

@@ -28,7 +28,12 @@ Inklet handles text that users type, select, transform, and paste. It also store
 - Selection reads bound to the captured source process and cancelled when the source exits or loses focus.
 - Clipboard transaction serialization, operation ownership, and conditional clipboard restoration when another app or the user changes the pasteboard.
 - Accessibility and Microphone permission usage.
-- Selected text capture, local History retention, provider request construction, and temporary voice audio.
+- Selected text capture, local History retention, provider request construction, and realtime dictation audio.
+- Realtime transport authentication, including keeping the OpenAI API key in the Authorization header and out of URLs and diagnostics.
+- The bounded in-memory PCM queue used while realtime dictation connects and streams.
+- Dictation terminal-session arbitration so completion, cancellation, failure, and late events cannot win more than once.
+- Realtime dictation requires temporary recovery-file deletion after success, no speech, fallback success or failure, Escape, focus loss, popover closure, supersession, migration maintenance, and app termination.
+- Diagnostics must never contain audio payloads, transcript contents, Authorization headers, microphone identifiers, or temporary file paths.
 - Signed and notarized direct releases, Hardened Runtime and effective-entitlement checks, Gatekeeper/stapling checks, the release verifier, and the standalone installer.
 
 Do not include real API keys, private text, or personal data in bug reports.

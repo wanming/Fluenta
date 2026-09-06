@@ -178,6 +178,30 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertEqual(try store.load(), [valid])
     }
 
+    func testLegacyVoiceHistoryEntryStillDecodesFromLiteralJSONL() throws {
+        let url = temporaryHistoryURL()
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let id = UUID(uuidString: "00000000-0000-0000-0000-000000000099")!
+        let line = #"{"createdAt":"2023-11-14T22:13:20Z","id":"00000000-0000-0000-0000-000000000099","inputText":"legacy transcript","metadata":{"providerID":"openai"},"modeName":"Voice Cleanup","model":"legacy-speech","outputText":"legacy transcript","source":"voice"}"#
+        try Data((line + "\n").utf8).write(to: url)
+
+        let loaded = try JSONLHistoryStore(fileURL: url).load()
+
+        XCTAssertEqual(loaded, [HistoryItem(
+            id: id,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            source: .voice,
+            inputText: "legacy transcript",
+            outputText: "legacy transcript",
+            modeName: "Voice Cleanup",
+            model: "legacy-speech",
+            metadata: ["providerID": "openai"]
+        )])
+    }
+
     func testHistoryJSONLCodecDecodesISO8601AndSkipsMalformedAndEmptyLines() throws {
         let first = historyItem(idSuffix: 41, timestamp: 10, input: "first")
         let second = historyItem(idSuffix: 42, timestamp: 20, input: "second")

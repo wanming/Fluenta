@@ -16,11 +16,6 @@ final class OnboardingPolicyTests: XCTestCase {
         )
     }
 
-    func testConfiguresVoiceShortcutMonitoringOnlyAfterAccessibilityIsTrusted() {
-        XCTAssertFalse(OnboardingPolicy.shouldConfigureVoiceShortcutMonitoring(isAccessibilityTrusted: false))
-        XCTAssertTrue(OnboardingPolicy.shouldConfigureVoiceShortcutMonitoring(isAccessibilityTrusted: true))
-    }
-
     func testShowsVoiceShortcutHintOnlyWhenVoiceInputIsConfiguredAndEnabled() {
         XCTAssertTrue(OnboardingPolicy.shouldShowVoiceShortcutHint(
             openAIAPIKey: "sk-openai",

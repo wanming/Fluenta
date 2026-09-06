@@ -99,6 +99,15 @@ reject_active_guidance_text "Allow JavaScript from Apple Events" "Chrome JavaScr
 reject_active_guidance_text "browser JavaScript" "browser JavaScript selection claims"
 reject_active_guidance_text "per-browser permission" "per-browser permission setup"
 reject_active_guidance_text "Automation setup" "Automation setup instructions"
+reject_active_guidance_text "Voice Write Assistant" "the retired standalone Voice Write Assistant"
+reject_active_guidance_text "Voice Recording Mode" "retired voice recording modes"
+reject_active_guidance_text "tap-to-toggle" "tap-to-toggle dictation"
+reject_active_guidance_text "double-tap recording" "double-tap dictation"
+reject_active_guidance_text "compact voice window" "the retired voice status window"
+reject_active_guidance_text "Auto Process" "retired automatic voice processing"
+reject_active_guidance_text "语音写作助手" "已移除的独立语音写作助手"
+reject_active_guidance_text "单击开始/停止" "已移除的单击切换录音"
+reject_active_guidance_text "双击开始/停止" "已移除的双击切换录音"
 reject_active_guidance_text \
   "Selected text is kept in memory while the floating action is active" \
   "the obsolete selection-memory lifetime claim"
@@ -419,6 +428,27 @@ require_documentation_prose "$english_readme" \
 require_documentation_prose "$english_readme" \
   "Import Old Data" \
   "the Settings assisted-import fallback"
+for dictation_text in \
+  "Open Writing Assistant" \
+  "Confirm a Prompt Mode" \
+  "Hold the configured Dictation shortcut" \
+  "Release to finalize" \
+  "Press Return only when ready" \
+  "A short press does nothing." \
+  "does not run the Prompt Mode or insert text into another app"; do
+  require_documentation_prose "$english_readme" "$dictation_text" "$dictation_text"
+done
+for dictation_step in \
+  '1. **Open Writing Assistant**' \
+  '2. **Confirm a Prompt Mode**' \
+  '3. **Put the caret in the source draft, or select text to replace.**' \
+  '4. **Hold the configured Dictation shortcut**' \
+  '5. **Release to finalize**' \
+  '6. Review and edit the dictated draft.' \
+  '7. **Press Return only when ready**' \
+  'Dictation inserts at the caret or replaces the selection.'; do
+  require_documentation_prose "$english_readme" "$dictation_step" "$dictation_step"
+done
 
 chinese_readme="${repo_root}/README.zh-CN.md"
 require_documentation_prose "$chinese_readme" \
@@ -466,6 +496,27 @@ require_documentation_prose "$chinese_readme" \
 require_documentation_prose "$chinese_readme" \
   "导入旧数据" \
   "Settings 中的辅助导入备用流程"
+for dictation_text in \
+  "打开写作助手" \
+  "确认一个 Prompt 模式" \
+  "长按已配置的听写快捷键" \
+  "松开以完成转写" \
+  "准备好后再按 Return" \
+  "短按不会执行任何操作" \
+  "不会运行 Prompt 模式，也不会把文本插入其他 App"; do
+  require_documentation_prose "$chinese_readme" "$dictation_text" "$dictation_text"
+done
+for dictation_step in \
+  '1. 用 `Option+Space` **打开写作助手**' \
+  '2. **确认一个 Prompt 模式**' \
+  '3. **把光标放入原文草稿，或选中要替换的文本。**' \
+  '4. **长按已配置的听写快捷键**' \
+  '5. **松开以完成转写**' \
+  '6. 检查并编辑听写草稿。' \
+  '7. **准备好后再按 Return**' \
+  '听写会在光标处插入，或替换选区。'; do
+  require_documentation_prose "$chinese_readme" "$dictation_step" "$dictation_step"
+done
 
 contributing="${repo_root}/CONTRIBUTING.md"
 require_documentation_prose "$contributing" \
@@ -485,9 +536,11 @@ require_documentation_prose "$contributing" \
   "the distribution-script reference"
 
 privacy_policy="${repo_root}/docs/privacy-policy.md"
-require_documentation_prose "$privacy_policy" \
-  "Last updated: August 30, 2026" \
-  "the current policy date"
+privacy_update_lines="$(grep -E '^Last updated:' "$privacy_policy" || true)"
+if [[ "$privacy_update_lines" != "Last updated: August 30, 2026" ]]; then
+  record_documentation_failure \
+    "privacy-policy.md must contain exactly one current policy date: Last updated: August 30, 2026."
+fi
 for privacy_text in \
   "~/Library/Application Support/com.tomwan.inklet/" \
   "~/Library/Application Support/com.tomwan.inklet.local/" \
@@ -507,6 +560,15 @@ for privacy_text in \
   "Only successful Selection actions are saved in local History; successful translations may also be stored in the 7-day local translation cache." \
   "Accessibility" \
   "Microphone" \
+  "Active microphone audio is streamed to OpenAI's Realtime transcription service as it is captured." \
+  'one temporary local `.m4a` recovery recording' \
+  "only to the one file-transcription recovery attempt" \
+  "does not log audio or transcript content, Authorization headers, microphone identifiers, or temporary file paths" \
+  "Audio is never placed on the clipboard or stored in History." \
+  "An unprocessed dictated draft creates no History entry." \
+  "Existing legacy Voice entries remain locally readable." \
+  "Microphone permission is distinct from Accessibility permission" \
+  "finishing dictation does not insert text into another app" \
   "models.dev"; do
   require_documentation_prose "$privacy_policy" "$privacy_text" "${privacy_text}"
 done
@@ -519,6 +581,11 @@ for security_text in \
   "captured source process" \
   "clipboard transaction serialization" \
   "conditional clipboard restoration" \
+  "Realtime transport authentication" \
+  "bounded in-memory PCM" \
+  "terminal-session arbitration" \
+  "temporary recovery-file deletion" \
+  "audio payloads, transcript contents, Authorization headers, microphone identifiers, or temporary file paths" \
   "signed and notarized direct releases" \
   "release verifier"; do
   require_documentation_prose "$security_policy" "$security_text" "${security_text}"
@@ -559,7 +626,19 @@ for checklist_text in \
   "stapler validate" \
   "Gatekeeper" \
   "effective entitlements" \
-  "first voice use" \
+  "first valid dictation hold" \
+  "mode picker and result editor" \
+  "modifier already held" \
+  "combining marks" \
+  "one-step undo" \
+  "marked-text Escape" \
+  "connection failure while held" \
+  "late-event races" \
+  "permission is not requested" \
+  "rapid reopen" \
+  "no draft-only History" \
+  "legacy Voice History" \
+  "phase-only announcements" \
   "rebuild and reinstall the local app twice"; do
   require_documentation_prose "$manual_checklist" "$checklist_text" "${checklist_text}"
 done

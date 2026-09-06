@@ -55,7 +55,7 @@ final class VoiceShortcutModifierPressTrackerTests: XCTestCase {
         )
     }
 
-    func testResetClearsActivePress() {
+    func testResetIgnoresLaterReleaseFromClearedActivePress() {
         var tracker = VoiceShortcutModifierPressTracker()
 
         _ = tracker.transition(
@@ -65,6 +65,74 @@ final class VoiceShortcutModifierPressTrackerTests: XCTestCase {
         )
         tracker.reset()
 
+        XCTAssertEqual(
+            tracker.transition(
+                keyCode: 61,
+                expectedKeyCode: 61,
+                isConfiguredModifierDown: true
+            ),
+            .ignored
+        )
+        XCTAssertEqual(
+            tracker.transition(
+                keyCode: 61,
+                expectedKeyCode: 61,
+                isConfiguredModifierDown: true
+            ),
+            .began
+        )
+    }
+
+    func testResetWithNoActivePressClearsPendingIgnoredRelease() {
+        var tracker = VoiceShortcutModifierPressTracker()
+
+        _ = tracker.transition(
+            keyCode: 61,
+            expectedKeyCode: 61,
+            isConfiguredModifierDown: true
+        )
+        tracker.reset()
+        tracker.reset()
+
+        XCTAssertEqual(
+            tracker.transition(
+                keyCode: 61,
+                expectedKeyCode: 61,
+                isConfiguredModifierDown: true
+            ),
+            .began
+        )
+    }
+
+    func testLifecycleBoundaryClearsIgnoredReleaseAcrossConfigurationAtoBtoA() {
+        var tracker = VoiceShortcutModifierPressTracker()
+
+        _ = tracker.transition(
+            keyCode: 61,
+            expectedKeyCode: 61,
+            isConfiguredModifierDown: true
+        )
+        tracker.reset()
+        tracker.resetForLifecycleBoundary()
+
+        XCTAssertEqual(
+            tracker.transition(
+                keyCode: 54,
+                expectedKeyCode: 54,
+                isConfiguredModifierDown: true
+            ),
+            .began
+        )
+        XCTAssertEqual(
+            tracker.transition(
+                keyCode: 54,
+                expectedKeyCode: 54,
+                isConfiguredModifierDown: false
+            ),
+            .ended
+        )
+
+        tracker.resetForLifecycleBoundary()
         XCTAssertEqual(
             tracker.transition(
                 keyCode: 61,
