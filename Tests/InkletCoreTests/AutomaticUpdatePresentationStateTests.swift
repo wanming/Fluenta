@@ -11,8 +11,10 @@ final class AutomaticUpdatePresentationStateTests: XCTestCase {
             isSelectingMigrationSource: false,
             hasModalWindow: false,
             isSelectionPanelVisible: false,
+            isSelectionInteractionActive: false,
             isMenuTracking: false,
-            isUpdateAlertPresenting: false
+            isUpdateAlertPresenting: false,
+            isStopping: false
         )
 
         XCTAssertTrue(state.canPresent)
@@ -41,6 +43,10 @@ final class AutomaticUpdatePresentationStateTests: XCTestCase {
         XCTAssertFalse(state.canPresent, "selection panel")
         state.isSelectionPanelVisible = false
 
+        state.isSelectionInteractionActive = true
+        XCTAssertFalse(state.canPresent, "selection interaction")
+        state.isSelectionInteractionActive = false
+
         state.isMenuTracking = true
         XCTAssertFalse(state.canPresent, "menu tracking")
         state.isMenuTracking = false
@@ -48,6 +54,10 @@ final class AutomaticUpdatePresentationStateTests: XCTestCase {
         state.isUpdateAlertPresenting = true
         XCTAssertFalse(state.canPresent, "update alert")
         state.isUpdateAlertPresenting = false
+
+        state.isStopping = true
+        XCTAssertFalse(state.canPresent, "stopping")
+        state.isStopping = false
 
         XCTAssertTrue(state.canPresent)
     }

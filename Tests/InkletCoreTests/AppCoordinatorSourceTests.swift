@@ -265,8 +265,10 @@ final class AppCoordinatorSourceTests: XCTestCase {
         XCTAssertTrue(automaticGateBlock.contains("isSelectingMigrationSource: migrationPresentationModel.phase == .selecting"))
         XCTAssertTrue(automaticGateBlock.contains("hasModalWindow: NSApp.modalWindow != nil"))
         XCTAssertTrue(automaticGateBlock.contains("isSelectionPanelVisible: selectionActionWindowController.isPanelVisible"))
+        XCTAssertTrue(automaticGateBlock.contains("isSelectionInteractionActive: selectionActionMonitor.isInteractionActive"))
         XCTAssertTrue(automaticGateBlock.contains("isMenuTracking: !trackedMenus.isEmpty"))
         XCTAssertTrue(automaticGateBlock.contains("isUpdateAlertPresenting: updateCheckAlertPresenter.isPresentingAlert"))
+        XCTAssertTrue(automaticGateBlock.contains("isStopping: isStopping"))
         XCTAssertTrue(automaticGateBlock.contains(").canPresent"))
 
         let requestMigrationStart = try XCTUnwrap(source.range(
@@ -344,6 +346,54 @@ final class AppCoordinatorSourceTests: XCTestCase {
         XCTAssertLessThan(availabilityGuard.lowerBound, menuRefresh.lowerBound)
         XCTAssertLessThan(menuRefresh.lowerBound, manualCheck.lowerBound)
         XCTAssertTrue(checkActionBlock.contains("updateCheckCoordinator.checkManually()"))
+    }
+
+    func testSelectionCallbacksRegisterWorkSynchronouslyAndIdleSchedulesUpdateGate() throws {
+        let source = try appCoordinatorSource()
+        let candidateStart = try XCTUnwrap(source.range(
+            of: "self.selectionActionMonitor.onCandidateSelection ="
+        ))
+        let copyStart = try XCTUnwrap(source.range(
+            of: "self.selectionActionMonitor.onCopyTrigger =",
+            range: candidateStart.upperBound..<source.endIndex
+        ))
+        let candidateBlock = source[candidateStart.lowerBound..<copyStart.lowerBound]
+        XCTAssertTrue(candidateBlock.contains("handleSelectionActionCandidate(at: point)"))
+        XCTAssertFalse(candidateBlock.contains("Task"))
+
+        let dismissStart = try XCTUnwrap(source.range(
+            of: "self.selectionActionMonitor.onDismiss =",
+            range: copyStart.upperBound..<source.endIndex
+        ))
+        let interactionStart = try XCTUnwrap(source.range(
+            of: "self.selectionActionMonitor.onInteractionStateChange =",
+            range: dismissStart.upperBound..<source.endIndex
+        ))
+        let dismissBlock = source[dismissStart.lowerBound..<interactionStart.lowerBound]
+        XCTAssertTrue(dismissBlock.contains("handleSelectionDismissRequest("))
+        XCTAssertFalse(dismissBlock.contains("Task"))
+
+        let nextCallback = try XCTUnwrap(source.range(
+            of: "self.selectionActionWindowController.onTranslate =",
+            range: interactionStart.upperBound..<source.endIndex
+        ))
+        let interactionBlock = source[interactionStart.lowerBound..<nextCallback.lowerBound]
+        XCTAssertTrue(interactionBlock.contains("guard !isActive else { return }"))
+        XCTAssertEqual(
+            interactionBlock.components(separatedBy: "automaticUpdatePresentationGate.schedule()").count - 1,
+            1
+        )
+
+        let handlerStart = try XCTUnwrap(source.range(
+            of: "private func handleSelectionActionCopyTrigger"
+        ))
+        let effectsStart = try XCTUnwrap(source.range(
+            of: "\n    private func handleSelectionActionEffects",
+            range: handlerStart.upperBound..<source.endIndex
+        ))
+        let handlerBlock = source[handlerStart.lowerBound..<effectsStart.lowerBound]
+        let taskRegistration = try XCTUnwrap(handlerBlock.range(of: "selectionReadTask = Task"))
+        XCTAssertNotNil(handlerBlock[..<taskRegistration.lowerBound].range(of: "selectionReadTaskID = taskID"))
     }
 
     func testUpdateEligibilityRefreshesAfterMigrationSelectionAndSelectionPanelHide() throws {
@@ -694,18 +744,34 @@ final class AppCoordinatorSourceTests: XCTestCase {
         let sourceURL = packageRoot.appendingPathComponent("Sources/InkletApp/SelectionActionMonitor.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         let mouseUpStart = try XCTUnwrap(source.range(
-            of: "NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp]"
+            of: "registerMonitor(matching: [.leftMouseUp]"
         ))
         let keyUpStart = try XCTUnwrap(source.range(
-            of: "NSEvent.addGlobalMonitorForEvents(matching: [.keyUp]",
+            of: "registerMonitor(matching: [.keyUp]",
             range: mouseUpStart.upperBound..<source.endIndex
         ))
         let mouseUpBlock = source[mouseUpStart.lowerBound..<keyUpStart.lowerBound]
 
         XCTAssertFalse(mouseUpBlock.contains(".rightMouseDown"))
         XCTAssertFalse(mouseUpBlock.contains(".rightMouseUp"))
-        XCTAssertTrue(mouseUpBlock.contains("clickCount: event.clickCount"))
+        XCTAssertTrue(mouseUpBlock.contains("let clickCount = event.clickCount"))
+        XCTAssertTrue(mouseUpBlock.contains("clickCount: clickCount"))
         XCTAssertTrue(mouseUpBlock.contains("dragPolicy.consumeMouseUpAction"))
+    }
+
+    func testSelectionConfigurationExposesMonitorStartFailureWithoutPolling() throws {
+        let source = try appCoordinatorSource()
+        let configureStart = try XCTUnwrap(source.range(of: "private func configureSelectionActions()"))
+        let nextMethod = try XCTUnwrap(source.range(
+            of: "private func handleSelectionActionCandidate",
+            range: configureStart.upperBound..<source.endIndex
+        ))
+        let configureBlock = source[configureStart.lowerBound..<nextMethod.lowerBound]
+
+        XCTAssertTrue(configureBlock.contains("if !selectionActionMonitor.start()"))
+        XCTAssertTrue(configureBlock.contains("SelectionActionDiagnostics.log("))
+        XCTAssertFalse(configureBlock.contains("Task.sleep"))
+        XCTAssertFalse(configureBlock.contains("Timer"))
     }
 
     func testSelectionActionsDoNotHardcodeIgnoredAppBundleIDs() throws {

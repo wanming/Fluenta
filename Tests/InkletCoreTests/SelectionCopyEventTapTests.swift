@@ -5,6 +5,108 @@ import XCTest
 
 final class SelectionCopyEventTapTests: XCTestCase {
     @MainActor
+    func testFirstCopyBeginsInteractionAndExpiryEndsItOnce() {
+        let state = SelectionCopyEventTapTestState()
+        let expiry = ControlledSelectionCopyExpiryScheduler()
+        let tap = SelectionCopyEventTap(
+            expiryScheduler: { delay, action in
+                expiry.schedule(after: delay, action: action)
+            },
+            onInteractionBegin: { state.interactionEvents.append("begin") },
+            onInteractionEnd: { state.interactionEvents.append("end") },
+            onCopyTrigger: { state.triggers.append($0) }
+        )
+
+        tap.handleEventFields(copyFields(pid: 42, timestamp: 10))
+
+        XCTAssertEqual(state.interactionEvents, ["begin"])
+        XCTAssertTrue(state.triggers.isEmpty)
+        XCTAssertEqual(expiry.delays, [0.8])
+
+        expiry.runAction(at: 0)
+        XCTAssertEqual(state.interactionEvents, ["begin", "end"])
+        expiry.runAction(at: 0)
+        XCTAssertEqual(state.interactionEvents, ["begin", "end"])
+    }
+
+    @MainActor
+    func testRearmedCopyIgnoresCancelledExpiryGeneration() {
+        let state = SelectionCopyEventTapTestState()
+        let expiry = ControlledSelectionCopyExpiryScheduler()
+        let tap = SelectionCopyEventTap(
+            expiryScheduler: { delay, action in
+                expiry.schedule(after: delay, action: action)
+            },
+            onInteractionBegin: { state.interactionEvents.append("begin") },
+            onInteractionEnd: { state.interactionEvents.append("end") }
+        )
+
+        tap.handleEventFields(copyFields(pid: 42, timestamp: 10))
+        tap.handleEventFields(copyFields(pid: 42, timestamp: 10.1, type: .keyUp))
+        tap.handleEventFields(copyFields(pid: 42, timestamp: 10.9))
+
+        XCTAssertEqual(expiry.delays, [0.8, 0.8])
+        XCTAssertEqual(expiry.cancellationCount, 1)
+        expiry.runAction(at: 0)
+        XCTAssertEqual(state.interactionEvents, ["begin"])
+        expiry.runAction(at: 1)
+        XCTAssertEqual(state.interactionEvents, ["begin", "end"])
+    }
+
+    @MainActor
+    func testSecondCopyTriggersWhileInteractionIsActiveAndEndsAfterCallback() {
+        let state = SelectionCopyEventTapTestState()
+        let expiry = ControlledSelectionCopyExpiryScheduler()
+        let tap = SelectionCopyEventTap(
+            expiryScheduler: { delay, action in
+                expiry.schedule(after: delay, action: action)
+            },
+            onInteractionBegin: {
+                state.isInteractionActive = true
+                state.interactionEvents.append("begin")
+            },
+            onInteractionEnd: {
+                state.interactionEvents.append("end")
+                state.isInteractionActive = false
+            },
+            onCopyTrigger: {
+                state.triggerObservedInteractionActive = state.isInteractionActive
+                state.triggers.append($0)
+            }
+        )
+
+        tap.handleEventFields(copyFields(pid: 42, timestamp: 10))
+        tap.handleEventFields(copyFields(pid: 42, timestamp: 10.1, type: .keyUp))
+        tap.handleEventFields(copyFields(pid: 42, timestamp: 10.5))
+
+        XCTAssertTrue(state.triggerObservedInteractionActive)
+        XCTAssertEqual(state.interactionEvents, ["begin", "end"])
+        XCTAssertFalse(state.isInteractionActive)
+        XCTAssertEqual(state.triggers.count, 1)
+        XCTAssertEqual(expiry.cancellationCount, 1)
+    }
+
+    @MainActor
+    func testStopCancelsExpiryResetsPolicyAndEndsInteractionOnce() {
+        let state = SelectionCopyEventTapTestState()
+        let expiry = ControlledSelectionCopyExpiryScheduler()
+        let tap = SelectionCopyEventTap(
+            expiryScheduler: { delay, action in
+                expiry.schedule(after: delay, action: action)
+            },
+            onInteractionBegin: { state.interactionEvents.append("begin") },
+            onInteractionEnd: { state.interactionEvents.append("end") }
+        )
+
+        tap.handleEventFields(copyFields(pid: 42, timestamp: 10))
+        tap.stop()
+        expiry.runAction(at: 0)
+
+        XCTAssertEqual(expiry.cancellationCount, 1)
+        XCTAssertEqual(state.interactionEvents, ["begin", "end"])
+    }
+
+    @MainActor
     func testConfigurationUsesAnnotatedHeadDefaultCopyKeyTap() {
         XCTAssertEqual(SelectionCopyEventTap.tapLocation, .cgAnnotatedSessionEventTap)
         XCTAssertEqual(SelectionCopyEventTap.tapPlacement, .headInsertEventTap)
@@ -236,4 +338,28 @@ final class SelectionCopyEventTapTests: XCTestCase {
 private final class SelectionCopyEventTapTestState {
     var point = SelectionPoint(x: 11, y: 22)
     var triggers: [SelectionCopyEventTap.Trigger] = []
+    var interactionEvents: [String] = []
+    var isInteractionActive = false
+    var triggerObservedInteractionActive = false
+}
+
+@MainActor
+private final class ControlledSelectionCopyExpiryScheduler {
+    typealias Action = @MainActor () -> Void
+
+    private(set) var delays: [TimeInterval] = []
+    private(set) var actions: [Action] = []
+    private(set) var cancellationCount = 0
+
+    func schedule(after delay: TimeInterval, action: @escaping Action) -> @MainActor () -> Void {
+        delays.append(delay)
+        actions.append(action)
+        return { [weak self] in
+            self?.cancellationCount += 1
+        }
+    }
+
+    func runAction(at index: Int) {
+        actions[index]()
+    }
 }

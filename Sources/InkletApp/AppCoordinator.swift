@@ -225,9 +225,7 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
             self?.refreshMigrationImportEligibility()
         }
         self.selectionActionMonitor.onCandidateSelection = { [weak self] point in
-            Task { @MainActor in
-                self?.handleSelectionActionCandidate(at: point)
-            }
+            self?.handleSelectionActionCandidate(at: point)
         }
         self.selectionActionMonitor.onCopyTrigger = { [weak self] trigger in
             guard let self,
@@ -247,13 +245,15 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
             self.handleSelectionActionCopyTrigger(pendingUserCopyRead)
         }
         self.selectionActionMonitor.onDismiss = { [weak self] reason in
-            Task { @MainActor in
-                guard let self else { return }
-                self.handleSelectionDismissRequest(
-                    reason: String(describing: reason),
-                    bypassingPanelGrace: reason.bypassesPanelGrace
-                )
-            }
+            guard let self else { return }
+            self.handleSelectionDismissRequest(
+                reason: String(describing: reason),
+                bypassingPanelGrace: reason.bypassesPanelGrace
+            )
+        }
+        self.selectionActionMonitor.onInteractionStateChange = { [weak self] isActive in
+            guard !isActive else { return }
+            self?.automaticUpdatePresentationGate.schedule()
         }
         self.selectionActionWindowController.onTranslate = { [weak self] in
             Task { @MainActor in
@@ -539,8 +539,10 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
             isSelectingMigrationSource: migrationPresentationModel.phase == .selecting,
             hasModalWindow: NSApp.modalWindow != nil,
             isSelectionPanelVisible: selectionActionWindowController.isPanelVisible,
+            isSelectionInteractionActive: selectionActionMonitor.isInteractionActive,
             isMenuTracking: !trackedMenus.isEmpty,
-            isUpdateAlertPresenting: updateCheckAlertPresenter.isPresentingAlert
+            isUpdateAlertPresenting: updateCheckAlertPresenter.isPresentingAlert,
+            isStopping: isStopping
         ).canPresent
     }
 
@@ -742,7 +744,9 @@ final class AppCoordinator: NSObject, NSMenuDelegate {
             "configure enabled=\(config.selectionActions.isEnabled) accessibilityTrusted=\(isAccessibilityTrusted)"
         )
         if config.selectionActions.isEnabled, isAccessibilityTrusted {
-            selectionActionMonitor.start()
+            if !selectionActionMonitor.start() {
+                SelectionActionDiagnostics.log("selection action monitor installation unavailable")
+            }
         } else {
             selectionActionMonitor.stop()
         }

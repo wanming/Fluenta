@@ -66,6 +66,26 @@ final class AutomaticUpdatePresentationGateTests: XCTestCase {
         withExtendedLifetime(gate) {}
     }
 
+    func testPrescheduledGateRechecksLivePhysicalSelectionState() {
+        let state = AutomaticUpdatePresentationGateTestState()
+        let deferrer = ControlledAutomaticUpdatePresentationDeferrer()
+        let gate = AutomaticUpdatePresentationGate(
+            canPresent: { !state.physicalInteractionState.isActive },
+            present: { state.presentationCount += 1 },
+            deferAction: { deferrer.enqueue($0) }
+        )
+
+        gate.schedule()
+        state.physicalInteractionState = SelectionPhysicalInteractionState(
+            isLeftMouseButtonPressed: true,
+            isShiftPressed: false
+        )
+        deferrer.runAction(at: 0)
+
+        XCTAssertEqual(state.presentationCount, 0)
+        withExtendedLifetime(gate) {}
+    }
+
     func testBlockedExecutionAllowsExplicitLaterRescheduling() {
         let state = AutomaticUpdatePresentationGateTestState()
         let deferrer = ControlledAutomaticUpdatePresentationDeferrer()
@@ -195,6 +215,10 @@ private final class AutomaticUpdatePresentationGateTestState {
     var didReplaceTask = false
     var didScheduleReturn = false
     var presentationObservedScheduleReturn = false
+    var physicalInteractionState = SelectionPhysicalInteractionState(
+        isLeftMouseButtonPressed: false,
+        isShiftPressed: false
+    )
 
     init(isEligible: Bool = false) {
         self.isEligible = isEligible
