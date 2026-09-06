@@ -145,16 +145,6 @@ final class InkletPopoverWindowController: NSWindowController, NSWindowDelegate 
                 sourceEditorBridge.beginTransaction(model: model)
             },
             transcribeFallback: { recordingURL, config in
-                let endpointString = config.speechEndpoint.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                )
-                guard let endpoint = URL(string: endpointString),
-                      let endpointScheme = endpoint.scheme?.lowercased(),
-                      endpointScheme == "http" || endpointScheme == "https",
-                      endpoint.host != nil
-                else {
-                    throw SpeechTranscriptionError.invalidEndpoint
-                }
                 guard let apiKey = apiKeyStore.loadAPIKey(
                     forProviderID: LLMProviderPreset.openAI.id
                 )?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -164,8 +154,7 @@ final class InkletPopoverWindowController: NSWindowController, NSWindowDelegate 
                 }
 
                 let provider = OpenAISpeechTranscriptionProvider(
-                    apiKeyProvider: { apiKey },
-                    endpoint: endpoint
+                    apiKeyProvider: { apiKey }
                 )
                 let result = try await provider.transcribe(SpeechTranscriptionRequest(
                     audioFileURL: recordingURL,

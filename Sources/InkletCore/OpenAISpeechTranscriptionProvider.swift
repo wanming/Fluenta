@@ -15,16 +15,34 @@ public struct OpenAISpeechTranscriptionProvider: SpeechTranscriptionProvider {
 
     private let apiKeyProvider: @Sendable () throws -> String
     private let endpoint: URL
-    private let session: URLSession
+    private let sessionConfiguration: URLSessionConfiguration
 
-    public init(
+    public init(apiKeyProvider: @escaping @Sendable () throws -> String) {
+        self.init(
+            apiKeyProvider: apiKeyProvider,
+            endpoint: URL(string: VoiceInputConfig.defaultSpeechEndpoint)!,
+            sessionConfiguration: Self.productionSessionConfiguration()
+        )
+    }
+
+    init(
         apiKeyProvider: @escaping @Sendable () throws -> String,
-        endpoint: URL = URL(string: VoiceInputConfig.defaultSpeechEndpoint)!,
-        session: URLSession = .shared
+        endpoint: URL,
+        sessionConfiguration: URLSessionConfiguration
     ) {
         self.apiKeyProvider = apiKeyProvider
         self.endpoint = endpoint
-        self.session = session
+        self.sessionConfiguration = sessionConfiguration
+    }
+
+    static func productionSessionConfiguration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCredentialStorage = nil
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return configuration
     }
 
     public func transcribe(_ request: SpeechTranscriptionRequest) async throws -> SpeechTranscriptionResult {
@@ -36,9 +54,32 @@ public struct OpenAISpeechTranscriptionProvider: SpeechTranscriptionProvider {
             boundary: "InkletBoundary-\(UUID().uuidString)"
         )
 
-        let (data, response) = try await session.data(for: urlRequest)
+        let redirectDelegate = RedirectRejectingDelegate()
+        let session = URLSession(
+            configuration: sessionConfiguration,
+            delegate: redirectDelegate,
+            delegateQueue: nil
+        )
+        defer { session.invalidateAndCancel() }
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: urlRequest)
+        } catch {
+            if redirectDelegate.didRejectRedirect {
+                throw SpeechTranscriptionError.provider("OpenAI speech request failed: HTTP redirect rejected")
+            }
+            throw error
+        }
         guard let httpResponse = response as? HTTPURLResponse else {
             throw SpeechTranscriptionError.provider("OpenAI speech request failed: HTTP unknown")
+        }
+
+        guard !(300..<400).contains(httpResponse.statusCode) else {
+            throw SpeechTranscriptionError.provider(
+                "OpenAI speech request failed: HTTP \(httpResponse.statusCode)"
+            )
         }
 
         guard (200..<300).contains(httpResponse.statusCode) else {
@@ -57,6 +98,19 @@ public struct OpenAISpeechTranscriptionProvider: SpeechTranscriptionProvider {
 
     public static func makeURLRequest(
         _ request: SpeechTranscriptionRequest,
+        apiKey: String,
+        boundary: String
+    ) throws -> URLRequest {
+        try makeURLRequest(
+            request,
+            endpoint: URL(string: VoiceInputConfig.defaultSpeechEndpoint)!,
+            apiKey: apiKey,
+            boundary: boundary
+        )
+    }
+
+    static func makeURLRequest(
+        _ request: SpeechTranscriptionRequest,
         endpoint: URL,
         apiKey: String,
         boundary: String
@@ -68,6 +122,7 @@ public struct OpenAISpeechTranscriptionProvider: SpeechTranscriptionProvider {
 
         var urlRequest = URLRequest(url: endpoint, timeoutInterval: request.timeoutSeconds)
         urlRequest.httpMethod = "POST"
+        urlRequest.httpShouldHandleCookies = false
         urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         urlRequest.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         urlRequest.httpBody = makeMultipartBody(
