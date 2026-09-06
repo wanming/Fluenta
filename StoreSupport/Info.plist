@@ -29,6 +29,6 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 Inklet. All rights reserved.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Inklet uses the microphone only when you start voice dictation, then sends the recording to your configured speech provider for transcription.</string>
+	<string>Inklet streams microphone audio to OpenAI during a valid Dictation hold and keeps a temporary recovery recording for that session.</string>
 </dict>
 </plist>

@@ -1,6 +1,6 @@
 # Inklet Privacy Policy
 
-Last updated: August 30, 2026
+Last updated: September 5, 2026
 
 ## Overview
 
@@ -35,9 +35,9 @@ Inklet uses this information to:
 
 ## AI And Speech Providers
 
-Inklet sends text and audio only to provider endpoints used for app functionality.
+Inklet sends text only to provider endpoints used for app functionality. Dictation audio is sent only to OpenAI.
 
-Text may be sent to the selected AI provider for rewriting or summarization. Dictation audio is sent to OpenAI for realtime transcription and, only when recovery is needed, to the configured recovery endpoint.
+Text may be sent to the selected AI provider for rewriting or summarization. Dictation audio is sent to OpenAI for realtime transcription and, only when recovery is needed, to the fixed canonical HTTPS URL `https://api.openai.com/v1/audio/transcriptions`. The recovery model is configurable, but the endpoint is not editable.
 
 Provider handling of your data is governed by the provider's own privacy policy and account terms. Do not send private text or audio to a provider unless you trust that provider.
 
@@ -53,7 +53,7 @@ Inklet announces only a release with an uploaded `Inklet.dmg`; it never download
 
 Dictation is available only while the editable Writing Assistant source editor is active and you hold the configured shortcut. Active microphone audio is streamed to OpenAI's Realtime transcription service as it is captured. Inklet authenticates that connection with your OpenAI API key and keeps only bounded in-memory PCM while connecting and streaming.
 
-At capture start, Inklet also creates one temporary local `.m4a` recovery recording. If the realtime connection cannot produce a final transcript, that recording is sent only to the one file-transcription recovery attempt using the recovery endpoint and model in Advanced Dictation. It is not reused for another request.
+At capture start, Inklet also creates one temporary local `.m4a` recovery recording. If the realtime connection cannot produce a final transcript, that recording remains local until the fallback request actually begins. Recovery uses the same existing OpenAI API key used by realtime dictation and sends the recording to `https://api.openai.com/v1/audio/transcriptions`. The recording is uploaded at most once and is not reused for another request.
 
 The temporary recording is deleted after every terminal path: success, no speech, fallback success or failure, Escape, focus loss, popover closure, supersession, migration maintenance, and app termination. Dictation diagnostics record only lifecycle state needed to troubleshoot the session and does not log audio or transcript content, Authorization headers, microphone identifiers, or temporary file paths.
 

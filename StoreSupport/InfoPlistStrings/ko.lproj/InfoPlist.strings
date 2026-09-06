@@ -1,1 +1,1 @@
-"NSMicrophoneUsageDescription" = "Inklet은 음성 입력을 시작할 때만 마이크를 사용하며, 녹음 파일을 설정한 음성 제공업체로 보내 전사합니다.";
+"NSMicrophoneUsageDescription" = "유효한 받아쓰기 길게 누르기 동안 Inklet은 마이크 오디오를 OpenAI로 스트리밍하고 해당 세션의 임시 복구 녹음을 보관합니다.";

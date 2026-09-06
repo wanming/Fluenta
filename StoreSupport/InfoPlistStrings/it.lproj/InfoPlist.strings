@@ -1,1 +1,1 @@
-"NSMicrophoneUsageDescription" = "Inklet usa il microfono solo quando avvii la dettatura vocale e invia la registrazione al provider vocale configurato per la trascrizione.";
+"NSMicrophoneUsageDescription" = "Durante una pressione valida per la dettatura, Inklet trasmette l’audio del microfono a OpenAI e conserva una registrazione temporanea di recupero per la sessione.";

@@ -1,1 +1,1 @@
-"NSMicrophoneUsageDescription" = "Inklet は音声入力を開始したときだけマイクを使用し、録音を設定済みの音声プロバイダーに送信して文字起こしします。";
+"NSMicrophoneUsageDescription" = "有効な音声入力の長押し中、Inklet はマイク音声を OpenAI にストリーミングし、そのセッション用の一時的な復旧録音を保持します。";
